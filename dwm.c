@@ -55,7 +55,7 @@
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
-#define IS_STATUS_ESC(c)        ((unsigned char)(c) >= 0x0e && (unsigned char)(c) < 0x20)
+#define IS_STATUS_ESC(c)        ((unsigned char)(c) >= 0x0d && (unsigned char)(c) < 0x20)
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -790,7 +790,9 @@ drawbar(Monitor *m)
 					tx += w;
 				}
 				*ts = ctmp;
-				if ((unsigned char)ctmp == 0x0e)
+				if ((unsigned char)ctmp == 0x0d)
+					drw_setscheme(drw, scheme[SchemeTtyDown]);
+				else if ((unsigned char)ctmp == 0x0e)
 					drw_setscheme(drw, scheme[SchemeSys]);
 				else if ((unsigned char)ctmp == 0x0f)
 					drw_setscheme(drw, scheme[SchemeNorm]);

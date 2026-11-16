@@ -60,6 +60,7 @@ fi
     my_pid=$(sh -c 'echo $PPID')
     printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
+    c_off=$(printf '\015')
     c_ico=$(printf '\016')
     c_val=$(printf '\017')
     c_sys_ok=$(printf '\020')
@@ -190,6 +191,9 @@ fi
                     fi
                 done
             fi
+        fi
+        if [ -z "$net_seg" ]; then
+            net_seg="${c_net}${c_off}   "
         fi
 
         # Dynamic Battery: 5 fullness levels (    ) or bolt () when connected to power
