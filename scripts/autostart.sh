@@ -193,7 +193,7 @@ fi
             fi
         fi
         if [ -z "$net_seg" ]; then
-            net_seg="${c_net}${c_off}   "
+            net_seg="${c_net}${c_off}    no signal"
         fi
 
         # Dynamic Battery: 5 fullness levels (    ) or bolt () when connected to power
