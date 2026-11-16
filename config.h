@@ -17,7 +17,7 @@ static const char *fonts[]          = {
 static const char dmenufont[]       = "Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true";
 static const char col_gray1[]       = "#11111b";
 static const char col_gray2[]       = "#313244";
-static const char col_gray3[]       = "#cdd6f4";
+static const char col_gray3[]       = "#a6adc8";
 static const char col_gray4[]       = "#ffffff";
 static const char col_cyan[]        = "#232336";
 static const char col_border[]      = "#a07eff";
