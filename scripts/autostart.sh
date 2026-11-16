@@ -45,11 +45,20 @@ elif [ -x /usr/lib/notification-daemon/notification-daemon ]; then
     /usr/lib/notification-daemon/notification-daemon &
 fi
 
-# 6. Minimalist UTF-8 status bar loop (FontAwesome glyphs + dynamic battery/power/audio/net)
+# 6. Minimalist UTF-8 status bar loop (FontAwesome glyphs + Catppuccin Mocha colors + clickable segments)
 # Supports instant refresh on SIGUSR1 (used by dwm-ctl for <20ms volume updates)
 (
     sh -c 'echo $PPID' > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
+    c_mem=$(printf '\003')
+    c_cpu=$(printf '\004')
+    c_vol=$(printf '\005')
+    c_net=$(printf '\006')
+    c_bok=$(printf '\007')
+    c_bwn=$(printf '\010')
+    c_bcr=$(printf '\011')
+    c_dat=$(printf '\012')
+    c_tim=$(printf '\013')
     while true; do
         # Memory ()
         mem=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {printf "%.1fG", (total-avail)/1048576}' /proc/meminfo 2>/dev/null)
@@ -63,8 +72,12 @@ fi
             vol_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
             if [ -n "$vol_out" ]; then
                 vol_pct=$(printf '%s\n' "$vol_out" | awk '{printf "%d", $2 * 100}')
+                vol_clr="$c_vol"
                 case "$vol_out" in
-                    *MUTED*) vol_icon=" ×" ;;
+                    *MUTED*)
+                        vol_icon=" ×"
+                        vol_clr="$c_bcr"
+                        ;;
                     *)
                         if [ "${vol_pct:-0}" -eq 0 ]; then
                             vol_icon=" 0%"
@@ -75,7 +88,7 @@ fi
                         fi
                         ;;
                 esac
-                vol_seg="   ${vol_icon}"
+                vol_seg="   ${vol_clr}${vol_icon}"
             fi
         fi
 
@@ -83,11 +96,11 @@ fi
         net_seg=""
         wifi_ssid=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="wifi" && $2=="connected" {print $3; exit}')
         if [ -n "$wifi_ssid" ]; then
-            net_seg="    ${wifi_ssid}"
+            net_seg="   ${c_net} ${wifi_ssid}"
         else
             for w in /sys/class/net/wl*/operstate; do
                 if [ -f "$w" ] && [ "$(cat "$w" 2>/dev/null)" = "up" ]; then
-                    net_seg="   "
+                    net_seg="   ${c_net}"
                     break
                 fi
             done
@@ -95,11 +108,11 @@ fi
         if [ -z "$net_seg" ]; then
             eth_conn=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="ethernet" && $2=="connected" {print $3; exit}')
             if [ -n "$eth_conn" ]; then
-                net_seg="    ${eth_conn}"
+                net_seg="   ${c_net} ${eth_conn}"
             else
                 for e in /sys/class/net/en*/operstate; do
                     if [ -f "$e" ] && [ "$(cat "$e" 2>/dev/null)" = "up" ]; then
-                        net_seg="   "
+                        net_seg="   ${c_net}"
                         break
                     fi
                 done
@@ -125,6 +138,7 @@ fi
                     bat_icon=""
                 fi
                 pwr_icon=""
+                bat_clr="$c_bok"
                 case "$status" in
                     Charging)
                         pwr_icon=" "
@@ -135,15 +149,19 @@ fi
                     *)
                         if [ "$ac_online" = "1" ]; then
                             pwr_icon=" "
+                        elif [ "${cap:-0}" -lt 15 ]; then
+                            bat_clr="$c_bcr"
+                        elif [ "${cap:-0}" -lt 30 ]; then
+                            bat_clr="$c_bwn"
                         fi
                         ;;
                 esac
-                bat_seg="   ${pwr_icon}${bat_icon} ${cap}%"
+                bat_seg="   ${bat_clr}${pwr_icon}${bat_icon} ${cap}%"
                 break
             fi
         done
 
-        xsetroot -name "   ${mem}    ${load}${vol_seg}${net_seg}${bat_seg}    $(date '+%d/%m')    $(date '+%H:%M')  "
+        xsetroot -name "  ${c_mem} ${mem}   ${c_cpu} ${load}${vol_seg}${net_seg}${bat_seg}   ${c_dat} $(date '+%d/%m')   ${c_tim} $(date '+%H:%M')  "
         sleep 5 &
         wait $!
     done

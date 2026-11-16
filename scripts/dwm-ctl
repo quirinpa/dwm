@@ -68,6 +68,43 @@ case "$1" in
             *Poweroff*)    systemctl poweroff ;;
         esac
         ;;
+    status-click)
+        seg="$2"
+        btn="$3"
+        case "$seg" in
+            5|9) # Volume segment (SchemeVol=5, or SchemeBatCrit=9 when muted)
+                case "$btn" in
+                    1) exec "$0" vol-mute ;;
+                    3) exec /home/quirinpa/.local/bin/dwm-net audio ;;
+                    4) exec "$0" vol-up ;;
+                    5) exec "$0" vol-down ;;
+                esac
+                ;;
+            6) # Network segment (SchemeNet=6)
+                case "$btn" in
+                    1) exec /home/quirinpa/.local/bin/dwm-net wifi ;;
+                    3) exec /home/quirinpa/.local/bin/dwm-net ;;
+                esac
+                ;;
+            7|8) # Battery segment
+                if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
+                    exec "$0" power-menu
+                fi
+                ;;
+            10|11) # Date / Time segment
+                if [ "$btn" = "1" ] && command -v notify-send >/dev/null 2>&1; then
+                    notify-send -t 5000 "  $(date '+%A, %d %B %Y')" "$(cal)" 2>/dev/null || true
+                elif [ "$btn" = "3" ]; then
+                    exec "$0" power-menu
+                fi
+                ;;
+            3|4) # Memory / CPU segment
+                if [ "$btn" = "1" ]; then
+                    exec ghostty --class=dwm-float --title="top" -e top
+                fi
+                ;;
+        esac
+        ;;
     refresh)
         refresh_bar
         ;;

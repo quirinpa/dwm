@@ -58,7 +58,20 @@
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
-enum { SchemeNorm, SchemeSel, SchemeTitle }; /* color schemes */
+enum {
+	SchemeNorm,
+	SchemeSel,
+	SchemeTitle,
+	SchemeMem,
+	SchemeCpu,
+	SchemeVol,
+	SchemeNet,
+	SchemeBatOk,
+	SchemeBatWarn,
+	SchemeBatCrit,
+	SchemeDate,
+	SchemeTime
+}; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
        NetWMWindowTypeDialog, NetClientList, NetLast }; /* EWMH atoms */
@@ -184,6 +197,7 @@ static void maprequest(XEvent *e);
 static void monocle(Monitor *m);
 static void motionnotify(XEvent *e);
 static void movemouse(const Arg *arg);
+static void movestack(const Arg *arg);
 static Client *nexttiled(Client *c);
 static void pop(Client *c);
 static void propertynotify(XEvent *e);
@@ -213,6 +227,8 @@ static void tagmon(const Arg *arg);
 static void tile(Monitor *m);
 static void togglebar(const Arg *arg);
 static void togglefloating(const Arg *arg);
+static void togglefullscreen(const Arg *arg);
+static void statusclick(const Arg *arg);
 static void toggletag(const Arg *arg);
 static void toggleview(const Arg *arg);
 static void unfocus(Client *c, int setfocus);
@@ -239,6 +255,8 @@ static void zoom(const Arg *arg);
 /* variables */
 static const char broken[] = "broken";
 static char stext[256];
+static int statusw;
+static int statusseg;
 static int screen;
 static int sw, sh;           /* X display screen geometry width, height */
 static int bh;               /* bar height */
@@ -449,9 +467,24 @@ buttonpress(XEvent *e)
 			arg.ui = 1 << i;
 		} else if (ev->x < x + TEXTW(selmon->ltsymbol))
 			click = ClkLtSymbol;
-		else if (ev->x > selmon->ww - (int)TEXTW(stext) + lrpad - 2)
+		else if (ev->x > selmon->ww - statusw) {
 			click = ClkStatusText;
-		else
+			char *ts = stext, *tp = stext, ctmp;
+			int tx = selmon->ww - statusw;
+			statusseg = 0;
+			for (; *ts; ts++) {
+				if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+					ctmp = *ts;
+					*ts = '\0';
+					if (*tp)
+						tx += TEXTW(tp) - lrpad;
+					*ts = ctmp;
+					tp = ts + 1;
+					if (ev->x >= tx)
+						statusseg = (unsigned char)ctmp;
+				}
+			}
+		} else
 			click = ClkWinTitle;
 	} else if ((c = wintoclient(ev->window))) {
 		focus(c);
@@ -721,9 +754,44 @@ drawbar(Monitor *m)
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
+		char *ts = stext, *tp = stext, ctmp;
+		int tx;
+		tw = 2;
+		for (; *ts; ts++) {
+			if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+				ctmp = *ts;
+				*ts = '\0';
+				if (*tp)
+					tw += TEXTW(tp) - lrpad;
+				*ts = ctmp;
+				tp = ts + 1;
+			}
+		}
+		if (*tp)
+			tw += TEXTW(tp) - lrpad;
+		statusw = tw;
+		tx = m->ww - tw;
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = TEXTW(stext) - lrpad + 2; /* 2px right padding */
-		drw_text(drw, m->ww - tw, 0, tw, bh, 0, stext, 0);
+		drw_rect(drw, tx, 0, tw, bh, 1, 1);
+		tp = stext;
+		for (ts = stext; *ts; ts++) {
+			if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+				ctmp = *ts;
+				*ts = '\0';
+				if (*tp) {
+					w = TEXTW(tp) - lrpad;
+					drw_text(drw, tx, 0, w, bh, 0, tp, 0);
+					tx += w;
+				}
+				*ts = ctmp;
+				drw_setscheme(drw, scheme[(unsigned char)ctmp]);
+				tp = ts + 1;
+			}
+		}
+		if (*tp) {
+			w = TEXTW(tp) - lrpad;
+			drw_text(drw, tx, 0, w, bh, 0, tp, 0);
+		}
 	}
 
 	for (c = m->clients; c; c = c->next) {
@@ -1784,6 +1852,73 @@ togglefloating(const Arg *arg)
 		resize(selmon->sel, selmon->sel->x, selmon->sel->y,
 			selmon->sel->w, selmon->sel->h, 0);
 	arrange(selmon);
+}
+
+void
+togglefullscreen(const Arg *arg)
+{
+	if (selmon->sel)
+		setfullscreen(selmon->sel, !selmon->sel->isfullscreen);
+}
+
+void
+statusclick(const Arg *arg)
+{
+	char segbuf[8], btnbuf[8];
+	snprintf(segbuf, sizeof(segbuf), "%d", statusseg);
+	snprintf(btnbuf, sizeof(btnbuf), "%d", arg->i);
+	const char *cmd[] = { "/home/quirinpa/.local/bin/dwm-ctl", "status-click", segbuf, btnbuf, NULL };
+	Arg a = { .v = cmd };
+	spawn(&a);
+}
+
+void
+movestack(const Arg *arg)
+{
+	Client *c = NULL, *p = NULL, *pc = NULL, *i;
+
+	if (!selmon->sel || (selmon->sel->isfloating && !selmon->lt[selmon->sellt]->arrange))
+		return;
+	if (arg->i > 0) {
+		/* find the client after selmon->sel */
+		for (c = selmon->sel->next; c && (!ISVISIBLE(c) || c->isfloating); c = c->next);
+		if (!c)
+			for (c = selmon->clients; c && (!ISVISIBLE(c) || c->isfloating); c = c->next);
+	} else {
+		/* find the client before selmon->sel */
+		for (i = selmon->clients; i != selmon->sel; i = i->next)
+			if (ISVISIBLE(i) && !i->isfloating)
+				c = i;
+		if (!c)
+			for (; i; i = i->next)
+				if (ISVISIBLE(i) && !i->isfloating)
+					c = i;
+	}
+	/* find the client before selmon->sel and c */
+	for (i = selmon->clients; i && (!p || !pc); i = i->next) {
+		if (i->next == selmon->sel)
+			p = i;
+		if (i->next == c)
+			pc = i;
+	}
+	/* swap c and selmon->sel in the clients list */
+	if (c && c != selmon->sel) {
+		Client *temp = selmon->sel->next == c ? selmon->sel : selmon->sel->next;
+		selmon->sel->next = c->next == selmon->sel ? c : c->next;
+		c->next = temp;
+
+		if (p && p != c)
+			p->next = c;
+		if (pc && pc != selmon->sel)
+			pc->next = selmon->sel;
+
+		if (selmon->sel == selmon->clients)
+			selmon->clients = c;
+		else if (c == selmon->clients)
+			selmon->clients = selmon->sel;
+
+		arrange(selmon);
+	}
 }
 
 void

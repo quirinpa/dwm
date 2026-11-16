@@ -40,6 +40,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | Shortcut | Action |
 |---|---|
 | `Mod + j` / `Mod + k` | Focus next / previous window in stack |
+| `Mod + Shift + j` / `Mod + Shift + k` | **Move / swap focused window down / up in the stack (`movestack`)** |
 | `Mod + Enter` | Promote focused window to Master area (`zoom`) |
 | `Mod + h` / `Mod + l` | Decrease / increase Master area width (`mfact`) |
 | `Mod + i` / `Mod + d` | Increase / decrease number of windows in Master area |
@@ -47,6 +48,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod + t` | Tile layout (`◫`) |
 | `Mod + f` | Floating layout (`◰`) |
 | `Mod + m` | Monocle (full-screen deck) layout (`▣`) |
+| `Mod + Shift + f` | **Toggle true 100% borderless fullscreen over the top bar (`togglefullscreen`)** |
 | `Mod + Space` | Toggle between current and previous layout |
 | `Mod + Shift + Space` | Toggle floating state of focused window |
 | `Mod + b` | Toggle top status bar visibility |
@@ -70,6 +72,15 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 |---|---|
 | `Mod + Shift + r` | **Hot-restart `dwm` in-place** (re-executes `~/.local/bin/dwm` without closing open apps) |
 | `Mod + Shift + q` | Quit `dwm` immediately |
+
+### Clickable Status Bar Modules
+| Status Segment | Left Click | Right Click | Scroll Up / Down |
+|---|---|---|---|
+| **Memory / CPU** (`` / ``) | Open floating `top` monitor | — | — |
+| **Volume** (` 40%`) | Toggle mute | Open Audio Output Switcher (`dwm-net audio`) | Volume `+5%` / `-5%` |
+| **Network** (` SSID`) | Open Wi-Fi Dropdown (`dwm-net wifi`) | Open System Settings Menu (`dwm-net`) | — |
+| **Battery** (` 55%`) | Open Session / Power Menu | Open Session / Power Menu | — |
+| **Date / Time** (`` / ``) | Show Calendar popup | Open Session / Power Menu | — |
 
 ---
 

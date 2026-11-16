@@ -76,11 +76,13 @@ SECTIONS_LEFT = [
     ]),
     ("Window & Layout Control", [
         ("Mod + j / k",         "Focus Next / Prev Window"),
+        ("Mod + Shift + j / k", "Move Window Down / Up Stack"),
         ("Mod + Enter",         "Zoom Focused to Master"),
         ("Mod + h / l",         "Master Width -5% / +5%"),
         ("Mod + i / d",         "Master Count +1 / -1"),
         ("Mod + Shift + c",     "Close Focused Window"),
         ("Mod + t / f / m",     "Tile (◫) / Float (◰) / Monocle (▣)"),
+        ("Mod + Shift + f",     "Toggle True Fullscreen"),
         ("Mod + Shift + Space", "Toggle Window Floating"),
         ("Mod + - / = / Shift+=", "Gaps -2px / +2px / Reset"),
         ("Mod + b",             "Toggle Top Status Bar"),

@@ -20,11 +20,28 @@ static const char col_gray3[]       = "#cdd6f4";
 static const char col_gray4[]       = "#cdd6f4";
 static const char col_cyan[]        = "#585b70";
 static const char col_border[]      = "#89b4fa";
+static const char col_sky[]         = "#89dceb";
+static const char col_peach[]       = "#fab387";
+static const char col_yellow[]      = "#f9e2af";
+static const char col_teal[]        = "#94e2d5";
+static const char col_green[]       = "#a6e3a1";
+static const char col_red[]         = "#f38ba8";
+static const char col_lavender[]    = "#b4befe";
+static const char col_rosewater[]   = "#f5e0dc";
 static const char *colors[][3]      = {
-	/*               fg          bg         border   */
-	[SchemeNorm]  = { col_gray3,  col_gray1, col_gray2  },
-	[SchemeSel]   = { col_gray4,  col_cyan,  col_border },
-	[SchemeTitle] = { col_border, col_gray1, col_border },
+	/*                   fg             bg         border   */
+	[SchemeNorm]     = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeSel]      = { col_gray4,     col_cyan,  col_border },
+	[SchemeTitle]    = { col_border,    col_gray1, col_border },
+	[SchemeMem]      = { col_sky,       col_gray1, col_gray2  },
+	[SchemeCpu]      = { col_peach,     col_gray1, col_gray2  },
+	[SchemeVol]      = { col_yellow,    col_gray1, col_gray2  },
+	[SchemeNet]      = { col_teal,      col_gray1, col_gray2  },
+	[SchemeBatOk]    = { col_green,     col_gray1, col_gray2  },
+	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
+	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
+	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
+	[SchemeTime]     = { col_rosewater, col_gray1, col_gray2  },
 };
 
 /* tagging */
@@ -123,6 +140,8 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_b,      togglebar,      {0} },
 	{ MODKEY,                       XK_j,      focusstack,     {.i = +1 } },
 	{ MODKEY,                       XK_k,      focusstack,     {.i = -1 } },
+	{ MODKEY|ShiftMask,             XK_j,      movestack,      {.i = +1 } },
+	{ MODKEY|ShiftMask,             XK_k,      movestack,      {.i = -1 } },
 	{ MODKEY,                       XK_i,      incnmaster,     {.i = +1 } },
 	{ MODKEY,                       XK_d,      incnmaster,     {.i = -1 } },
 	{ MODKEY,                       XK_h,      setmfact,       {.f = -0.05} },
@@ -132,6 +151,7 @@ static const Key keys[] = {
 	{ MODKEY|ShiftMask,             XK_c,      killclient,     {0} },
 	{ MODKEY,                       XK_t,      setlayout,      {.v = &layouts[0]} },
 	{ MODKEY,                       XK_f,      setlayout,      {.v = &layouts[1]} },
+	{ MODKEY|ShiftMask,             XK_f,      togglefullscreen,{0} },
 	{ MODKEY,                       XK_m,      setlayout,      {.v = &layouts[2]} },
 	{ MODKEY,                       XK_space,  setlayout,      {0} },
 	{ MODKEY|ShiftMask,             XK_space,  togglefloating, {0} },
@@ -164,7 +184,11 @@ static const Button buttons[] = {
 	{ ClkLtSymbol,          0,              Button1,        setlayout,      {0} },
 	{ ClkLtSymbol,          0,              Button3,        setlayout,      {.v = &layouts[2]} },
 	{ ClkWinTitle,          0,              Button2,        zoom,           {0} },
-	{ ClkStatusText,        0,              Button2,        spawn,          {.v = termcmd } },
+	{ ClkStatusText,        0,              Button1,        statusclick,    {.i = 1 } },
+	{ ClkStatusText,        0,              Button2,        statusclick,    {.i = 2 } },
+	{ ClkStatusText,        0,              Button3,        statusclick,    {.i = 3 } },
+	{ ClkStatusText,        0,              Button4,        statusclick,    {.i = 4 } },
+	{ ClkStatusText,        0,              Button5,        statusclick,    {.i = 5 } },
 	{ ClkClientWin,         MODKEY,         Button1,        movemouse,      {0} },
 	{ ClkClientWin,         MODKEY,         Button2,        togglefloating, {0} },
 	{ ClkClientWin,         MODKEY,         Button3,        resizemouse,    {0} },
