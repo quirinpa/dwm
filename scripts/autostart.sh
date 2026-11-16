@@ -78,7 +78,7 @@ fi
     c_ger=$(printf '\035')
     c_tup=$(printf '\036')
     c_tdn=$(printf '\037')
-    c_kbd=$(printf '\021')
+    c_kbd=$(printf '\013')
     last_tty_ts=0
     last_cal_check_ts=0
     last_cal_sync_ts=0

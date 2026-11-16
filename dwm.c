@@ -55,7 +55,7 @@
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
-#define IS_STATUS_ESC(c)        ((unsigned char)(c) >= 0x0c && (unsigned char)(c) < 0x20)
+#define IS_STATUS_ESC(c)        ((unsigned char)(c) >= 0x0b && (unsigned char)(c) < 0x20)
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -487,8 +487,8 @@ buttonpress(XEvent *e)
 						tx += TEXTW(tp) - lrpad;
 					*ts = ctmp;
 					tp = ts + 1;
-					if ((unsigned char)ctmp >= 0x10 && ev->x >= tx)
-						statusseg = (unsigned char)ctmp - 0x10;
+					if (((unsigned char)ctmp == 0x0b || (unsigned char)ctmp >= 0x10) && ev->x >= tx)
+						statusseg = (unsigned char)ctmp == 0x0b ? SchemeKbd : (unsigned char)ctmp - 0x10;
 				}
 			}
 		} else
@@ -791,14 +791,16 @@ drawbar(Monitor *m)
 					tx += w;
 				}
 				*ts = ctmp;
-				if ((unsigned char)ctmp == 0x0c)
+				if ((unsigned char)ctmp == 0x0b)
+					drw_setscheme(drw, scheme[SchemeKbd]);
+				else if ((unsigned char)ctmp == 0x0c)
 					drw_setscheme(drw, scheme[SchemeBatWarn]);
 				else if ((unsigned char)ctmp == 0x0d)
 					drw_setscheme(drw, scheme[SchemeTtyDown]);
 				else if ((unsigned char)ctmp == 0x0e)
 					drw_setscheme(drw, scheme[SchemeSys]);
 				else if ((unsigned char)ctmp == 0x0f)
-					drw_setscheme(drw, scheme[SchemeNorm]);
+					drw_setscheme(drw, scheme[SchemeSel]);
 				else
 					drw_setscheme(drw, scheme[(unsigned char)ctmp - 0x10]);
 				tp = ts + 1;
