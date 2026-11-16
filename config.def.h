@@ -28,6 +28,7 @@ static const char col_green[]       = "#a6e3a1";
 static const char col_red[]         = "#f38ba8";
 static const char col_lavender[]    = "#b4befe";
 static const char col_rosewater[]   = "#f5e0dc";
+static const char col_mauve[]       = "#cba6f7";
 static const char *colors[][3]      = {
 	/*                   fg             bg         border   */
 	[SchemeNorm]     = { col_gray3,     col_gray1, col_gray2  },
@@ -36,12 +37,14 @@ static const char *colors[][3]      = {
 	[SchemeMem]      = { col_sky,       col_gray1, col_gray2  },
 	[SchemeCpu]      = { col_peach,     col_gray1, col_gray2  },
 	[SchemeVol]      = { col_yellow,    col_gray1, col_gray2  },
+	[SchemeVolMute]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeNet]      = { col_teal,      col_gray1, col_gray2  },
 	[SchemeBatOk]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
 	[SchemeTime]     = { col_rosewater, col_gray1, col_gray2  },
+	[SchemeGear]     = { col_mauve,     col_gray1, col_gray2  },
 };
 
 /* tagging */

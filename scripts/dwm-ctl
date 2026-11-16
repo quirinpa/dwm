@@ -57,50 +57,90 @@ case "$1" in
             org.freedesktop.login1.Session SetBrightness ssu backlight "$dev" "$next" 2>/dev/null
         ;;
     power-menu)
-        choice=$(printf "  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu -i -l 6 -p "Session:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        choice=$(printf "  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu -i -l 8 -p "System:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
         case "$choice" in
-            *Lock*)        exec slock ;;
-            *Hot-Restart*) kill -HUP "$(pgrep -x dwm | head -n 1)" ;;
-            *Logout*)      kill -TERM "$(pgrep -x dwm | head -n 1)" ;;
-            *Suspend*)     slock & sleep 0.3; systemctl suspend ;;
-            *Reboot*)      systemctl reboot ;;
-            *Poweroff*)    systemctl poweroff ;;
+            *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
+            *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
+            *Lock*)                 exec slock ;;
+            *Hot-Restart*)          kill -HUP "$(pgrep -x dwm | head -n 1)" ;;
+            *Logout*)               kill -TERM "$(pgrep -x dwm | head -n 1)" ;;
+            *Suspend*)              slock & sleep 0.3; systemctl suspend ;;
+            *Reboot*)               systemctl reboot ;;
+            *Poweroff*)             systemctl poweroff ;;
         esac
+        ;;
+    battery-info)
+        for b in /sys/class/power_supply/BAT*; do
+            if [ -f "$b/uevent" ]; then
+                info=$(awk -F= '
+                    $1=="POWER_SUPPLY_STATUS"       { status=$2 }
+                    $1=="POWER_SUPPLY_CAPACITY"     { cap=$2 }
+                    $1=="POWER_SUPPLY_VOLTAGE_NOW"  { volt=$2/1000000 }
+                    $1=="POWER_SUPPLY_CURRENT_NOW"  { curr=$2/1000000 }
+                    $1=="POWER_SUPPLY_CHARGE_NOW"   { cnow=$2/1000000 }
+                    $1=="POWER_SUPPLY_CHARGE_FULL"  { cfull=$2/1000000 }
+                    $1=="POWER_SUPPLY_HEALTH"       { health=$2 }
+                    $1=="POWER_SUPPLY_TEMP"         { temp=$2/10 }
+                    END {
+                        watts = volt * curr
+                        rem = ""
+                        if (curr > 0.05) {
+                            hrs = (status == "Charging") ? (cfull - cnow) / curr : cnow / curr
+                            h = int(hrs)
+                            m = int((hrs - h) * 60)
+                            rem = sprintf("\nTime Est.:  %dh %02dm", h, m)
+                        }
+                        printf "Status:     %s (%s%%)\nPower Draw: %.1f W%s\nHealth:     %s (%.1f°C)", status, cap, watts, rem, health, temp
+                    }
+                ' "$b/uevent" 2>/dev/null)
+                if command -v notify-send >/dev/null 2>&1; then
+                    notify-send -t 5000 "  Battery Status" "$info" 2>/dev/null || true
+                fi
+                break
+            fi
+        done
         ;;
     status-click)
         seg="$2"
         btn="$3"
         case "$seg" in
-            5|9) # Volume segment (SchemeVol=5, or SchemeBatCrit=9 when muted)
+            3|4) # Memory / CPU segment (SchemeMem=3, SchemeCpu=4)
+                if [ "$btn" = "1" ]; then
+                    exec ghostty --class=dwm-float --title="top" -e top
+                fi
+                ;;
+            5|6) # Volume segment (SchemeVol=5, SchemeVolMute=6)
                 case "$btn" in
-                    1) exec "$0" vol-mute ;;
-                    3) exec /home/quirinpa/.local/bin/dwm-net audio ;;
-                    4) exec "$0" vol-up ;;
-                    5) exec "$0" vol-down ;;
+                    1)   exec /home/quirinpa/.local/bin/dwm-net audio ;;
+                    2|3) exec "$0" vol-mute ;;
+                    4)   exec "$0" vol-up ;;
+                    5)   exec "$0" vol-down ;;
                 esac
                 ;;
-            6) # Network segment (SchemeNet=6)
+            7) # Network segment (SchemeNet=7)
                 case "$btn" in
                     1) exec /home/quirinpa/.local/bin/dwm-net wifi ;;
                     3) exec /home/quirinpa/.local/bin/dwm-net ;;
                 esac
                 ;;
-            7|8) # Battery segment
+            8|9|10) # Battery segment (SchemeBatOk=8, SchemeBatWarn=9, SchemeBatCrit=10)
+                case "$btn" in
+                    1|3) exec "$0" battery-info ;;
+                    4)   exec "$0" bri-up ;;
+                    5)   exec "$0" bri-down ;;
+                esac
+                ;;
+            11|12) # Date / Time segment (SchemeDate=11, SchemeTime=12)
+                if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
+                    if command -v notify-send >/dev/null 2>&1; then
+                        notify-send -t 5000 "  $(date '+%A, %d %B %Y')" "$(cal)" 2>/dev/null || true
+                    fi
+                fi
+                ;;
+            13) # Gear segment (SchemeGear=13)
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
                     exec "$0" power-menu
-                fi
-                ;;
-            10|11) # Date / Time segment
-                if [ "$btn" = "1" ] && command -v notify-send >/dev/null 2>&1; then
-                    notify-send -t 5000 "  $(date '+%A, %d %B %Y')" "$(cal)" 2>/dev/null || true
-                elif [ "$btn" = "3" ]; then
-                    exec "$0" power-menu
-                fi
-                ;;
-            3|4) # Memory / CPU segment
-                if [ "$btn" = "1" ]; then
-                    exec ghostty --class=dwm-float --title="top" -e top
                 fi
                 ;;
         esac

@@ -81,6 +81,12 @@ wifi_menu() {
 }
 
 audio_menu() {
+    vol_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
+    vol_pct=$(printf '%s\n' "$vol_out" | awk '{printf "%d", $2 * 100}')
+    case "$vol_out" in
+        *MUTED*) mute_lbl="  Unmute Audio (Currently Muted — ${vol_pct}%)" ;;
+        *)       mute_lbl="  Mute Audio (Currently ${vol_pct}%)" ;;
+    esac
     sinks=$(wpctl status 2>/dev/null | awk '
         /Sinks:/ { in_sinks=1; next }
         /Sources:|Filters:|Streams:/ { in_sinks=0 }
@@ -89,9 +95,21 @@ audio_menu() {
             print
         }
     ')
-    choice=$(printf "%s\n  Open alsamixer\n" "$sinks" | dmenu_pick "Audio Output:" 8)
+    choice=$(printf "%s\n  Volume +10%%\n  Volume -10%%\n%s\n  Open alsamixer\n" "$mute_lbl" "$sinks" | dmenu_pick "Audio:" 10)
     [ -z "$choice" ] && exit 0
     case "$choice" in
+        *"Mute Audio"*|*"Unmute Audio"*)
+            exec /home/quirinpa/.local/bin/dwm-ctl vol-mute
+            ;;
+        *"Volume +10%"*)
+            wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
+            wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 10%+ 2>/dev/null
+            dwm-ctl refresh 2>/dev/null || true
+            ;;
+        *"Volume -10%"*)
+            wpctl set-volume @DEFAULT_AUDIO_SINK@ 10%- 2>/dev/null
+            dwm-ctl refresh 2>/dev/null || true
+            ;;
         *"Open alsamixer"*)
             exec ghostty --class=dwm-float --title="alsamixer" -e alsamixer
             ;;

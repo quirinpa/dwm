@@ -65,12 +65,14 @@ enum {
 	SchemeMem,
 	SchemeCpu,
 	SchemeVol,
+	SchemeVolMute,
 	SchemeNet,
 	SchemeBatOk,
 	SchemeBatWarn,
 	SchemeBatCrit,
 	SchemeDate,
-	SchemeTime
+	SchemeTime,
+	SchemeGear
 }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,
@@ -473,7 +475,7 @@ buttonpress(XEvent *e)
 			int tx = selmon->ww - statusw;
 			statusseg = 0;
 			for (; *ts; ts++) {
-				if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+				if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
 					ctmp = *ts;
 					*ts = '\0';
 					if (*tp)
@@ -481,7 +483,7 @@ buttonpress(XEvent *e)
 					*ts = ctmp;
 					tp = ts + 1;
 					if (ev->x >= tx)
-						statusseg = (unsigned char)ctmp;
+						statusseg = (unsigned char)ctmp - 0x10;
 				}
 			}
 		} else
@@ -758,7 +760,7 @@ drawbar(Monitor *m)
 		int tx;
 		tw = 2;
 		for (; *ts; ts++) {
-			if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+			if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
 				ctmp = *ts;
 				*ts = '\0';
 				if (*tp)
@@ -775,7 +777,7 @@ drawbar(Monitor *m)
 		drw_rect(drw, tx, 0, tw, bh, 1, 1);
 		tp = stext;
 		for (ts = stext; *ts; ts++) {
-			if ((unsigned char)*ts >= 1 && (unsigned char)*ts < LENGTH(colors)) {
+			if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
 				ctmp = *ts;
 				*ts = '\0';
 				if (*tp) {
@@ -784,7 +786,7 @@ drawbar(Monitor *m)
 					tx += w;
 				}
 				*ts = ctmp;
-				drw_setscheme(drw, scheme[(unsigned char)ctmp]);
+				drw_setscheme(drw, scheme[(unsigned char)ctmp - 0x10]);
 				tp = ts + 1;
 			}
 		}

@@ -77,10 +77,11 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | Status Segment | Left Click | Right Click | Scroll Up / Down |
 |---|---|---|---|
 | **Memory / CPU** (`` / ``) | Open floating `top` monitor | — | — |
-| **Volume** (` 40%`) | Toggle mute | Open Audio Output Switcher (`dwm-net audio`) | Volume `+5%` / `-5%` |
+| **Volume** (` 40%`) | Open Audio Menu (Mute, `±10%`, Output Sinks, `alsamixer`) | Toggle mute | Volume `+5%` / `-5%` |
 | **Network** (` SSID`) | Open Wi-Fi Dropdown (`dwm-net wifi`) | Open System Settings Menu (`dwm-net`) | — |
-| **Battery** (` 55%`) | Open Session / Power Menu | Open Session / Power Menu | — |
-| **Date / Time** (`` / ``) | Show Calendar popup | Open Session / Power Menu | — |
+| **Battery** (` 55%`) | Show Battery Status popup (Watts, time remaining, health) | Show Battery Status popup | Brightness `+5%` / `-5%` |
+| **Date / Time** (`` / ``) | Show Calendar popup | Show Calendar popup | — |
+| **Gear (``)** | **Open System & Session Menu (Shortcuts Panel, Settings, Lock, Restart, Logout, Suspend, Reboot, Poweroff)** | Same | — |
 
 ---
 
