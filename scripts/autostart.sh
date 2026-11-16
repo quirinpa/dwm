@@ -174,7 +174,7 @@ fi
             fi
         fi
 
-        # Dynamic Battery: 5 fullness levels (    ) + power indicator ( charging /  plugged)
+        # Dynamic Battery: 5 fullness levels (    ) or bolt () when connected to power
         bat_seg=""
         ac_online=$(cat /sys/class/power_supply/AC*/online 2>/dev/null | head -n 1)
         for b in /sys/class/power_supply/BAT*; do
@@ -192,18 +192,14 @@ fi
                 else
                     bat_icon=""
                 fi
-                pwr_icon=""
                 bat_clr="$c_bok"
                 case "$status" in
-                    Charging)
-                        pwr_icon=" "
-                        ;;
-                    Full|"Not charging")
-                        pwr_icon=" "
+                    Charging|Full|"Not charging")
+                        bat_icon=""
                         ;;
                     *)
                         if [ "$ac_online" = "1" ]; then
-                            pwr_icon=" "
+                            bat_icon=""
                         elif [ "${cap:-0}" -lt 15 ]; then
                             bat_clr="$c_bcr"
                         elif [ "${cap:-0}" -lt 30 ]; then
@@ -211,7 +207,7 @@ fi
                         fi
                         ;;
                 esac
-                bat_seg="${bat_clr}  ${pwr_icon}${bat_icon} ${cap}%"
+                bat_seg="${bat_clr}  ${bat_icon} ${cap}%"
                 break
             fi
         done
