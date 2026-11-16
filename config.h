@@ -74,6 +74,8 @@ static const Rule rules[] = {
 	{ "Lxappearance",         NULL,       NULL,       0,            1,           -1 },
 	{ "Dwm-help",             NULL,       NULL,       0,            1,           -1 },
 	{ "dwm-float",            NULL,       NULL,       0,            1,           -1 },
+	{ NULL,                   "dwm-float",NULL,       0,            1,           -1 },
+	{ "dwm.float",            NULL,       NULL,       0,            1,           -1 },
 	{ NULL,                   NULL,       "dwm-help", 0,            1,           -1 },
 	{ NULL,                   NULL,       "nmtui",    0,            1,           -1 },
 	{ NULL,                   NULL,       "alsamixer",0,            1,           -1 },

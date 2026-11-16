@@ -49,7 +49,7 @@ wifi_menu() {
             exec "$0" wifi-rescan
             ;;
         *"Open nmtui"*)
-            exec ghostty --class=dwm-float --title="nmtui" -e nmtui
+            exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="nmtui" -e nmtui
             ;;
         *"Advanced Network Editor"*)
             exec nm-connection-editor
@@ -119,7 +119,7 @@ audio_menu() {
             dwm-ctl refresh 2>/dev/null || true
             ;;
         *"Open alsamixer"*)
-            exec ghostty --class=dwm-float --title="alsamixer" -e alsamixer
+            exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="alsamixer" -e alsamixer
             ;;
         *)
             id=$(printf '%s\n' "$choice" | sed -E 's/^[*[:space:]]*([0-9]+)\..*/\1/')
@@ -147,7 +147,7 @@ bt_menu() {
             fi
             ;;
         *"Open bluetoothctl"*)
-            exec ghostty --class=dwm-float --title="bluetoothctl" -e bluetoothctl
+            exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="bluetoothctl" -e bluetoothctl
             ;;
         *)
             mac=$(printf '%s\n' "$choice" | awk '{print $1}')
@@ -170,7 +170,7 @@ case "$1" in
         main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Voice Dictation / Whisper (Mod+v / Mod+Shift+v)\n  Screenshots Menu (Full / Area / Window)\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 9 "#94e2d5" "#1e1e2e")
         case "$main" in
             *"Wi-Fi Networks"*)    wifi_menu no ;;
-            *"Wi-Fi TUI"*)         exec ghostty --class=dwm-float --title="nmtui" -e nmtui ;;
+            *"Wi-Fi TUI"*)         exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="nmtui" -e nmtui ;;
             *"Audio Output"*)      audio_menu ;;
             *"Voice Dictation"*)   exec /home/quirinpa/.local/bin/dwm-voice menu ;;
             *"Screenshots Menu"*)  exec /home/quirinpa/.local/bin/dwm-shot menu ;;
