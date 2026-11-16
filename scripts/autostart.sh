@@ -60,6 +60,7 @@ fi
     my_pid=$(sh -c 'echo $PPID')
     printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
+    c_wrn=$(printf '\014')
     c_off=$(printf '\015')
     c_ico=$(printf '\016')
     c_val=$(printf '\017')
@@ -78,6 +79,8 @@ fi
     c_tup=$(printf '\036')
     c_tdn=$(printf '\037')
     last_tty_ts=0
+    last_cal_check_ts=0
+    last_cal_sync_ts=0
     while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
         # tty.pt online state ( cool steel when up, red when down; cached 10s so SIGUSR1 stays <20ms)
         now_ts=$(date +%s)
@@ -233,7 +236,20 @@ fi
             fi
         done
 
-        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
+        # Calendar sync (every 4 hours) & upcoming 30-min meeting check (every 60s)
+        if [ $(( now_ts - last_cal_sync_ts )) -ge 14400 ]; then
+            last_cal_sync_ts="$now_ts"
+            /home/quirinpa/.local/bin/dwm-cal sync --quiet >/dev/null 2>&1 &
+        elif [ $(( now_ts - last_cal_check_ts )) -ge 60 ]; then
+            last_cal_check_ts="$now_ts"
+            /home/quirinpa/.local/bin/dwm-cal refresh-upcoming >/dev/null 2>&1 &
+        fi
+        cal_alert_seg=""
+        if [ -s "/tmp/dwm-cal-$USER.upcoming" ]; then
+            cal_alert_seg="${c_dat}${c_wrn}    $(head -n 1 "/tmp/dwm-cal-$USER.upcoming" 2>/dev/null)"
+        fi
+
+        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
         sleep 5 &
         wait $!
     done

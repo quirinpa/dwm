@@ -33,7 +33,7 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm ${DESTDIR}${PREFIX}/bin/dwm
-	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
 	mkdir -p $(HOME)/.config/dunst

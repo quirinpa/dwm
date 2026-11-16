@@ -1,0 +1,220 @@
+#!/bin/sh
+# dwm-cal: Local calendar (khal/ikhal) + Google Calendar sync (vdirsyncer) + bar upcoming alert
+export PATH="$HOME/.local/bin:$PATH"
+
+CAL_DIR="$HOME/.local/share/calendars/google"
+DEFAULT_CAL="$CAL_DIR/personal"
+KHAL_CFG="$HOME/.config/khal/config"
+VDIR_CFG="$HOME/.config/vdirsyncer/config"
+VDIR_STATUS="$HOME/.local/share/vdirsyncer/status"
+TOKEN_FILE="$HOME/.local/share/vdirsyncer/google_token"
+ICS_URL_FILE="$HOME/.config/vdirsyncer/google_ics_url"
+UPCOMING_CACHE="/tmp/dwm-cal-$USER.upcoming"
+
+NB="#11111b"
+NF="#a6adc8"
+SB="#7c6ff2"
+SF="#ffffff"
+FN="Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true"
+
+ensure_configs() {
+    mkdir -p "$DEFAULT_CAL" "$VDIR_STATUS" "$(dirname "$KHAL_CFG")" "$(dirname "$VDIR_CFG")"
+    if [ ! -f "$DEFAULT_CAL/color" ]; then
+        printf '#a07eff\n' > "$DEFAULT_CAL/color"
+    fi
+    if [ ! -f "$KHAL_CFG" ]; then
+        cat << KEOF > "$KHAL_CFG"
+[calendars]
+[[google]]
+path = $CAL_DIR/*
+type = discover
+
+[locale]
+timeformat = %H:%M
+dateformat = %d/%m/%Y
+longdateformat = %d/%m/%Y
+datetimeformat = %d/%m/%Y %H:%M
+longdatetimeformat = %d/%m/%Y %H:%M
+firstweekday = 0
+
+[default]
+default_calendar = personal
+highlight_event_days = True
+show_all_days = False
+KEOF
+    fi
+    if [ ! -f "$VDIR_CFG" ]; then
+        cat << VEOF > "$VDIR_CFG"
+[general]
+status_path = "$VDIR_STATUS/"
+
+[pair google_calendar]
+a = "google_calendar_local"
+b = "google_calendar_remote"
+collections = ["from a", "from b"]
+metadata = ["color", "displayname"]
+conflict_resolution = "b wins"
+
+[storage google_calendar_local]
+type = "filesystem"
+path = "$CAL_DIR/"
+fileext = ".ics"
+
+[storage google_calendar_remote]
+type = "google_calendar"
+token_file = "$TOKEN_FILE"
+client_id = "YOUR_GOOGLE_CLIENT_ID"
+client_secret = "YOUR_GOOGLE_CLIENT_SECRET"
+VEOF
+    fi
+}
+
+refresh_upcoming() {
+    ensure_configs
+    if ! command -v khal >/dev/null 2>&1; then
+        rm -f "$UPCOMING_CACHE"
+        return
+    fi
+    now_epoch=$(date +%s)
+    # Query events starting in the next 30 minutes
+    out=$(khal list --format "{start-time}|{title}" now 30m 2>/dev/null | grep '|' | head -n 1)
+    if [ -n "$out" ]; then
+        st=${out%%|*}
+        title=${out#*|}
+        # Trim title to 22 chars for bar cleanliness
+        short_title=$(printf '%s' "$title" | cut -c1-22)
+        if [ -n "$st" ]; then
+            ev_epoch=$(date -d "today $st" +%s 2>/dev/null || echo 0)
+            diff_min=$(( (ev_epoch - now_epoch + 59) / 60 ))
+            if [ "$diff_min" -gt 0 ] && [ "$diff_min" -le 30 ]; then
+                printf 'in %dm: %s (%s)\n' "$diff_min" "$short_title" "$st" > "$UPCOMING_CACHE"
+            elif [ "$diff_min" -ge -10 ] && [ "$diff_min" -le 0 ]; then
+                printf 'now: %s (%s)\n' "$short_title" "$st" > "$UPCOMING_CACHE"
+            else
+                rm -f "$UPCOMING_CACHE"
+            fi
+        else
+            rm -f "$UPCOMING_CACHE"
+        fi
+    else
+        rm -f "$UPCOMING_CACHE"
+    fi
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+do_sync() {
+    ensure_configs
+    quiet="$1"
+    if [ -f "$ICS_URL_FILE" ] && [ -s "$ICS_URL_FILE" ]; then
+        ics_url=$(cat "$ICS_URL_FILE" 2>/dev/null | tr -d ' \t\r\n')
+        if [ -n "$ics_url" ]; then
+            mkdir -p "$DEFAULT_CAL"
+            if curl -fsSL --max-time 15 "$ics_url" -o "$DEFAULT_CAL/google_feed.ics.tmp" 2>/dev/null; then
+                mv -f "$DEFAULT_CAL/google_feed.ics.tmp" "$DEFAULT_CAL/google_feed.ics"
+                refresh_upcoming
+                [ "$quiet" != "--quiet" ] && notify-send -t 3000 -h string:x-dunst-stack-tag:calendar "  Google Calendar Synced" "Updated local iCal feed." 2>/dev/null || true
+                return 0
+            fi
+        fi
+    fi
+    if grep -q "YOUR_GOOGLE_CLIENT_ID" "$VDIR_CFG" 2>/dev/null; then
+        if [ "$quiet" != "--quiet" ]; then
+            notify-send -t 5000 -h string:x-dunst-stack-tag:calendar "  Google Sync Not Configured" "Right-click or use Settings → Calendar → Connect Google Account." 2>/dev/null || true
+        fi
+        refresh_upcoming
+        return 1
+    fi
+    if vdirsyncer sync >/dev/null 2>&1; then
+        refresh_upcoming
+        [ "$quiet" != "--quiet" ] && notify-send -t 3000 -h string:x-dunst-stack-tag:calendar "  Google Calendar Synced" "Two-way CalDAV sync complete." 2>/dev/null || true
+        return 0
+    else
+        refresh_upcoming
+        [ "$quiet" != "--quiet" ] && notify-send -t 4000 -h string:x-dunst-stack-tag:audio-mute "  Calendar Sync Failed" "Run 'vdirsyncer discover' or check credentials." 2>/dev/null || true
+        return 1
+    fi
+}
+
+ensure_configs
+
+case "${1:-open}" in
+    open)
+        if pgrep -f 'ghostty.*title=Calendar' >/dev/null 2>&1; then
+            pkill -f 'ghostty.*title=Calendar' 2>/dev/null || true
+            exit 0
+        fi
+        exec ghostty --class=dwm-float --title="Calendar" -e sh -c '
+            export PATH="$HOME/.local/bin:$PATH"
+            ikhal
+            /home/quirinpa/.local/bin/dwm-cal refresh-upcoming
+            /home/quirinpa/.local/bin/dwm-cal sync --quiet >/dev/null 2>&1 &
+        '
+        ;;
+    popup)
+        today=$(date '+%-d')
+        cal_grid=$(cal | sed -E "1s/.*//; 2,\$ s/(^| )(${today})( |\$)/\\1<span background='#a07eff' foreground='#11111b'><b>\\2<\\/b><\\/span>\\3/" | sed '/^$/d')
+        agenda=$(khal list --format "• {start-end-time-style} {title}" today 7d 2>/dev/null | head -n 10)
+        if [ -n "$agenda" ]; then
+            body="${cal_grid}\n\n<b>Upcoming (7d):</b>\n${agenda}"
+        else
+            body="${cal_grid}\n\n<i>No upcoming events in the next 7 days.</i>\n<i>(Left-click clock to open ikhal)</i>"
+        fi
+        notify-send -t 7000 -h string:x-dunst-stack-tag:calendar "  $(date '+%A, %d %B %Y')" "$body" 2>/dev/null || true
+        ;;
+    sync)
+        do_sync "$2"
+        ;;
+    refresh-upcoming)
+        refresh_upcoming
+        ;;
+    setup)
+        exec ghostty --class=dwm-float --title="Google Calendar Setup" -e sh -c '
+            export PATH="$HOME/.local/bin:$PATH"
+            printf "\033[1;35m=== Google Calendar Sync Setup (vdirsyncer + khal) ===\033[0m\n\n"
+            printf "Choose how you want to sync Google Calendar locally:\n"
+            printf "  \033[1;36m1)\033[0m Two-Way CalDAV OAuth (vdirsyncer — view, create & edit events)\n"
+            printf "  \033[1;36m2)\033[0m Secret iCal (.ics) URL (1-step instant setup, no OAuth needed)\n\n"
+            printf "Select [1/2]: "
+            read -r mode
+            if [ "$mode" = "2" ]; then
+                printf "\nIn Google Calendar → Settings → Settings for my calendars → Integrate calendar,\n"
+                printf "copy the \033[1mSecret address in iCal format\033[0m (.ics URL):\n> "
+                read -r url
+                if [ -n "$url" ]; then
+                    printf "%s\n" "$url" > "'"$ICS_URL_FILE"'"
+                    printf "\nSyncing feed...\n"
+                    /home/quirinpa/.local/bin/dwm-cal sync
+                    printf "\nDone! Press Enter to close."
+                    read -r _
+                fi
+            elif [ "$mode" = "1" ]; then
+                printf "\nEnter your Google OAuth Client ID:\n> "
+                read -r cid
+                printf "Enter your Google OAuth Client Secret:\n> "
+                read -r csec
+                if [ -n "$cid" ] && [ -n "$csec" ]; then
+                    sed -i "s|client_id = .*|client_id = \"$cid\"|; s|client_secret = .*|client_secret = \"$csec\"|" "'"$VDIR_CFG"'"
+                    printf "\nRunning vdirsyncer discover (this will open your browser for Google login)...\n"
+                    vdirsyncer discover google_calendar
+                    vdirsyncer metasync
+                    vdirsyncer sync
+                    /home/quirinpa/.local/bin/dwm-cal refresh-upcoming
+                    printf "\nDone! Press Enter to close."
+                    read -r _
+                fi
+            fi
+        '
+        ;;
+    menu)
+        choice=$(printf "  Open Calendar (ikhal)\n📋  Show Agenda Popup\n  Sync Google Calendar Now\n🔑  Connect Google Calendar\n" | \
+            dmenu -i -p "Calendar:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        case "$choice" in
+            *Open\ Calendar*)  exec "$0" open ;;
+            *Agenda\ Popup*)   exec "$0" popup ;;
+            *Sync\ Google*)    exec "$0" sync ;;
+            *Connect\ Google*) exec "$0" setup ;;
+        esac
+        ;;
+esac
