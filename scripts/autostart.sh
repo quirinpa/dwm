@@ -71,7 +71,37 @@ fi
     c_dat=$(printf '\033')
     c_tim=$(printf '\034')
     c_ger=$(printf '\035')
+    c_tup=$(printf '\036')
+    c_tdn=$(printf '\037')
+    last_tty_ts=0
     while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
+        # tty.pt online state ( green when up, red when down; cached 10s so SIGUSR1 stays <20ms)
+        now_ts=$(date +%s)
+        if [ $(( now_ts - last_tty_ts )) -ge 10 ]; then
+            last_tty_ts="$now_ts"
+            if [ ! -f "/tmp/dwm-tty-$USER.state" ]; then
+                if ping -c 1 -W 1 tty.pt >/dev/null 2>&1; then
+                    printf 'up\n' > "/tmp/dwm-tty-$USER.state"
+                else
+                    printf 'down\n' > "/tmp/dwm-tty-$USER.state"
+                fi
+            else
+                (
+                    if ping -c 1 -W 2 tty.pt >/dev/null 2>&1; then
+                        printf 'up\n' > "/tmp/dwm-tty-$USER.state.tmp"
+                    else
+                        printf 'down\n' > "/tmp/dwm-tty-$USER.state.tmp"
+                    fi
+                    mv -f "/tmp/dwm-tty-$USER.state.tmp" "/tmp/dwm-tty-$USER.state"
+                ) &
+            fi
+        fi
+        if [ "$(cat "/tmp/dwm-tty-$USER.state" 2>/dev/null)" = "up" ]; then
+            tty_seg="${c_tup}   "
+        else
+            tty_seg="${c_tdn}   "
+        fi
+
         # Memory ()
         mem=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {printf "%.1fG", (total-avail)/1048576}' /proc/meminfo 2>/dev/null)
 
@@ -173,7 +203,7 @@ fi
             fi
         done
 
-        xsetroot -name "${c_mem}   ${mem} ${c_cpu}   ${load} ${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m') ${c_tim}   $(date '+%H:%M') ${c_ger}     "
+        xsetroot -name "${tty_seg}${c_mem}   ${mem} ${c_cpu}   ${load} ${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m') ${c_tim}   $(date '+%H:%M') ${c_ger}     "
         sleep 5 &
         wait $!
     done

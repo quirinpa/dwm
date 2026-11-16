@@ -45,6 +45,8 @@ static const char *colors[][3]      = {
 	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
 	[SchemeTime]     = { col_lavender,  col_gray1, col_gray2  },
 	[SchemeGear]     = { col_mauve,     col_gray1, col_gray2  },
+	[SchemeTtyUp]    = { col_green,     col_gray1, col_gray2  },
+	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
 };
 
 /* tagging */

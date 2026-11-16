@@ -72,7 +72,9 @@ enum {
 	SchemeBatCrit,
 	SchemeDate,
 	SchemeTime,
-	SchemeGear
+	SchemeGear,
+	SchemeTtyUp,
+	SchemeTtyDown
 }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,

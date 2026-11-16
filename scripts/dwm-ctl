@@ -177,6 +177,22 @@ case "$1" in
                     exec "$0" power-menu
                 fi
                 ;;
+            14|15) # tty.pt status segment (SchemeTtyUp=14, SchemeTtyDown=15)
+                if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
+                    ping_out=$(ping -c 1 -W 2 tty.pt 2>/dev/null)
+                    if [ -n "$ping_out" ] && printf '%s\n' "$ping_out" | grep -q "bytes from"; then
+                        printf 'up\n' > "/tmp/dwm-tty-$USER.state"
+                        refresh_bar
+                        rtt=$(printf '%s\n' "$ping_out" | sed -n 's/.*time=\([0-9.]* ms\).*/\1/p' | head -n 1)
+                        ip=$(printf '%s\n' "$ping_out" | sed -n 's/^PING [^(]*(\([^)]*\)).*/\1/p' | head -n 1)
+                        notify-send -t 4000 -h string:x-dunst-stack-tag:battery "  tty.pt — ONLINE" "Host:    tty.pt (${ip:-46.23.94.81})\nLatency: ${rtt:-OK}" 2>/dev/null || true
+                    else
+                        printf 'down\n' > "/tmp/dwm-tty-$USER.state"
+                        refresh_bar
+                        notify-send -t 4000 -h string:x-dunst-stack-tag:audio-mute "  tty.pt — OFFLINE" "Host:    tty.pt\nStatus:  Unreachable (timeout)" 2>/dev/null || true
+                    fi
+                fi
+                ;;
         esac
         ;;
     refresh)
