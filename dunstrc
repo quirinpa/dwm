@@ -1,0 +1,166 @@
+# Dunst configuration for dwm (Catppuccin Mocha + Ubuntu Mono + Feature-Matched Accents)
+
+[global]
+    ### Display & Geometry ###
+    monitor = 0
+    follow = mouse
+    width = (220, 380)
+    height = (0, 320)
+    origin = top-right
+    offset = (8, 32)
+    scale = 0
+    notification_limit = 6
+
+    ### Borders, Gaps & Padding (matches dwm borderpx=2, gappx=8) ###
+    frame_width = 2
+    frame_color = "#89b4fa"
+    separator_height = 2
+    separator_color = frame
+    gap_size = 6
+    padding = 10
+    horizontal_padding = 14
+    text_icon_padding = 12
+    corner_radius = 0
+    transparency = 0
+
+    ### Progress Bar ###
+    progress_bar = true
+    progress_bar_height = 8
+    progress_bar_frame_width = 1
+    progress_bar_min_width = 180
+    progress_bar_max_width = 340
+    progress_bar_corner_radius = 0
+    highlight = "#89b4fa"
+
+    ### Typography (matches dwm & dmenu Ubuntu Mono) ###
+    font = Ubuntu Mono 12
+    line_height = 2
+    markup = full
+    format = "<b>%s</b>\n%b"
+    alignment = left
+    vertical_alignment = center
+    show_age_threshold = 60
+    ellipsize = end
+    ignore_newline = no
+    stack_duplicates = true
+    hide_duplicate_count = false
+    show_indicators = no
+
+    ### Icons ###
+    enable_recursive_icon_lookup = true
+    icon_theme = Adwaita
+    icon_position = left
+    min_icon_size = 24
+    max_icon_size = 64
+    icon_corner_radius = 0
+
+    ### History & Helpers ###
+    sticky_history = yes
+    history_length = 20
+    dmenu = "/usr/bin/dmenu -i -p dunst:"
+    browser = /usr/bin/xdg-open
+    always_run_script = true
+    title = Dunst
+    class = Dunst
+
+    ### Mouse Actions ###
+    mouse_left_click = close_current
+    mouse_middle_click = do_action, close_current
+    mouse_right_click = close_all
+
+[urgency_low]
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#45475a"
+    highlight = "#89dceb"
+    timeout = 3
+
+[urgency_normal]
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#89b4fa"
+    highlight = "#89b4fa"
+    timeout = 4
+
+[urgency_critical]
+    background = "#1e1e2e"
+    foreground = "#f38ba8"
+    frame_color = "#f38ba8"
+    highlight = "#f38ba8"
+    timeout = 0
+
+# ============================================================================
+# Feature-Matched Accent Rules (aligned with dwm status bar & dmenu colors)
+# ============================================================================
+
+[feature-audio]
+    stack_tag = "audio"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#fab387"
+    highlight = "#fab387"
+    format = "<span foreground='#fab387'><b>%s</b></span>\n%b"
+    timeout = 2
+
+[feature-audio-muted]
+    stack_tag = "audio-mute"
+    background = "#1e1e2e"
+    foreground = "#f38ba8"
+    frame_color = "#f38ba8"
+    highlight = "#f38ba8"
+    format = "<span foreground='#f38ba8'><b>%s</b></span>\n%b"
+    timeout = 2
+
+[feature-network]
+    stack_tag = "network"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#94e2d5"
+    highlight = "#94e2d5"
+    format = "<span foreground='#94e2d5'><b>%s</b></span>\n%b"
+    timeout = 3
+
+[feature-bluetooth]
+    stack_tag = "bluetooth"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#89b4fa"
+    highlight = "#89b4fa"
+    format = "<span foreground='#89b4fa'><b>%s</b></span>\n%b"
+    timeout = 3
+
+[feature-battery]
+    stack_tag = "battery"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#a6e3a1"
+    highlight = "#a6e3a1"
+    format = "<span foreground='#a6e3a1'><b>%s</b></span>\n%b"
+    timeout = 5
+
+[feature-brightness]
+    stack_tag = "brightness"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#f9e2af"
+    highlight = "#f9e2af"
+    format = "<span foreground='#f9e2af'><b>%s</b></span>\n%b"
+    timeout = 2
+
+[feature-calendar]
+    stack_tag = "calendar"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#b4befe"
+    highlight = "#b4befe"
+    format = "<span foreground='#b4befe'><b>%s</b></span>\n%b"
+    timeout = 6
+
+[feature-system]
+    stack_tag = "system"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#cba6f7"
+    highlight = "#cba6f7"
+    format = "<span foreground='#cba6f7'><b>%s</b></span>\n%b"
+    timeout = 3

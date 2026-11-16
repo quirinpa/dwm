@@ -1,5 +1,6 @@
 #!/bin/sh
 # dwm-ctl: Fast hardware & session helper for dwm (audio, brightness, power, bar refresh)
+export PATH="$HOME/.local/bin:$PATH"
 
 FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
 NB="#1e1e2e"
@@ -21,19 +22,37 @@ refresh_bar() {
     fi
 }
 
+notify_audio() {
+    command -v notify-send >/dev/null 2>&1 || return 0
+    vol_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
+    [ -z "$vol_out" ] && return 0
+    vol_pct=$(printf '%s\n' "$vol_out" | awk '{printf "%d", $2 * 100}')
+    case "$vol_out" in
+        *MUTED*)
+            notify-send -t 1800 -h string:x-dunst-stack-tag:audio-mute -h "int:value:${vol_pct:-0}" "  Audio Muted" "Volume: ${vol_pct:-0}%" 2>/dev/null || true
+            ;;
+        *)
+            notify-send -t 1800 -h string:x-dunst-stack-tag:audio -h "int:value:${vol_pct:-0}" "  Audio Volume" "Volume: ${vol_pct:-0}%" 2>/dev/null || true
+            ;;
+    esac
+}
+
 case "$1" in
     vol-up)
         wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
         wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null
         refresh_bar
+        notify_audio
         ;;
     vol-down)
         wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null
         refresh_bar
+        notify_audio
         ;;
     vol-mute)
         wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null
         refresh_bar
+        notify_audio
         ;;
     mic-mute)
         wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle 2>/dev/null
@@ -63,6 +82,10 @@ case "$1" in
         fi
         busctl call org.freedesktop.login1 /org/freedesktop/login1/session/auto \
             org.freedesktop.login1.Session SetBrightness ssu backlight "$dev" "$next" 2>/dev/null
+        if command -v notify-send >/dev/null 2>&1 && [ "${max:-0}" -gt 0 ]; then
+            bri_pct=$(( next * 100 / max ))
+            notify-send -t 1800 -h string:x-dunst-stack-tag:brightness -h "int:value:${bri_pct}" "  Display Brightness" "Brightness: ${bri_pct}%" 2>/dev/null || true
+        fi
         ;;
     power-menu)
         choice=$(printf "  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
@@ -103,7 +126,8 @@ case "$1" in
                     }
                 ' "$b/uevent" 2>/dev/null)
                 if command -v notify-send >/dev/null 2>&1; then
-                    notify-send -t 5000 "  Battery Status" "$info" 2>/dev/null || true
+                    cap=$(awk -F= '$1=="POWER_SUPPLY_CAPACITY" {print $2}' "$b/uevent" 2>/dev/null)
+                    notify-send -t 5000 -h string:x-dunst-stack-tag:battery -h "int:value:${cap:-0}" "  Battery Status" "$info" 2>/dev/null || true
                 fi
                 break
             fi
@@ -142,7 +166,9 @@ case "$1" in
             11|12) # Date / Time segment (SchemeDate=11, SchemeTime=12)
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
                     if command -v notify-send >/dev/null 2>&1; then
-                        notify-send -t 5000 "  $(date '+%A, %d %B %Y')" "$(cal)" 2>/dev/null || true
+                        today=$(date '+%-d')
+                        cal_body=$(cal | sed -E "1s/.*//; 2,$ s/(^| )(${today})( |$)/\\1<span background='#b4befe' foreground='#1e1e2e'><b>\\2<\\/b><\\/span>\\3/" | sed '/^$/d')
+                        notify-send -t 6000 -h string:x-dunst-stack-tag:calendar "  $(date '+%A, %d %B %Y')" "$cal_body" 2>/dev/null || true
                     fi
                 fi
                 ;;

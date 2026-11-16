@@ -36,6 +36,8 @@ install: all
 	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
+	mkdir -p $(HOME)/.config/dunst
+	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1

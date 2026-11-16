@@ -1,5 +1,6 @@
 #!/bin/sh
 # dwm-shot: Screenshot utility for dwm (saves PNG to ~/Pictures/Screenshots and copies image/png to clipboard)
+export PATH="$HOME/.local/bin:$PATH"
 
 DIR="$HOME/Pictures/Screenshots"
 mkdir -p "$DIR"
@@ -38,5 +39,5 @@ Gtk.main()
 PY
 
 if command -v notify-send >/dev/null 2>&1; then
-    notify-send -i "$FILE" -t 3000 "Screenshot Saved & Copied" "$FILE" 2>/dev/null || true
+    notify-send -i "$FILE" -t 3000 -h string:x-dunst-stack-tag:system "  Screenshot Saved & Copied" "$FILE" 2>/dev/null || true
 fi

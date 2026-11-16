@@ -1,4 +1,5 @@
 #!/bin/sh
+export PATH="$HOME/.local/bin:$PATH"
 
 # 1. Set display resolution FIRST (before dwm or background tasks run)
 if command -v xrandr >/dev/null 2>&1; then
@@ -36,12 +37,13 @@ if command -v picom >/dev/null 2>&1; then
     picom --backend glx -b
 fi
 
-# 5b. Start desktop notification daemon (dunst if installed, else notification-daemon)
+# 5b. Start desktop notification daemon (dunst with Catppuccin Mocha theme)
 if command -v dunst >/dev/null 2>&1; then
-    pkill -x dunst 2>/dev/null
+    pkill -f '/usr/lib/notification-daemon/[n]otification-daemon' 2>/dev/null || true
+    pkill -x dunst 2>/dev/null || true
     dunst &
 elif [ -x /usr/lib/notification-daemon/notification-daemon ]; then
-    pkill -x notification-daemon 2>/dev/null
+    pkill -f '/usr/lib/notification-daemon/[n]otification-daemon' 2>/dev/null || true
     /usr/lib/notification-daemon/notification-daemon &
 fi
 

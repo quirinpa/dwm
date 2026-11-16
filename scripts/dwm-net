@@ -1,5 +1,6 @@
 #!/bin/sh
 # dwm-net: vertical dropdown network & system settings switcher for dwm
+export PATH="$HOME/.local/bin:$PATH"
 
 FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
 NB="#1e1e2e"
@@ -16,8 +17,13 @@ dmenu_pick() {
 }
 
 notify_msg() {
+    tag="network"
+    case "$1" in
+        *Audio*|*Volume*) tag="audio" ;;
+        *Bluetooth*)      tag="bluetooth" ;;
+    esac
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -t 3000 "$1" "$2" 2>/dev/null || true
+        notify-send -t 3000 -h "string:x-dunst-stack-tag:${tag}" "$1" "$2" 2>/dev/null || true
     fi
 }
 
