@@ -790,7 +790,7 @@ drawbar(Monitor *m)
 				}
 				*ts = ctmp;
 				if ((unsigned char)ctmp == 0x0e)
-					drw_setscheme(drw, scheme[SchemeGear]);
+					drw_setscheme(drw, scheme[SchemeDate]);
 				else if ((unsigned char)ctmp == 0x0f)
 					drw_setscheme(drw, scheme[SchemeNorm]);
 				else
