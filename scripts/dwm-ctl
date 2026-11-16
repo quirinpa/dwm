@@ -7,6 +7,14 @@ NF="#cdd6f4"
 SB="#585b70"
 SF="#cdd6f4"
 
+dmenu_themed() {
+    prompt="$1"
+    lines="$2"
+    accent="${3:-$SB}"
+    accent_fg="${4:-#1e1e2e}"
+    dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$accent" -sf "$accent_fg"
+}
+
 refresh_bar() {
     if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
         kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
@@ -58,7 +66,7 @@ case "$1" in
         ;;
     power-menu)
         choice=$(printf "  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu -i -l 8 -p "System:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+            dmenu_themed "System:" 8 "#cba6f7" "#1e1e2e")
         case "$choice" in
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
             *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;

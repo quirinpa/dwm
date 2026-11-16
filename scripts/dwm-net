@@ -10,7 +10,9 @@ SF="#cdd6f4"
 dmenu_pick() {
     prompt="$1"
     lines="${2:-12}"
-    dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF"
+    accent="${3:-$SB}"
+    accent_fg="${4:-#1e1e2e}"
+    dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$accent" -sf "$accent_fg"
 }
 
 notify_msg() {
@@ -33,7 +35,7 @@ wifi_menu() {
             printf "%s%-26s %s %s\n", mark, $2, sec, $4
         }')
 
-    choice=$(printf "%s\n  Rescan Wi-Fi Networks\n  Open nmtui (Terminal UI)\n  Advanced Network Editor (nm-connection-editor)\n" "$list" | dmenu_pick "Wi-Fi:" 15)
+    choice=$(printf "%s\n  Rescan Wi-Fi Networks\n  Open nmtui (Terminal UI)\n  Advanced Network Editor (nm-connection-editor)\n" "$list" | dmenu_pick "Wi-Fi:" 15 "#94e2d5" "#1e1e2e")
     [ -z "$choice" ] && exit 0
 
     case "$choice" in
@@ -58,8 +60,8 @@ wifi_menu() {
                 fi
             else
                 if printf '%s\n' "$choice" | grep -q ""; then
-                    pass=$(printf "" | dmenu -P -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF" 2>/dev/null || \
-                           printf "" | dmenu -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+                    pass=$(printf "" | dmenu -P -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "#94e2d5" -sf "#1e1e2e" 2>/dev/null || \
+                           printf "" | dmenu -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "#94e2d5" -sf "#1e1e2e")
                     [ -z "$pass" ] && exit 0
                     notify_msg "Wi-Fi" "Connecting to $ssid..."
                     if nmcli device wifi connect "$ssid" password "$pass" >/dev/null 2>&1; then
@@ -95,7 +97,7 @@ audio_menu() {
             print
         }
     ')
-    choice=$(printf "%s\n  Volume +10%%\n  Volume -10%%\n%s\n  Open alsamixer\n" "$mute_lbl" "$sinks" | dmenu_pick "Audio:" 10)
+    choice=$(printf "%s\n  Volume +10%%\n  Volume -10%%\n%s\n  Open alsamixer\n" "$mute_lbl" "$sinks" | dmenu_pick "Audio:" 10 "#fab387" "#1e1e2e")
     [ -z "$choice" ] && exit 0
     case "$choice" in
         *"Mute Audio"*|*"Unmute Audio"*)
@@ -126,7 +128,7 @@ audio_menu() {
 
 bt_menu() {
     devs=$(bluetoothctl devices 2>/dev/null | sed 's/^Device //')
-    choice=$(printf "  Toggle Bluetooth Power\n  Open bluetoothctl (Terminal)\n%s\n" "$devs" | dmenu_pick "Bluetooth:" 10)
+    choice=$(printf "  Toggle Bluetooth Power\n  Open bluetoothctl (Terminal)\n%s\n" "$devs" | dmenu_pick "Bluetooth:" 10 "#89b4fa" "#1e1e2e")
     [ -z "$choice" ] && exit 0
     case "$choice" in
         *"Toggle Bluetooth Power"*)
@@ -159,7 +161,7 @@ case "$1" in
     audio)       audio_menu ;;
     bt)          bt_menu ;;
     *)
-        main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 8)
+        main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 8 "#94e2d5" "#1e1e2e")
         case "$main" in
             *"Wi-Fi Networks"*)    wifi_menu no ;;
             *"Wi-Fi TUI"*)         exec ghostty --class=dwm-float --title="nmtui" -e nmtui ;;

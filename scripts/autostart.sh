@@ -47,8 +47,16 @@ fi
 
 # 6. Minimalist UTF-8 status bar loop (FontAwesome glyphs + Catppuccin Mocha colors + clickable segments)
 # Supports instant refresh on SIGUSR1 (used by dwm-ctl for <20ms volume updates)
+# Kill any stale status bar loop from a prior reload before starting a new one
+if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+    old_pid=$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)
+    if [ -n "$old_pid" ]; then
+        kill "$old_pid" 2>/dev/null || true
+    fi
+fi
 (
-    sh -c 'echo $PPID' > "/tmp/dwm-bar-$USER.pid"
+    my_pid=$(sh -c 'echo $PPID')
+    printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
     c_mem=$(printf '\023')
     c_cpu=$(printf '\024')
@@ -61,7 +69,7 @@ fi
     c_dat=$(printf '\033')
     c_tim=$(printf '\034')
     c_ger=$(printf '\035')
-    while true; do
+    while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
         # Memory ()
         mem=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {printf "%.1fG", (total-avail)/1048576}' /proc/meminfo 2>/dev/null)
 

@@ -35,15 +35,15 @@ static const char *colors[][3]      = {
 	[SchemeSel]      = { col_gray4,     col_cyan,  col_border },
 	[SchemeTitle]    = { col_border,    col_gray1, col_border },
 	[SchemeMem]      = { col_sky,       col_gray1, col_gray2  },
-	[SchemeCpu]      = { col_peach,     col_gray1, col_gray2  },
-	[SchemeVol]      = { col_yellow,    col_gray1, col_gray2  },
+	[SchemeCpu]      = { col_sky,       col_gray1, col_gray2  },
+	[SchemeVol]      = { col_peach,     col_gray1, col_gray2  },
 	[SchemeVolMute]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeNet]      = { col_teal,      col_gray1, col_gray2  },
 	[SchemeBatOk]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
-	[SchemeTime]     = { col_rosewater, col_gray1, col_gray2  },
+	[SchemeTime]     = { col_lavender,  col_gray1, col_gray2  },
 	[SchemeGear]     = { col_mauve,     col_gray1, col_gray2  },
 };
 
