@@ -19,7 +19,9 @@ static const char col_gray2[]       = "#45475a";
 static const char col_gray3[]       = "#cdd6f4";
 static const char col_gray4[]       = "#cdd6f4";
 static const char col_cyan[]        = "#585b70";
-static const char col_border[]      = "#cba6f7";
+static const char col_border[]      = "#7c6ff2";
+static const char col_dim[]         = "#6c7086";
+static const char col_gear[]        = "#7f849c";
 static const char col_sky[]         = "#89dceb";
 static const char col_peach[]       = "#fab387";
 static const char col_yellow[]      = "#f9e2af";
@@ -28,24 +30,24 @@ static const char col_green[]       = "#a6e3a1";
 static const char col_red[]         = "#f38ba8";
 static const char col_lavender[]    = "#b4befe";
 static const char col_rosewater[]   = "#f5e0dc";
-static const char col_mauve[]       = "#cba6f7";
+static const char col_mauve[]       = "#7c6ff2";
 static const char *colors[][3]      = {
 	/*                   fg             bg         border   */
 	[SchemeNorm]     = { col_gray3,     col_gray1, col_gray2  },
 	[SchemeSel]      = { col_gray4,     col_cyan,  col_border },
 	[SchemeTitle]    = { col_border,    col_gray1, col_border },
-	[SchemeMem]      = { col_sky,       col_gray1, col_gray2  },
-	[SchemeCpu]      = { col_sky,       col_gray1, col_gray2  },
-	[SchemeVol]      = { col_peach,     col_gray1, col_gray2  },
-	[SchemeVolMute]  = { col_red,       col_gray1, col_gray2  },
-	[SchemeNet]      = { col_teal,      col_gray1, col_gray2  },
-	[SchemeBatOk]    = { col_green,     col_gray1, col_gray2  },
+	[SchemeMem]      = { col_yellow,    col_gray1, col_gray2  },
+	[SchemeCpu]      = { col_red,       col_gray1, col_gray2  },
+	[SchemeVol]      = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeVolMute]  = { col_dim,       col_gray1, col_gray2  },
+	[SchemeNet]      = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeBatOk]    = { col_gray3,     col_gray1, col_gray2  },
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
-	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
+	[SchemeDate]     = { col_gray3,     col_gray1, col_gray2  },
 	[SchemeVoice]    = { col_red,       col_gray1, col_gray2  },
-	[SchemeGear]     = { col_mauve,     col_gray1, col_gray2  },
-	[SchemeTtyUp]    = { col_green,     col_gray1, col_gray2  },
+	[SchemeGear]     = { col_gear,      col_gray1, col_gray2  },
+	[SchemeTtyUp]    = { col_gray3,     col_gray1, col_gray2  },
 	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
 };
 
@@ -100,7 +102,7 @@ static const Layout layouts[] = {
 
 /* commands */
 static char dmenumon[8]; /* component of dmenucmd, manipulated in spawn() */
-static const char *dmenucmd[]  = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_mauve, "-sf", col_gray1, NULL };
+static const char *dmenucmd[]  = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_mauve, "-sf", col_gray4, NULL };
 static const char *termcmd[]   = { "ghostty", NULL };
 static const char *lockcmd[]   = { "slock", NULL };
 static const char *netcmd[]    = { "/home/quirinpa/.local/bin/dwm-net", "wifi", NULL };

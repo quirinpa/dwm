@@ -89,7 +89,7 @@ case "$1" in
         ;;
     power-menu)
         choice=$(printf "  Voice Dictation (Mod+v / Mod+Shift+v)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 10 "#cba6f7" "#1e1e2e")
+            dmenu_themed "System:" 10 "#7c6ff2" "#cdd6f4")
         case "$choice" in
             *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
             *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
@@ -139,7 +139,7 @@ case "$1" in
         seg="$2"
         btn="$3"
         case "$seg" in
-            3|4) # Memory / CPU segment (SchemeMem=3, SchemeCpu=4)
+            0|3|4) # Memory / CPU segment (SchemeNorm=0, SchemeMem=3, SchemeCpu=4)
                 if [ "$btn" = "1" ]; then
                     exec ghostty --class=dwm-float --title="top" -e top
                 fi

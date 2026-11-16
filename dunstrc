@@ -13,7 +13,7 @@
 
     ### Borders, Gaps & Padding (matches dwm borderpx=2, gappx=8) ###
     frame_width = 2
-    frame_color = "#cba6f7"
+    frame_color = "#7c6ff2"
     separator_height = 2
     separator_color = frame
     gap_size = 6
@@ -30,7 +30,7 @@
     progress_bar_min_width = 180
     progress_bar_max_width = 340
     progress_bar_corner_radius = 4
-    highlight = "#cba6f7"
+    highlight = "#7c6ff2"
 
     ### Typography (matches dwm & dmenu Ubuntu Mono) ###
     font = Ubuntu Mono 12
@@ -78,8 +78,8 @@
 [urgency_normal]
     background = "#1e1e2e"
     foreground = "#cdd6f4"
-    frame_color = "#cba6f7"
-    highlight = "#cba6f7"
+    frame_color = "#7c6ff2"
+    highlight = "#7c6ff2"
     timeout = 4
 
 [urgency_critical]
@@ -160,9 +160,9 @@
     stack_tag = "system"
     background = "#1e1e2e"
     foreground = "#cdd6f4"
-    frame_color = "#cba6f7"
-    highlight = "#cba6f7"
-    format = "<span foreground='#cba6f7'><b>%s</b></span>\n%b"
+    frame_color = "#7c6ff2"
+    highlight = "#7c6ff2"
+    format = "<span foreground='#7c6ff2'><b>%s</b></span>\n%b"
     timeout = 3
 
 [feature-voice]

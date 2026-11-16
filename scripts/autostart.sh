@@ -60,6 +60,7 @@ fi
     my_pid=$(sh -c 'echo $PPID')
     printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
+    c_sys_ok=$(printf '\020')
     c_mem=$(printf '\023')
     c_cpu=$(printf '\024')
     c_vol=$(printf '\025')
@@ -75,7 +76,7 @@ fi
     c_tdn=$(printf '\037')
     last_tty_ts=0
     while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
-        # tty.pt online state ( green when up, red when down; cached 10s so SIGUSR1 stays <20ms)
+        # tty.pt online state ( neutral when up, red when down; cached 10s so SIGUSR1 stays <20ms)
         now_ts=$(date +%s)
         if [ $(( now_ts - last_tty_ts )) -ge 10 ]; then
             last_tty_ts="$now_ts"
@@ -102,11 +103,28 @@ fi
             tty_seg="${c_tdn}  "
         fi
 
-        # Memory ()
-        mem=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {printf "%.1fG", (total-avail)/1048576}' /proc/meminfo 2>/dev/null)
+        # Memory (): neutral <70%, amber 70-84%, red >=85%
+        mem_info=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {used=total-avail; pct=(total>0)?int(used*100/total):0; printf "%.1fG %d", used/1048576, pct}' /proc/meminfo 2>/dev/null)
+        mem=${mem_info% *}
+        mem_pct=${mem_info#* }
+        if [ "${mem_pct:-0}" -ge 85 ]; then
+            mem_clr="$c_cpu"
+        elif [ "${mem_pct:-0}" -ge 70 ]; then
+            mem_clr="$c_mem"
+        else
+            mem_clr="$c_sys_ok"
+        fi
 
-        # CPU load ()
+        # CPU load (): neutral <4.0, amber 4.0-9.99, red >=10.0
         load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+        load_int=${load%.*}
+        if [ "${load_int:-0}" -ge 10 ]; then
+            cpu_clr="$c_cpu"
+        elif [ "${load_int:-0}" -ge 4 ]; then
+            cpu_clr="$c_mem"
+        else
+            cpu_clr="$c_sys_ok"
+        fi
 
         # Whisper voice recording / transcribing indicator ( REC /  ...)
         voc_seg=""
@@ -212,7 +230,7 @@ fi
             fi
         done
 
-        xsetroot -name "${tty_seg}${c_mem}   ${mem}${c_cpu}   ${load}${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m')   $(date '+%H:%M')${c_ger}  "
+        xsetroot -name "${tty_seg}${mem_clr}   ${mem}${cpu_clr}   ${load}${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m')   $(date '+%H:%M')${c_ger}  "
         sleep 5 &
         wait $!
     done
