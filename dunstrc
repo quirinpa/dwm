@@ -13,14 +13,14 @@
 
     ### Borders, Gaps & Padding (matches dwm borderpx=2, gappx=8) ###
     frame_width = 2
-    frame_color = "#89b4fa"
+    frame_color = "#cba6f7"
     separator_height = 2
     separator_color = frame
     gap_size = 6
     padding = 10
     horizontal_padding = 14
     text_icon_padding = 12
-    corner_radius = 0
+    corner_radius = 8
     transparency = 0
 
     ### Progress Bar ###
@@ -29,8 +29,8 @@
     progress_bar_frame_width = 1
     progress_bar_min_width = 180
     progress_bar_max_width = 340
-    progress_bar_corner_radius = 0
-    highlight = "#89b4fa"
+    progress_bar_corner_radius = 4
+    highlight = "#cba6f7"
 
     ### Typography (matches dwm & dmenu Ubuntu Mono) ###
     font = Ubuntu Mono 12
@@ -78,8 +78,8 @@
 [urgency_normal]
     background = "#1e1e2e"
     foreground = "#cdd6f4"
-    frame_color = "#89b4fa"
-    highlight = "#89b4fa"
+    frame_color = "#cba6f7"
+    highlight = "#cba6f7"
     timeout = 4
 
 [urgency_critical]
