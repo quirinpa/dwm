@@ -15,6 +15,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
 | `Mod + Shift + l` | **Lock screen immediately** | `slock` |
 | `Mod + Escape` | **Session / Power Menu** (Lock, Hot-Restart, Logout, Suspend, Reboot, Poweroff) | `dwm-ctl power-menu` |
+| `Mod + F1` or `Mod + /` | **Toggle Floating Keyboard Shortcuts Window** (closes with `Esc`, `q`, or second press) | `dwm-help` |
 
 ### Hardware Controls (Volume & Brightness)
 *(Updates the status bar in `<20ms` via `SIGUSR1` and displays a desktop notification)*
@@ -81,4 +82,5 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `~/.local/bin/dwm-ctl` | Handles `vol-up`, `vol-down`, `vol-mute`, `mic-mute`, `bri-up`, `bri-down`, `power-menu`, and `refresh` (sends `SIGUSR1` to the bar loop PID in `/tmp/dwm-bar-$USER.pid` for instant `<20ms` status updates). |
 | `~/.local/bin/dwm-net` | `dmenu`-based network & system settings menu (`Mod+n` for Wi-Fi, `Mod+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, and `gnome-control-center`). |
 | `~/.local/bin/dwm-shot` | Captures full-screen, rectangular selection, or active window to `~/Pictures/Screenshots/`, copies PNG data to the X11 clipboard via GTK3, and sends a desktop notification with thumbnail. |
+| `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard shortcuts (`Mod+F1` or `Mod+/`). |
 | `~/.local/bin/gnome-control-center` | Wrapper that exports `XDG_CURRENT_DESKTOP=GNOME` before launching `/usr/bin/gnome-control-center` so GNOME Settings works inside `dwm`. |

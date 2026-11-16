@@ -44,6 +44,9 @@ static const Rule rules[] = {
 	{ "gnome-control-center", NULL,       NULL,       0,            1,           -1 },
 	{ "Arandr",               NULL,       NULL,       0,            1,           -1 },
 	{ "Lxappearance",         NULL,       NULL,       0,            1,           -1 },
+	{ "Dwm-help",             NULL,       NULL,       0,            1,           -1 },
+	{ "dwm-float",            NULL,       NULL,       0,            1,           -1 },
+	{ NULL,                   NULL,       "dwm-help", 0,            1,           -1 },
 	{ NULL,                   NULL,       "nmtui",    0,            1,           -1 },
 	{ NULL,                   NULL,       "alsamixer",0,            1,           -1 },
 };
@@ -90,11 +93,14 @@ static const char *bridncmd[]  = { "/home/quirinpa/.local/bin/dwm-ctl", "bri-dow
 static const char *shotfull[]  = { "/home/quirinpa/.local/bin/dwm-shot", "full", NULL };
 static const char *shotarea[]  = { "/home/quirinpa/.local/bin/dwm-shot", "select", NULL };
 static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window", NULL };
+static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
 	{ MODKEY,                       XK_p,      spawn,          {.v = dmenucmd } },
 	{ MODKEY|ShiftMask,             XK_Return, spawn,          {.v = termcmd } },
+	{ MODKEY,                       XK_F1,     spawn,          {.v = helpcmd } },
+	{ MODKEY,                       XK_slash,  spawn,          {.v = helpcmd } },
 	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
 	{ MODKEY,                       XK_s,      spawn,          {.v = sysmenucmd } },
 	{ MODKEY|ShiftMask,             XK_l,      spawn,          {.v = lockcmd } },
