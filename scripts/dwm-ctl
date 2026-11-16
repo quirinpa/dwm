@@ -88,9 +88,10 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 8 "#cba6f7" "#1e1e2e")
+        choice=$(printf "  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu_themed "System:" 9 "#cba6f7" "#1e1e2e")
         case "$choice" in
+            *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
             *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
             *Lock*)                 exec slock ;;
@@ -163,7 +164,7 @@ case "$1" in
                     5)   exec "$0" bri-down ;;
                 esac
                 ;;
-            11|12) # Date / Time segment (SchemeDate=11, SchemeTime=12)
+            11) # Date / Time segment (SchemeDate=11)
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
                     if command -v notify-send >/dev/null 2>&1; then
                         today=$(date '+%-d')
@@ -171,6 +172,13 @@ case "$1" in
                         notify-send -t 6000 -h string:x-dunst-stack-tag:calendar "  $(date '+%A, %d %B %Y')" "$cal_body" 2>/dev/null || true
                     fi
                 fi
+                ;;
+            12) # Voice recording segment (SchemeVoice=12)
+                case "$btn" in
+                    1) exec /home/quirinpa/.local/bin/dwm-voice toggle ;;
+                    2) exec /home/quirinpa/.local/bin/dwm-voice cancel ;;
+                    3) exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+                esac
                 ;;
             13) # Gear segment (SchemeGear=13)
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then

@@ -69,7 +69,7 @@ fi
     c_bwn=$(printf '\031')
     c_bcr=$(printf '\032')
     c_dat=$(printf '\033')
-    c_tim=$(printf '\034')
+    c_voc=$(printf '\034')
     c_ger=$(printf '\035')
     c_tup=$(printf '\036')
     c_tdn=$(printf '\037')
@@ -107,6 +107,19 @@ fi
 
         # CPU load ()
         load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
+
+        # Whisper voice recording / transcribing indicator ( REC /  ...)
+        voc_seg=""
+        if [ -f "/tmp/dwm-voice-$USER.state" ]; then
+            case "$(cat "/tmp/dwm-voice-$USER.state" 2>/dev/null)" in
+                rec*)
+                    voc_seg="${c_voc}   REC "
+                    ;;
+                transcribing*)
+                    voc_seg="${c_bwn}   ... "
+                    ;;
+            esac
+        fi
 
         # Audio volume via PipeWire wpctl ( /  / )
         vol_seg=""
@@ -203,7 +216,7 @@ fi
             fi
         done
 
-        xsetroot -name "${tty_seg}${c_mem}   ${mem} ${c_cpu}   ${load} ${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m') ${c_tim}   $(date '+%H:%M') ${c_ger}     "
+        xsetroot -name "${tty_seg}${c_mem}   ${mem} ${c_cpu}   ${load} ${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m')    $(date '+%H:%M') ${c_ger}     "
         sleep 5 &
         wait $!
     done

@@ -68,6 +68,8 @@ SECTIONS_LEFT = [
     ("Launchers & Menus", [
         ("Mod + Shift + Enter", "Terminal (ghostty)"),
         ("Mod + p",             "App Launcher (dmenu)"),
+        ("Mod + v",             "Whisper Dictate (Type + xsel)"),
+        ("Mod + Shift + v",     "Whisper Voice Menu / Clipboard"),
         ("Mod + n",             "Wi-Fi Dropdown Menu"),
         ("Mod + s",             "System Settings Dropdown"),
         ("Mod + Shift + l",     "Lock Screen (slock)"),

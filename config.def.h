@@ -43,7 +43,7 @@ static const char *colors[][3]      = {
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
-	[SchemeTime]     = { col_lavender,  col_gray1, col_gray2  },
+	[SchemeVoice]    = { col_red,       col_gray1, col_gray2  },
 	[SchemeGear]     = { col_mauve,     col_gray1, col_gray2  },
 	[SchemeTtyUp]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
@@ -116,6 +116,8 @@ static const char *shotfull[]  = { "/home/quirinpa/.local/bin/dwm-shot", "full",
 static const char *shotarea[]  = { "/home/quirinpa/.local/bin/dwm-shot", "select", NULL };
 static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window", NULL };
 static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
+static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/dwm-voice", "toggle", NULL };
+static const char *voicemenu[] = { "/home/quirinpa/.local/bin/dwm-voice", "menu", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -123,6 +125,8 @@ static const Key keys[] = {
 	{ MODKEY|ShiftMask,             XK_Return, spawn,          {.v = termcmd } },
 	{ MODKEY,                       XK_F1,     spawn,          {.v = helpcmd } },
 	{ MODKEY,                       XK_slash,  spawn,          {.v = helpcmd } },
+	{ MODKEY,                       XK_v,      spawn,          {.v = voicecmd } },
+	{ MODKEY|ShiftMask,             XK_v,      spawn,          {.v = voicemenu } },
 	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
 	{ MODKEY,                       XK_s,      spawn,          {.v = sysmenucmd } },
 	{ MODKEY|ShiftMask,             XK_l,      spawn,          {.v = lockcmd } },

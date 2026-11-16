@@ -71,7 +71,7 @@ enum {
 	SchemeBatWarn,
 	SchemeBatCrit,
 	SchemeDate,
-	SchemeTime,
+	SchemeVoice,
 	SchemeGear,
 	SchemeTtyUp,
 	SchemeTtyDown

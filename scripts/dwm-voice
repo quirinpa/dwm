@@ -1,0 +1,289 @@
+#!/bin/sh
+# dwm-voice: System-wide Whisper voice dictation for dwm (PipeWire + whisper.cpp + xsel + xdotool)
+export PATH="$HOME/.local/bin:$PATH"
+
+PID_FILE="/tmp/dwm-voice-$USER.pid"
+STATE_FILE="/tmp/dwm-voice-$USER.state"
+MODE_FILE="/tmp/dwm-voice-$USER.mode"
+WAV_FILE="/tmp/dwm-voice-$USER.wav"
+LAST_TXT="/tmp/dwm-voice-$USER.last.txt"
+
+CONF_DIR="$HOME/.config/dwm-voice"
+MODEL_DIR="$HOME/.local/share/whisper"
+DEFAULT_MODEL="$MODEL_DIR/ggml-base.bin"
+
+FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
+NB="#1e1e2e"
+NF="#cdd6f4"
+
+mkdir -p "$CONF_DIR" "$MODEL_DIR"
+
+get_lang() {
+    if [ -f "$CONF_DIR/lang" ]; then
+        cat "$CONF_DIR/lang" 2>/dev/null
+    else
+        printf 'auto'
+    fi
+}
+
+get_model() {
+    if [ -f "$CONF_DIR/model" ] && [ -f "$(cat "$CONF_DIR/model" 2>/dev/null)" ]; then
+        cat "$CONF_DIR/model" 2>/dev/null
+    else
+        printf '%s' "$DEFAULT_MODEL"
+    fi
+}
+
+dmenu_voice() {
+    prompt="$1"
+    lines="$2"
+    accent="${3:-#f5e0dc}"
+    dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$accent" -sf "#1e1e2e"
+}
+
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+notify_voice() {
+    tag="$1"
+    timeout="$2"
+    title="$3"
+    body="$4"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t "$timeout" -h "string:x-dunst-stack-tag:$tag" "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+is_recording() {
+    if [ -f "$PID_FILE" ]; then
+        rec_pid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$rec_pid" ] && kill -0 "$rec_pid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+start_recording() {
+    out_mode="${1:-type}"
+    if is_recording; then
+        stop_recording
+        return $?
+    fi
+
+    rm -f "$WAV_FILE"
+    if command -v wpctl >/dev/null 2>&1; then
+        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
+    fi
+
+    printf '%s\n' "$out_mode" > "$MODE_FILE"
+    printf 'rec\n' > "$STATE_FILE"
+
+    pw-record --rate=16000 --channels=1 --format=s16 "$WAV_FILE" >/dev/null 2>&1 &
+    rec_pid=$!
+    printf '%s\n' "$rec_pid" > "$PID_FILE"
+    refresh_bar
+
+    lang=$(get_lang)
+    if [ "$out_mode" = "clip" ]; then
+        notify_voice "voice-rec" 30000 "  Recording Voice (xsel only)..." "Lang: ${lang}  |  Press Mod+v to stop & copy"
+    else
+        notify_voice "voice-rec" 30000 "  Recording Voice..." "Lang: ${lang}  |  Press Mod+v to stop & dictate"
+    fi
+}
+
+cancel_recording() {
+    if is_recording; then
+        rec_pid=$(cat "$PID_FILE" 2>/dev/null)
+        kill -INT "$rec_pid" 2>/dev/null || kill "$rec_pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE" "$STATE_FILE" "$MODE_FILE" "$WAV_FILE"
+    refresh_bar
+    notify_voice "voice" 2000 "  Dictation Cancelled" "Voice recording discarded."
+}
+
+stop_recording() {
+    if ! is_recording; then
+        return 1
+    fi
+
+    rec_pid=$(cat "$PID_FILE" 2>/dev/null)
+    out_mode=$(cat "$MODE_FILE" 2>/dev/null)
+    [ -z "$out_mode" ] && out_mode="type"
+
+    kill -INT "$rec_pid" 2>/dev/null || true
+    # Wait up to 1s for pw-record to finalize WAV header
+    i=0
+    while kill -0 "$rec_pid" 2>/dev/null && [ "$i" -lt 20 ]; do
+        sleep 0.05
+        i=$(( i + 1 ))
+    done
+    kill -9 "$rec_pid" 2>/dev/null || true
+    rm -f "$PID_FILE" "$MODE_FILE"
+
+    if [ ! -s "$WAV_FILE" ]; then
+        rm -f "$STATE_FILE" "$WAV_FILE"
+        refresh_bar
+        notify_voice "voice-rec" 2500 "  Recording Failed" "No audio captured from microphone."
+        return 1
+    fi
+
+    printf 'transcribing\n' > "$STATE_FILE"
+    refresh_bar
+
+    model=$(get_model)
+    lang=$(get_lang)
+    model_name=$(basename "$model" .bin)
+    notify_voice "voice" 15000 "  Transcribing..." "Model: ${model_name} (${lang})"
+
+    raw_text=$(whisper-cli -m "$model" -l "$lang" -t 8 -nt -np "$WAV_FILE" 2>/dev/null)
+    rm -f "$STATE_FILE" "$WAV_FILE"
+    refresh_bar
+
+    # Clean whitespace and filter Whisper silence markers
+    text=$(printf '%s\n' "$raw_text" | \
+        sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/\[BLANK_AUDIO\]//gI; s/\(blank audio\)//gI; s/\[[[:space:]]*Silence[[:space:]]*\]//gI' | \
+        tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+
+    if [ -z "$text" ]; then
+        notify_voice "voice" 2500 "  No Speech Detected" "Audio contained no recognizable speech."
+        return 0
+    fi
+
+    printf '%s' "$text" > "$LAST_TXT"
+
+    # Copy to both X11 Clipboard (-ib) and Primary selection (-ip)
+    if command -v xsel >/dev/null 2>&1; then
+        printf '%s' "$text" | xsel -ib 2>/dev/null || true
+        printf '%s' "$text" | xsel -ip 2>/dev/null || true
+    fi
+
+    if [ "$out_mode" = "type" ] && command -v xdotool >/dev/null 2>&1; then
+        # Release any held hotkey modifiers before typing into the active window
+        xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V 2>/dev/null || true
+        xdotool type --clearmodifiers --delay 4 -- "$text" 2>/dev/null || true
+        notify_voice "voice" 4000 "  Dictated + Copied (xsel)" "$text"
+    else
+        notify_voice "voice" 4000 "  Copied to Clipboard (xsel)" "$text"
+    fi
+}
+
+voice_menu() {
+    lang=$(get_lang)
+    model=$(basename "$(get_model)")
+    if is_recording; then
+        choice=$(printf "  Stop & Dictate (Type + xsel)\n  Stop & Copy Only (xsel)\n  Cancel Recording\n" | \
+            dmenu_voice "Recording:" 3 "#f38ba8")
+        case "$choice" in
+            *"Stop & Dictate"*)
+                printf 'type\n' > "$MODE_FILE"
+                stop_recording
+                ;;
+            *"Stop & Copy"*)
+                printf 'clip\n' > "$MODE_FILE"
+                stop_recording
+                ;;
+            *Cancel*)
+                cancel_recording
+                ;;
+        esac
+        exit 0
+    fi
+
+    last_preview="(none)"
+    if [ -s "$LAST_TXT" ]; then
+        last_preview=$(cut -c 1-42 "$LAST_TXT" 2>/dev/null)
+    fi
+
+    choice=$(printf "  Start Dictation — Type + xsel (Mod+v)\n  Start Dictation — Clipboard / xsel Only\n  Type Last Transcript: %s\n  Copy Last Transcript to xsel\n🌐  Language [current: %s]\n  Model [current: %s]\n" "$last_preview" "$lang" "$model" | \
+        dmenu_voice "Whisper:" 6 "#f5e0dc")
+
+    case "$choice" in
+        *"Start Dictation — Type"*)
+            start_recording "type"
+            ;;
+        *"Start Dictation — Clipboard"*)
+            start_recording "clip"
+            ;;
+        *"Type Last Transcript"*)
+            if [ -s "$LAST_TXT" ]; then
+                text=$(cat "$LAST_TXT")
+                printf '%s' "$text" | xsel -ib 2>/dev/null || true
+                printf '%s' "$text" | xsel -ip 2>/dev/null || true
+                xdotool keyup Super_L Super_R Shift_L Shift_R v V 2>/dev/null || true
+                xdotool type --clearmodifiers --delay 4 -- "$text" 2>/dev/null || true
+                notify_voice "voice" 3000 "  Typed Last Transcript" "$text"
+            fi
+            ;;
+        *"Copy Last Transcript"*)
+            if [ -s "$LAST_TXT" ]; then
+                text=$(cat "$LAST_TXT")
+                printf '%s' "$text" | xsel -ib 2>/dev/null || true
+                printf '%s' "$text" | xsel -ip 2>/dev/null || true
+                notify_voice "voice" 3000 "  Copied Last Transcript (xsel)" "$text"
+            fi
+            ;;
+        *"Language"*)
+            lchoice=$(printf "auto  (Auto-detect language)\nen    (English)\npt    (Portuguese)\nes    (Spanish)\nfr    (French)\nde    (German)\n" | \
+                dmenu_voice "Whisper Lang:" 6 "#f5e0dc")
+            if [ -n "$lchoice" ]; then
+                new_lang=$(printf '%s\n' "$lchoice" | awk '{print $1}')
+                printf '%s' "$new_lang" > "$CONF_DIR/lang"
+                notify_voice "voice" 2500 "🌐  Whisper Language" "Set to: $new_lang"
+            fi
+            ;;
+        *"Model"*)
+            mchoice=$(printf "ggml-base.bin   (142 MB - Fast & Accurate, Default)\nggml-tiny.bin   (75 MB  - Ultra-Fast)\nggml-small.bin  (466 MB - Higher Accuracy)\n" | \
+                dmenu_voice "Whisper Model:" 3 "#f5e0dc")
+            if [ -n "$mchoice" ]; then
+                mfile=$(printf '%s\n' "$mchoice" | awk '{print $1}')
+                mpath="$MODEL_DIR/$mfile"
+                if [ ! -f "$mpath" ]; then
+                    notify_voice "voice" 10000 "  Downloading $mfile..." "Fetching from huggingface.co/ggerganov/whisper.cpp..."
+                    if curl -L --fail -s -o "$mpath.part" "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$mfile"; then
+                        mv -f "$mpath.part" "$mpath"
+                    else
+                        rm -f "$mpath.part"
+                        notify_voice "voice-rec" 4000 "  Download Failed" "Could not download $mfile"
+                        exit 1
+                    fi
+                fi
+                printf '%s' "$mpath" > "$CONF_DIR/model"
+                notify_voice "voice" 3000 "  Whisper Model Active" "$mfile"
+            fi
+            ;;
+    esac
+}
+
+case "${1:-toggle}" in
+    toggle)
+        if is_recording; then
+            stop_recording
+        else
+            start_recording "type"
+        fi
+        ;;
+    copy|clip)
+        if is_recording; then
+            printf 'clip\n' > "$MODE_FILE"
+            stop_recording
+        else
+            start_recording "clip"
+        fi
+        ;;
+    start)
+        start_recording "${2:-type}"
+        ;;
+    stop)
+        stop_recording
+        ;;
+    cancel)
+        cancel_recording
+        ;;
+    menu)
+        voice_menu
+        ;;
+esac

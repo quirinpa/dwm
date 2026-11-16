@@ -164,3 +164,21 @@
     highlight = "#cba6f7"
     format = "<span foreground='#cba6f7'><b>%s</b></span>\n%b"
     timeout = 3
+
+[feature-voice]
+    stack_tag = "voice"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#f5e0dc"
+    highlight = "#f5e0dc"
+    format = "<span foreground='#f5e0dc'><b>%s</b></span>\n%b"
+    timeout = 4
+
+[feature-voice-rec]
+    stack_tag = "voice-rec"
+    background = "#1e1e2e"
+    foreground = "#cdd6f4"
+    frame_color = "#f38ba8"
+    highlight = "#f38ba8"
+    format = "<span foreground='#f38ba8'><b>%s</b></span>\n%b"
+    timeout = 30
