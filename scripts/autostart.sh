@@ -97,9 +97,9 @@ fi
             fi
         fi
         if [ "$(cat "/tmp/dwm-tty-$USER.state" 2>/dev/null)" = "up" ]; then
-            tty_seg="${c_tup}   "
+            tty_seg="${c_tup} "
         else
-            tty_seg="${c_tdn}   "
+            tty_seg="${c_tdn} "
         fi
 
         # Memory ()
@@ -113,10 +113,10 @@ fi
         if [ -f "/tmp/dwm-voice-$USER.state" ]; then
             case "$(cat "/tmp/dwm-voice-$USER.state" 2>/dev/null)" in
                 rec*)
-                    voc_seg="${c_voc}   REC "
+                    voc_seg="${c_voc} REC "
                     ;;
                 transcribing*)
-                    voc_seg="${c_bwn}   ... "
+                    voc_seg="${c_bwn} ... "
                     ;;
             esac
         fi
@@ -143,7 +143,7 @@ fi
                         fi
                         ;;
                 esac
-                vol_seg="${vol_clr}  ${vol_icon} "
+                vol_seg="${vol_clr}${vol_icon} "
             fi
         fi
 
@@ -151,11 +151,11 @@ fi
         net_seg=""
         wifi_ssid=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="wifi" && $2=="connected" {print $3; exit}')
         if [ -n "$wifi_ssid" ]; then
-            net_seg="${c_net}   ${wifi_ssid} "
+            net_seg="${c_net} ${wifi_ssid} "
         else
             for w in /sys/class/net/wl*/operstate; do
                 if [ -f "$w" ] && [ "$(cat "$w" 2>/dev/null)" = "up" ]; then
-                    net_seg="${c_net}   "
+                    net_seg="${c_net} "
                     break
                 fi
             done
@@ -163,11 +163,11 @@ fi
         if [ -z "$net_seg" ]; then
             eth_conn=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="ethernet" && $2=="connected" {print $3; exit}')
             if [ -n "$eth_conn" ]; then
-                net_seg="${c_net}   ${eth_conn} "
+                net_seg="${c_net} ${eth_conn} "
             else
                 for e in /sys/class/net/en*/operstate; do
                     if [ -f "$e" ] && [ "$(cat "$e" 2>/dev/null)" = "up" ]; then
-                        net_seg="${c_net}   "
+                        net_seg="${c_net} "
                         break
                     fi
                 done
@@ -211,12 +211,12 @@ fi
                         fi
                         ;;
                 esac
-                bat_seg="${bat_clr}  ${pwr_icon}${bat_icon} ${cap}% "
+                bat_seg="${bat_clr}${pwr_icon}${bat_icon} ${cap}% "
                 break
             fi
         done
 
-        xsetroot -name "${tty_seg}${c_mem}   ${mem} ${c_cpu}   ${load} ${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m')    $(date '+%H:%M') ${c_ger}     "
+        xsetroot -name "${tty_seg}${c_mem} ${mem} ${c_cpu} ${load} ${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat} $(date '+%d/%m')  $(date '+%H:%M') ${c_ger} "
         sleep 5 &
         wait $!
     done
