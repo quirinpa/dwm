@@ -53,6 +53,7 @@ static const char *colors[][3]      = {
 	[SchemeTtyUp]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
 	[SchemeSys]      = { col_sky,       col_gray1, col_gray2  },
+	[SchemeKbd]      = { col_sky,       col_gray1, col_gray2  },
 };
 
 /* tagging */
@@ -126,6 +127,7 @@ static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window
 static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
 static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/dwm-voice", "toggle", NULL };
 static const char *voicemenu[] = { "/home/quirinpa/.local/bin/dwm-voice", "menu", NULL };
+static const char *kbdtoggle[] = { "/home/quirinpa/.local/bin/dwm-ctl", "kbd-toggle", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
@@ -170,7 +172,8 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_f,      setlayout,      {.v = &layouts[1]} },
 	{ MODKEY|ShiftMask,             XK_f,      togglefullscreen,{0} },
 	{ MODKEY,                       XK_m,      setlayout,      {.v = &layouts[2]} },
-	{ MODKEY,                       XK_space,  setlayout,      {0} },
+	{ MODKEY,                       XK_space,  spawn,          {.v = kbdtoggle } },
+	{ MODKEY|ControlMask,           XK_space,  setlayout,      {0} },
 	{ MODKEY|ShiftMask,             XK_space,  togglefloating, {0} },
 	{ MODKEY,                       XK_0,      view,           {.ui = ~0 } },
 	{ MODKEY|ShiftMask,             XK_0,      tag,            {.ui = ~0 } },

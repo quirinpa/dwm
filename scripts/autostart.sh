@@ -78,6 +78,7 @@ fi
     c_ger=$(printf '\035')
     c_tup=$(printf '\036')
     c_tdn=$(printf '\037')
+    c_kbd=$(printf '\021')
     last_tty_ts=0
     last_cal_check_ts=0
     last_cal_sync_ts=0
@@ -249,7 +250,12 @@ fi
             cal_alert_seg="${c_dat}${c_wrn}    $(head -n 1 "/tmp/dwm-cal-$USER.upcoming" 2>/dev/null)"
         fi
 
-        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
+        # Keyboard layout indicator ( US / PT)
+        kbd_layout=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print toupper($2)}')
+        [ -z "$kbd_layout" ] && kbd_layout="US"
+        kbd_seg="${c_kbd}   ${c_val} ${kbd_layout}"
+
+        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${kbd_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
         sleep 5 &
         wait $!
     done

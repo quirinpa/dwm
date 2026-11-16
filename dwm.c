@@ -76,7 +76,8 @@ enum {
 	SchemeGear,
 	SchemeTtyUp,
 	SchemeTtyDown,
-	SchemeSys
+	SchemeSys,
+	SchemeKbd
 }; /* color schemes */
 enum { NetSupported, NetWMName, NetWMState, NetWMCheck,
        NetWMFullscreen, NetActiveWindow, NetWMWindowType,

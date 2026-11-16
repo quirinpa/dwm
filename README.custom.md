@@ -11,6 +11,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 |---|---|---|
 | `Mod +Shift + Enter` | Open terminal (`ghostty`) | `ghostty` |
 | `Mod + p` | Application launcher (`dmenu`) | `dmenu_run` |
+| `Mod + Space` | **Toggle Keyboard Layout (`US` ⇄ `PT`)** | `dwm-ctl kbd-toggle` |
 | `Mod + n` | **Quick Wi-Fi Switcher** (`dmenu`) | `dwm-net wifi` |
 | `Mod + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
 | `Mod + Shift + l` | **Lock screen immediately** | `slock` |
@@ -49,7 +50,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod + f` | Floating layout (`◰`) |
 | `Mod + m` | Monocle (full-screen deck) layout (`▣`) |
 | `Mod + Shift + f` | **Toggle true 100% borderless fullscreen over the top bar (`togglefullscreen`)** |
-| `Mod + Space` | Toggle between current and previous layout |
+| `Mod + Ctrl + Space` | Toggle between current and previous layout |
 | `Mod + Shift + Space` | Toggle floating state of focused window |
 | `Mod + b` | Toggle top status bar visibility |
 | `Mod + -` / `Mod + =` | Decrease / increase window gaps (`±2px`) |
@@ -80,6 +81,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | **Volume** (` 40%`) | Open Audio Menu (Mute, `±10%`, Output Sinks, `alsamixer`) | Toggle mute | Volume `+5%` / `-5%` |
 | **Network** (` SSID`) | Open Wi-Fi Dropdown (`dwm-net wifi`) | Open System Settings Menu (`dwm-net`) | — |
 | **Battery** (` 55%`) | Show Battery Status popup (Watts, time remaining, health) | Show Battery Status popup | Brightness `+5%` / `-5%` |
+| **Keyboard** (` US` / ` PT`) | Toggle layout (`US` ⇄ `PT`) | Open Keyboard Layout Dropdown (`dmenu`) | Toggle layout (`US` ⇄ `PT`) |
 | **Date / Time** (`` / ``) | Show Calendar popup | Show Calendar popup | — |
 | **Gear (``)** | **Open System & Session Menu (Shortcuts Panel, Settings, Lock, Restart, Logout, Suspend, Reboot, Poweroff)** | Same | — |
 

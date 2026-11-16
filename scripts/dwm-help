@@ -68,6 +68,7 @@ SECTIONS_LEFT = [
     ("Launchers & Menus", [
         ("Mod + Shift + Enter", "Terminal (ghostty)"),
         ("Mod + p",             "App Launcher (dmenu)"),
+        ("Mod + Space",         "Toggle Keyboard (US ⇄ PT)"),
         ("Mod + v",             "Whisper Dictate (Type + xsel)"),
         ("Mod + Shift + v",     "Whisper Voice Menu / Clipboard"),
         ("Mod + n",             "Wi-Fi Dropdown Menu"),
@@ -84,6 +85,7 @@ SECTIONS_LEFT = [
         ("Mod + i / d",         "Master Count +1 / -1"),
         ("Mod + Shift + c",     "Close Focused Window"),
         ("Mod + t / f / m",     "Tile (◫) / Float (◰) / Monocle (▣)"),
+        ("Mod + Ctrl + Space",  "Toggle Previous Layout"),
         ("Mod + Shift + f",     "Toggle True Fullscreen"),
         ("Mod + Shift + Space", "Toggle Window Floating"),
         ("Mod + - / = / Shift+=", "Gaps -2px / +2px / Reset"),

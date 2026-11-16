@@ -57,6 +57,44 @@ case "$1" in
     mic-mute)
         wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle 2>/dev/null
         ;;
+    kbd-toggle)
+        cur_kbd=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print $2}')
+        if [ "$cur_kbd" = "pt" ]; then
+            next_kbd="us"
+            next_lbl="US (English)"
+        else
+            next_kbd="pt"
+            next_lbl="PT (Português)"
+        fi
+        setxkbmap "$next_kbd" 2>/dev/null
+        refresh_bar
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to ${next_lbl}" 2>/dev/null || true
+        fi
+        ;;
+    kbd-menu)
+        cur_kbd=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print $2}')
+        us_mark="  "; pt_mark="  "
+        if [ "$cur_kbd" = "pt" ]; then pt_mark="✓ "; else us_mark="✓ "; fi
+        choice=$(printf "%s  US — English (US)\n%s  PT — Português (Portugal)\n" "$us_mark" "$pt_mark" | \
+            dmenu_themed "Keyboard Layout:" 2 "#89dceb" "#1e1e2e")
+        case "$choice" in
+            *"US —"*)
+                setxkbmap us 2>/dev/null
+                refresh_bar
+                if command -v notify-send >/dev/null 2>&1; then
+                    notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to US (English)" 2>/dev/null || true
+                fi
+                ;;
+            *"PT —"*)
+                setxkbmap pt 2>/dev/null
+                refresh_bar
+                if command -v notify-send >/dev/null 2>&1; then
+                    notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to PT (Português)" 2>/dev/null || true
+                fi
+                ;;
+        esac
+        ;;
     bri-up|bri-down)
         bl_dir=""
         for d in /sys/class/backlight/*; do
@@ -88,11 +126,12 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Calendar & Google Sync (ikhal)\n  Voice Dictation (Mod+v / Mod+Shift+v)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 11 "#7c6ff2" "#cdd6f4")
+        choice=$(printf "  Calendar & Google Sync (ikhal)\n  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu_themed "System:" 12 "#7c6ff2" "#cdd6f4")
         case "$choice" in
             *"Calendar"*)           exec /home/quirinpa/.local/bin/dwm-cal menu ;;
             *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+            *"Keyboard Layout"*)    exec "$0" kbd-menu ;;
             *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
             *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
@@ -184,6 +223,12 @@ case "$1" in
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
                     exec "$0" power-menu
                 fi
+                ;;
+            17) # Keyboard layout segment (SchemeKbd=17)
+                case "$btn" in
+                    1|2|4|5) exec "$0" kbd-toggle ;;
+                    3)       exec "$0" kbd-menu ;;
+                esac
                 ;;
             14|15) # tty.pt status segment (SchemeTtyUp=14, SchemeTtyDown=15)
                 if [ "$btn" = "1" ] || [ "$btn" = "3" ]; then
