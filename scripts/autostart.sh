@@ -255,7 +255,7 @@ fi
         [ -z "$kbd_layout" ] && kbd_layout="US"
         kbd_seg="${c_kbd}   ${c_val} ${kbd_layout}"
 
-        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${kbd_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
+        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${kbd_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')   ${c_ger}  "
         sleep 5 &
         wait $!
     done

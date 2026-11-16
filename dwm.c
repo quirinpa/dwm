@@ -800,7 +800,7 @@ drawbar(Monitor *m)
 				else if ((unsigned char)ctmp == 0x0e)
 					drw_setscheme(drw, scheme[SchemeSys]);
 				else if ((unsigned char)ctmp == 0x0f)
-					drw_setscheme(drw, scheme[SchemeSel]);
+					drw_setscheme(drw, scheme[SchemeNorm]);
 				else
 					drw_setscheme(drw, scheme[(unsigned char)ctmp - 0x10]);
 				tp = ts + 1;
