@@ -41,17 +41,18 @@ static const char *colors[][3]      = {
 	[SchemeTitle]    = { col_title,     col_gray1, col_border },
 	[SchemeMem]      = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeCpu]      = { col_red,       col_gray1, col_gray2  },
-	[SchemeVol]      = { col_icon,      col_gray1, col_gray2  },
+	[SchemeVol]      = { col_peach,     col_gray1, col_gray2  },
 	[SchemeVolMute]  = { col_dim,       col_gray1, col_gray2  },
-	[SchemeNet]      = { col_icon,      col_gray1, col_gray2  },
-	[SchemeBatOk]    = { col_icon,      col_gray1, col_gray2  },
+	[SchemeNet]      = { col_teal,      col_gray1, col_gray2  },
+	[SchemeBatOk]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
-	[SchemeDate]     = { col_icon,      col_gray1, col_gray2  },
+	[SchemeDate]     = { col_lavender,  col_gray1, col_gray2  },
 	[SchemeVoice]    = { col_red,       col_gray1, col_gray2  },
 	[SchemeGear]     = { col_gear,      col_gray1, col_gray2  },
-	[SchemeTtyUp]    = { col_icon,      col_gray1, col_gray2  },
+	[SchemeTtyUp]    = { col_green,     col_gray1, col_gray2  },
 	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
+	[SchemeSys]      = { col_sky,       col_gray1, col_gray2  },
 };
 
 /* tagging */
