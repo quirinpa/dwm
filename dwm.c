@@ -55,6 +55,7 @@
 #define HEIGHT(X)               ((X)->h + 2 * (X)->bw)
 #define TAGMASK                 ((1 << LENGTH(tags)) - 1)
 #define TEXTW(X)                (drw_fontset_getwidth(drw, (X)) + lrpad)
+#define IS_STATUS_ESC(c)        ((unsigned char)(c) >= 0x0e && (unsigned char)(c) < 0x10 + LENGTH(colors))
 
 /* enums */
 enum { CurNormal, CurResize, CurMove, CurLast }; /* cursor */
@@ -477,14 +478,14 @@ buttonpress(XEvent *e)
 			int tx = selmon->ww - statusw;
 			statusseg = 0;
 			for (; *ts; ts++) {
-				if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
+				if (IS_STATUS_ESC(*ts)) {
 					ctmp = *ts;
 					*ts = '\0';
 					if (*tp)
 						tx += TEXTW(tp) - lrpad;
 					*ts = ctmp;
 					tp = ts + 1;
-					if (ev->x >= tx)
+					if ((unsigned char)ctmp >= 0x10 && ev->x >= tx)
 						statusseg = (unsigned char)ctmp - 0x10;
 				}
 			}
@@ -762,7 +763,7 @@ drawbar(Monitor *m)
 		int tx;
 		tw = 2;
 		for (; *ts; ts++) {
-			if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
+			if (IS_STATUS_ESC(*ts)) {
 				ctmp = *ts;
 				*ts = '\0';
 				if (*tp)
@@ -779,7 +780,7 @@ drawbar(Monitor *m)
 		drw_rect(drw, tx, 0, tw, bh, 1, 1);
 		tp = stext;
 		for (ts = stext; *ts; ts++) {
-			if ((unsigned char)*ts >= 0x10 && (unsigned char)*ts < 0x10 + LENGTH(colors)) {
+			if (IS_STATUS_ESC(*ts)) {
 				ctmp = *ts;
 				*ts = '\0';
 				if (*tp) {
@@ -788,7 +789,12 @@ drawbar(Monitor *m)
 					tx += w;
 				}
 				*ts = ctmp;
-				drw_setscheme(drw, scheme[(unsigned char)ctmp - 0x10]);
+				if ((unsigned char)ctmp == 0x0e)
+					drw_setscheme(drw, scheme[SchemeGear]);
+				else if ((unsigned char)ctmp == 0x0f)
+					drw_setscheme(drw, scheme[SchemeNorm]);
+				else
+					drw_setscheme(drw, scheme[(unsigned char)ctmp - 0x10]);
 				tp = ts + 1;
 			}
 		}
@@ -810,11 +816,6 @@ drawbar(Monitor *m)
 		w = TEXTW(tags[i]);
 		drw_setscheme(drw, scheme[m->tagset[m->seltags] & 1 << i ? SchemeSel : SchemeNorm]);
 		drw_text(drw, x, 0, w, bh, lrpad / 2, tags[i], urg & 1 << i);
-		if (m->tagset[m->seltags] & 1 << i) {
-			drw_setscheme(drw, scheme[SchemeTitle]);
-			drw_rect(drw, x + 2, bh - 3, w - 4, 3, 1, 1);
-			drw_setscheme(drw, scheme[SchemeSel]);
-		}
 		x += w;
 	}
 	w = TEXTW(m->ltsymbol);
@@ -822,15 +823,40 @@ drawbar(Monitor *m)
 	x = drw_text(drw, x, 0, w, bh, lrpad / 2, m->ltsymbol, 0);
 
 	if ((w = m->ww - tw - x) > bh) {
+		drw_setscheme(drw, scheme[SchemeNorm]);
+		drw_rect(drw, x, 0, w, bh, 1, 1);
 		if (m->sel) {
+			int titlew = TEXTW(m->sel->name);
+			int titlex;
+			if (titlew > w) {
+				titlew = w;
+				titlex = x;
+			} else {
+				titlex = (m->ww - titlew) / 2;
+				if (titlex < x)
+					titlex = x;
+				else if (titlex + titlew > x + w)
+					titlex = x + w - titlew;
+			}
 			drw_setscheme(drw, scheme[m == selmon ? SchemeTitle : SchemeNorm]);
-			drw_text(drw, x, 0, w, bh, lrpad / 2, m->sel->name, 0);
+			drw_text(drw, titlex, 0, titlew, bh, lrpad / 2, m->sel->name, 0);
 			if (m->sel->isfloating)
-				drw_rect(drw, x + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
-		} else {
-			drw_setscheme(drw, scheme[SchemeNorm]);
-			drw_rect(drw, x, 0, w, bh, 1, 1);
+				drw_rect(drw, titlex + boxs, boxs, boxw, boxw, m->sel->isfixed, 0);
 		}
+	}
+
+	/* 1px subtle bottom border across bar, topped by 3px indigo bar on active tag(s) */
+	XSetForeground(drw->dpy, drw->gc, scheme[SchemeNorm][ColBorder].pixel);
+	XFillRectangle(drw->dpy, drw->drawable, drw->gc, 0, bh - 1, m->ww, 1);
+	x = 0;
+	XSetForeground(drw->dpy, drw->gc, scheme[SchemeSel][ColBorder].pixel);
+	for (i = 0; i < LENGTH(tags); i++) {
+		if (!(occ & 1 << i || m->tagset[m->seltags] & 1 << i))
+			continue;
+		w = TEXTW(tags[i]);
+		if (m->tagset[m->seltags] & 1 << i)
+			XFillRectangle(drw->dpy, drw->drawable, drw->gc, x, bh - 3, w, 3);
+		x += w;
 	}
 	drw_map(drw, m->barwin, 0, 0, m->ww, bh);
 }

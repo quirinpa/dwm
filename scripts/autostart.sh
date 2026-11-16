@@ -60,6 +60,8 @@ fi
     my_pid=$(sh -c 'echo $PPID')
     printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
     trap ':' USR1
+    c_ico=$(printf '\016')
+    c_val=$(printf '\017')
     c_sys_ok=$(printf '\020')
     c_mem=$(printf '\023')
     c_cpu=$(printf '\024')
@@ -76,7 +78,7 @@ fi
     c_tdn=$(printf '\037')
     last_tty_ts=0
     while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
-        # tty.pt online state ( neutral when up, red when down; cached 10s so SIGUSR1 stays <20ms)
+        # tty.pt online state ( cool steel when up, red when down; cached 10s so SIGUSR1 stays <20ms)
         now_ts=$(date +%s)
         if [ $(( now_ts - last_tty_ts )) -ge 10 ]; then
             last_tty_ts="$now_ts"
@@ -103,27 +105,27 @@ fi
             tty_seg="${c_tdn}  "
         fi
 
-        # Memory (): neutral <70%, amber 70-84%, red >=85%
+        # Memory (): two-tone <70%, amber 70-84%, red >=85%
         mem_info=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {used=total-avail; pct=(total>0)?int(used*100/total):0; printf "%.1fG %d", used/1048576, pct}' /proc/meminfo 2>/dev/null)
         mem=${mem_info% *}
         mem_pct=${mem_info#* }
         if [ "${mem_pct:-0}" -ge 85 ]; then
-            mem_clr="$c_cpu"
+            mem_seg="${c_cpu}    ${mem}"
         elif [ "${mem_pct:-0}" -ge 70 ]; then
-            mem_clr="$c_mem"
+            mem_seg="${c_mem}    ${mem}"
         else
-            mem_clr="$c_sys_ok"
+            mem_seg="${c_sys_ok}${c_ico}   ${c_val} ${mem}"
         fi
 
-        # CPU load (): neutral <4.0, amber 4.0-9.99, red >=10.0
+        # CPU load (): two-tone <4.0, amber 4.0-9.99, red >=10.0
         load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
         load_int=${load%.*}
         if [ "${load_int:-0}" -ge 10 ]; then
-            cpu_clr="$c_cpu"
+            cpu_seg="${c_cpu}    ${load}"
         elif [ "${load_int:-0}" -ge 4 ]; then
-            cpu_clr="$c_mem"
+            cpu_seg="${c_mem}    ${load}"
         else
-            cpu_clr="$c_sys_ok"
+            cpu_seg="${c_sys_ok}${c_ico}   ${c_val} ${load}"
         fi
 
         # Whisper voice recording / transcribing indicator ( REC /  ...)
@@ -131,10 +133,10 @@ fi
         if [ -f "/tmp/dwm-voice-$USER.state" ]; then
             case "$(cat "/tmp/dwm-voice-$USER.state" 2>/dev/null)" in
                 rec*)
-                    voc_seg="${c_voc}   REC"
+                    voc_seg="${c_voc}    REC"
                     ;;
                 transcribing*)
-                    voc_seg="${c_bwn}   ..."
+                    voc_seg="${c_bwn}    ..."
                     ;;
             esac
         fi
@@ -145,23 +147,21 @@ fi
             vol_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
             if [ -n "$vol_out" ]; then
                 vol_pct=$(printf '%s\n' "$vol_out" | awk '{printf "%d", $2 * 100}')
-                vol_clr="$c_vol"
                 case "$vol_out" in
                     *MUTED*)
-                        vol_icon=" ×"
-                        vol_clr="$c_vmu"
+                        vol_seg="${c_vmu}    ×"
                         ;;
                     *)
                         if [ "${vol_pct:-0}" -eq 0 ]; then
-                            vol_icon=" 0%"
+                            vol_glyph=""
                         elif [ "${vol_pct:-0}" -lt 40 ]; then
-                            vol_icon=" ${vol_pct}%"
+                            vol_glyph=""
                         else
-                            vol_icon=" ${vol_pct}%"
+                            vol_glyph=""
                         fi
+                        vol_seg="${c_vol}   ${vol_glyph}${c_val} ${vol_pct}%"
                         ;;
                 esac
-                vol_seg="${vol_clr}  ${vol_icon}"
             fi
         fi
 
@@ -169,11 +169,11 @@ fi
         net_seg=""
         wifi_ssid=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="wifi" && $2=="connected" {print $3; exit}')
         if [ -n "$wifi_ssid" ]; then
-            net_seg="${c_net}   ${wifi_ssid}"
+            net_seg="${c_net}   ${c_val} ${wifi_ssid}"
         else
             for w in /sys/class/net/wl*/operstate; do
                 if [ -f "$w" ] && [ "$(cat "$w" 2>/dev/null)" = "up" ]; then
-                    net_seg="${c_net}  "
+                    net_seg="${c_net}   "
                     break
                 fi
             done
@@ -181,11 +181,11 @@ fi
         if [ -z "$net_seg" ]; then
             eth_conn=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="ethernet" && $2=="connected" {print $3; exit}')
             if [ -n "$eth_conn" ]; then
-                net_seg="${c_net}   ${eth_conn}"
+                net_seg="${c_net}   ${c_val} ${eth_conn}"
             else
                 for e in /sys/class/net/en*/operstate; do
                     if [ -f "$e" ] && [ "$(cat "$e" 2>/dev/null)" = "up" ]; then
-                        net_seg="${c_net}  "
+                        net_seg="${c_net}   "
                         break
                     fi
                 done
@@ -210,27 +210,26 @@ fi
                 else
                     bat_icon=""
                 fi
-                bat_clr="$c_bok"
+                bat_seg="${c_bok}   ${bat_icon}${c_val} ${cap}%"
                 case "$status" in
                     Charging|Full|"Not charging")
-                        bat_icon=""
+                        bat_seg="${c_bok}   ${c_val} ${cap}%"
                         ;;
                     *)
                         if [ "$ac_online" = "1" ]; then
-                            bat_icon=""
+                            bat_seg="${c_bok}   ${c_val} ${cap}%"
                         elif [ "${cap:-0}" -lt 15 ]; then
-                            bat_clr="$c_bcr"
+                            bat_seg="${c_bcr}   ${bat_icon} ${cap}%"
                         elif [ "${cap:-0}" -lt 30 ]; then
-                            bat_clr="$c_bwn"
+                            bat_seg="${c_bwn}   ${bat_icon} ${cap}%"
                         fi
                         ;;
                 esac
-                bat_seg="${bat_clr}  ${bat_icon} ${cap}%"
                 break
             fi
         done
 
-        xsetroot -name "${tty_seg}${mem_clr}   ${mem}${cpu_clr}   ${load}${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   $(date '+%d/%m')   $(date '+%H:%M')${c_ger}  "
+        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')${c_ger}    "
         sleep 5 &
         wait $!
     done

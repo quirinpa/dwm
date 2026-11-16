@@ -8,20 +8,23 @@ static const unsigned int snap      = 32;       /* snap pixel */
 static const int showbar            = 1;        /* 0 means no bar */
 static const int topbar             = 1;        /* 0 means bottom bar */
 static const char *fonts[]          = {
-	"Ubuntu Mono:size=13:antialias=true:autohint=true",
+	"Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true",
 	"FontAwesome:size=12:antialias=true:autohint=true",
+	"Ubuntu Mono:size=13:antialias=true:autohint=true",
 	"DejaVu Sans Mono:size=12:antialias=true:autohint=true",
 	"monospace:size=12"
 };
-static const char dmenufont[]       = "Ubuntu Mono:size=13:antialias=true:autohint=true";
-static const char col_gray1[]       = "#1e1e2e";
-static const char col_gray2[]       = "#45475a";
+static const char dmenufont[]       = "Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true";
+static const char col_gray1[]       = "#11111b";
+static const char col_gray2[]       = "#313244";
 static const char col_gray3[]       = "#cdd6f4";
-static const char col_gray4[]       = "#cdd6f4";
-static const char col_cyan[]        = "#585b70";
+static const char col_gray4[]       = "#ffffff";
+static const char col_cyan[]        = "#232336";
 static const char col_border[]      = "#7c6ff2";
-static const char col_dim[]         = "#6c7086";
-static const char col_gear[]        = "#7f849c";
+static const char col_title[]       = "#a6adc8";
+static const char col_icon[]        = "#848cb5";
+static const char col_dim[]         = "#585b70";
+static const char col_gear[]        = "#848cb5";
 static const char col_sky[]         = "#89dceb";
 static const char col_peach[]       = "#fab387";
 static const char col_yellow[]      = "#f9e2af";
@@ -35,19 +38,19 @@ static const char *colors[][3]      = {
 	/*                   fg             bg         border   */
 	[SchemeNorm]     = { col_gray3,     col_gray1, col_gray2  },
 	[SchemeSel]      = { col_gray4,     col_cyan,  col_border },
-	[SchemeTitle]    = { col_border,    col_gray1, col_border },
+	[SchemeTitle]    = { col_title,     col_gray1, col_border },
 	[SchemeMem]      = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeCpu]      = { col_red,       col_gray1, col_gray2  },
-	[SchemeVol]      = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeVol]      = { col_icon,      col_gray1, col_gray2  },
 	[SchemeVolMute]  = { col_dim,       col_gray1, col_gray2  },
-	[SchemeNet]      = { col_gray3,     col_gray1, col_gray2  },
-	[SchemeBatOk]    = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeNet]      = { col_icon,      col_gray1, col_gray2  },
+	[SchemeBatOk]    = { col_icon,      col_gray1, col_gray2  },
 	[SchemeBatWarn]  = { col_yellow,    col_gray1, col_gray2  },
 	[SchemeBatCrit]  = { col_red,       col_gray1, col_gray2  },
-	[SchemeDate]     = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeDate]     = { col_icon,      col_gray1, col_gray2  },
 	[SchemeVoice]    = { col_red,       col_gray1, col_gray2  },
 	[SchemeGear]     = { col_gear,      col_gray1, col_gray2  },
-	[SchemeTtyUp]    = { col_gray3,     col_gray1, col_gray2  },
+	[SchemeTtyUp]    = { col_icon,      col_gray1, col_gray2  },
 	[SchemeTtyDown]  = { col_red,       col_gray1, col_gray2  },
 };
 
