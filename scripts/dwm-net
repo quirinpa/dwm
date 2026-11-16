@@ -1,0 +1,155 @@
+#!/bin/sh
+# dwm-net: vertical dropdown network & system settings switcher for dwm
+
+FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
+NB="#1e1e2e"
+NF="#cdd6f4"
+SB="#585b70"
+SF="#cdd6f4"
+
+dmenu_pick() {
+    prompt="$1"
+    lines="${2:-12}"
+    dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF"
+}
+
+notify_msg() {
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t 3000 "$1" "$2" 2>/dev/null || true
+    fi
+}
+
+wifi_menu() {
+    rescan_mode="${1:-no}"
+    if [ "$rescan_mode" = "yes" ]; then
+        notify_msg "Wi-Fi" "Rescanning networks..."
+        nmcli device wifi rescan 2>/dev/null || true
+    fi
+
+    list=$(nmcli -t -f IN-USE,SSID,SECURITY,BARS device wifi list --rescan no 2>/dev/null | \
+        awk -F: 'NF>=2 && $2 != "" && !seen[$2]++ {
+            mark = ($1 == "*") ? "✓ " : "  "
+            sec = ($3 != "") ? "" : ""
+            printf "%s%-26s %s %s\n", mark, $2, sec, $4
+        }')
+
+    choice=$(printf "%s\n  Rescan Wi-Fi Networks\n  Open nmtui (Terminal UI)\n  Advanced Network Editor (nm-connection-editor)\n" "$list" | dmenu_pick "Wi-Fi:" 15)
+    [ -z "$choice" ] && exit 0
+
+    case "$choice" in
+        *"Rescan Wi-Fi"*)
+            exec "$0" wifi-rescan
+            ;;
+        *"Open nmtui"*)
+            exec ghostty --class=dwm-float --title="nmtui" -e nmtui
+            ;;
+        *"Advanced Network Editor"*)
+            exec nm-connection-editor
+            ;;
+        *)
+            ssid=$(printf '%s\n' "$choice" | sed -E 's/^[✓ ]+//; s/[[:space:]]+[].*$//')
+            [ -z "$ssid" ] && exit 0
+            if nmcli -t -f NAME connection show 2>/dev/null | grep -Fxq "$ssid"; then
+                notify_msg "Wi-Fi" "Connecting to $ssid..."
+                if nmcli connection up id "$ssid" >/dev/null 2>&1; then
+                    notify_msg "Wi-Fi Connected" "Connected to $ssid"
+                else
+                    notify_msg "Wi-Fi Error" "Failed to connect to $ssid"
+                fi
+            else
+                if printf '%s\n' "$choice" | grep -q ""; then
+                    pass=$(printf "" | dmenu -P -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF" 2>/dev/null || \
+                           printf "" | dmenu -p "Password for $ssid:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+                    [ -z "$pass" ] && exit 0
+                    notify_msg "Wi-Fi" "Connecting to $ssid..."
+                    if nmcli device wifi connect "$ssid" password "$pass" >/dev/null 2>&1; then
+                        notify_msg "Wi-Fi Connected" "Connected to $ssid"
+                    else
+                        notify_msg "Wi-Fi Error" "Authentication failed for $ssid"
+                    fi
+                else
+                    if nmcli device wifi connect "$ssid" >/dev/null 2>&1; then
+                        notify_msg "Wi-Fi Connected" "Connected to $ssid"
+                    else
+                        notify_msg "Wi-Fi Error" "Failed to connect to $ssid"
+                    fi
+                fi
+            fi
+            dwm-ctl refresh 2>/dev/null || true
+            ;;
+    esac
+}
+
+audio_menu() {
+    sinks=$(wpctl status 2>/dev/null | awk '
+        /Sinks:/ { in_sinks=1; next }
+        /Sources:|Filters:|Streams:/ { in_sinks=0 }
+        in_sinks && /[0-9]+\./ {
+            sub(/^[^*0-9]+/, "")
+            print
+        }
+    ')
+    choice=$(printf "%s\n  Open alsamixer\n" "$sinks" | dmenu_pick "Audio Output:" 8)
+    [ -z "$choice" ] && exit 0
+    case "$choice" in
+        *"Open alsamixer"*)
+            exec ghostty --class=dwm-float --title="alsamixer" -e alsamixer
+            ;;
+        *)
+            id=$(printf '%s\n' "$choice" | sed -E 's/^[*[:space:]]*([0-9]+)\..*/\1/')
+            if [ -n "$id" ]; then
+                wpctl set-default "$id" 2>/dev/null
+                dwm-ctl refresh 2>/dev/null || true
+                notify_msg "Audio Output" "Switched to sink #$id"
+            fi
+            ;;
+    esac
+}
+
+bt_menu() {
+    devs=$(bluetoothctl devices 2>/dev/null | sed 's/^Device //')
+    choice=$(printf "  Toggle Bluetooth Power\n  Open bluetoothctl (Terminal)\n%s\n" "$devs" | dmenu_pick "Bluetooth:" 10)
+    [ -z "$choice" ] && exit 0
+    case "$choice" in
+        *"Toggle Bluetooth Power"*)
+            if bluetoothctl show 2>/dev/null | grep -q "Powered: yes"; then
+                bluetoothctl power off >/dev/null 2>&1
+                notify_msg "Bluetooth" "Powered OFF"
+            else
+                bluetoothctl power on >/dev/null 2>&1
+                notify_msg "Bluetooth" "Powered ON"
+            fi
+            ;;
+        *"Open bluetoothctl"*)
+            exec ghostty --class=dwm-float --title="bluetoothctl" -e bluetoothctl
+            ;;
+        *)
+            mac=$(printf '%s\n' "$choice" | awk '{print $1}')
+            name=$(printf '%s\n' "$choice" | cut -d' ' -f2-)
+            if bluetoothctl info "$mac" 2>/dev/null | grep -q "Connected: yes"; then
+                bluetoothctl disconnect "$mac" >/dev/null 2>&1 && notify_msg "Bluetooth" "Disconnected $name"
+            else
+                bluetoothctl connect "$mac" >/dev/null 2>&1 && notify_msg "Bluetooth" "Connected $name"
+            fi
+            ;;
+    esac
+}
+
+case "$1" in
+    wifi)        wifi_menu no ;;
+    wifi-rescan) wifi_menu yes ;;
+    audio)       audio_menu ;;
+    bt)          bt_menu ;;
+    *)
+        main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 8)
+        case "$main" in
+            *"Wi-Fi Networks"*)    wifi_menu no ;;
+            *"Wi-Fi TUI"*)         exec ghostty --class=dwm-float --title="nmtui" -e nmtui ;;
+            *"Audio Output"*)      audio_menu ;;
+            *"Bluetooth"*)         bt_menu ;;
+            *"Advanced Network"*)  exec nm-connection-editor ;;
+            *"GNOME Control"*)     exec /home/quirinpa/.local/bin/gnome-control-center ;;
+            *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
+        esac
+        ;;
+esac

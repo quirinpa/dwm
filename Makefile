@@ -34,6 +34,9 @@ install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	cp -f dwm ${DESTDIR}${PREFIX}/bin
 	chmod 755 ${DESTDIR}${PREFIX}/bin/dwm
+	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	mkdir -p $(HOME)/.dwm
+	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1

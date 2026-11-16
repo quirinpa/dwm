@@ -1,0 +1,74 @@
+#!/bin/sh
+# dwm-ctl: Fast hardware & session helper for dwm (audio, brightness, power, bar refresh)
+
+FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
+NB="#1e1e2e"
+NF="#cdd6f4"
+SB="#585b70"
+SF="#cdd6f4"
+
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+case "$1" in
+    vol-up)
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
+        wpctl set-volume -l 1.5 @DEFAULT_AUDIO_SINK@ 5%+ 2>/dev/null
+        refresh_bar
+        ;;
+    vol-down)
+        wpctl set-volume @DEFAULT_AUDIO_SINK@ 5%- 2>/dev/null
+        refresh_bar
+        ;;
+    vol-mute)
+        wpctl set-mute @DEFAULT_AUDIO_SINK@ toggle 2>/dev/null
+        refresh_bar
+        ;;
+    mic-mute)
+        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ toggle 2>/dev/null
+        ;;
+    bri-up|bri-down)
+        bl_dir=""
+        for d in /sys/class/backlight/*; do
+            if [ -f "$d/brightness" ] && [ -f "$d/max_brightness" ]; then
+                bl_dir="$d"
+                break
+            fi
+        done
+        [ -z "$bl_dir" ] && exit 0
+        dev=$(basename "$bl_dir")
+        cur=$(cat "$bl_dir/brightness" 2>/dev/null)
+        max=$(cat "$bl_dir/max_brightness" 2>/dev/null)
+        step=$(( max / 20 ))
+        [ "$step" -lt 1 ] && step=1
+        if [ "$1" = "bri-up" ]; then
+            next=$(( cur + step ))
+            [ "$next" -gt "$max" ] && next="$max"
+        else
+            min=$(( max / 50 ))
+            [ "$min" -lt 1 ] && min=1
+            next=$(( cur - step ))
+            [ "$next" -lt "$min" ] && next="$min"
+        fi
+        busctl call org.freedesktop.login1 /org/freedesktop/login1/session/auto \
+            org.freedesktop.login1.Session SetBrightness ssu backlight "$dev" "$next" 2>/dev/null
+        ;;
+    power-menu)
+        choice=$(printf "  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu -i -l 6 -p "Session:" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        case "$choice" in
+            *Lock*)        exec slock ;;
+            *Hot-Restart*) kill -HUP "$(pgrep -x dwm | head -n 1)" ;;
+            *Logout*)      kill -TERM "$(pgrep -x dwm | head -n 1)" ;;
+            *Suspend*)     slock & sleep 0.3; systemctl suspend ;;
+            *Reboot*)      systemctl reboot ;;
+            *Poweroff*)    systemctl poweroff ;;
+        esac
+        ;;
+    refresh)
+        refresh_bar
+        ;;
+esac

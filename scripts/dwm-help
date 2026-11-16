@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+# dwm-help: Floating Catppuccin Mocha keyboard shortcuts cheat sheet for dwm
+# Toggleable via Mod+F1 or Mod+/ (closes on Escape, q, or second press)
+
+import os
+import signal
+import sys
+import gi
+
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+from gi.repository import Gtk, Gdk
+
+PID_FILE = f"/tmp/dwm-help-{os.getuid()}.pid"
+
+# Toggle behavior: if already open, close existing window and exit
+if os.path.exists(PID_FILE):
+    try:
+        with open(PID_FILE, "r") as f:
+            old_pid = int(f.read().strip())
+        os.kill(old_pid, signal.SIGTERM)
+        os.remove(PID_FILE)
+        sys.exit(0)
+    except Exception:
+        try:
+            os.remove(PID_FILE)
+        except Exception:
+            pass
+
+with open(PID_FILE, "w") as f:
+    f.write(str(os.getpid()))
+
+CSS = b"""
+window {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    border: 2px solid #89b4fa;
+    font-family: "Ubuntu Mono", monospace;
+}
+.header {
+    font-size: 16pt;
+    font-weight: bold;
+    color: #89b4fa;
+}
+.sub {
+    font-size: 10pt;
+    color: #a6adc8;
+}
+.section-title {
+    font-size: 12pt;
+    font-weight: bold;
+    color: #f9e2af;
+    margin-top: 8px;
+    margin-bottom: 4px;
+}
+.key {
+    font-size: 11pt;
+    font-weight: bold;
+    color: #89dceb;
+}
+.desc {
+    font-size: 11pt;
+    color: #cdd6f4;
+}
+"""
+
+SECTIONS_LEFT = [
+    ("Launchers & Menus", [
+        ("Mod + Shift + Enter", "Terminal (ghostty)"),
+        ("Mod + p",             "App Launcher (dmenu)"),
+        ("Mod + n",             "Wi-Fi Dropdown Menu"),
+        ("Mod + s",             "System Settings Dropdown"),
+        ("Mod + Shift + l",     "Lock Screen (slock)"),
+        ("Mod + Escape",        "Power / Session Dropdown"),
+        ("Mod + F1  /  Mod + /","Toggle Shortcuts Window"),
+    ]),
+    ("Window & Layout Control", [
+        ("Mod + j / k",         "Focus Next / Prev Window"),
+        ("Mod + Enter",         "Zoom Focused to Master"),
+        ("Mod + h / l",         "Master Width -5% / +5%"),
+        ("Mod + i / d",         "Master Count +1 / -1"),
+        ("Mod + Shift + c",     "Close Focused Window"),
+        ("Mod + t / f / m",     "Tile (◫) / Float (◰) / Monocle (▣)"),
+        ("Mod + Shift + Space", "Toggle Window Floating"),
+        ("Mod + - / = / Shift+=", "Gaps -2px / +2px / Reset"),
+        ("Mod + b",             "Toggle Top Status Bar"),
+    ]),
+]
+
+SECTIONS_RIGHT = [
+    ("Hardware & Media", [
+        ("Vol Up / Mod+F12",    "Volume +5% (instant bar)"),
+        ("Vol Down / Mod+F11",  "Volume -5% (instant bar)"),
+        ("Mute / Mod+F10",      "Toggle Audio Mute"),
+        ("Mic Mute",            "Toggle Microphone Mute"),
+        ("Bright Up / Mod+F6",  "Brightness +5%"),
+        ("Bright Down / Mod+F5","Brightness -5%"),
+    ]),
+    ("Screenshots (Saved + Clipboard)", [
+        ("Print",               "Full Screen Screenshot"),
+        ("Shift + Print",       "Select Area Screenshot"),
+        ("Mod + Shift + s",     "Select Area Screenshot"),
+        ("Mod + Print",         "Active Window Screenshot"),
+    ]),
+    ("Workspaces & Session", [
+        ("Mod + [1..9]",        "View Workspace 1..9"),
+        ("Mod + Shift + [1..9]","Move Window to 1..9"),
+        ("Mod + Tab",           "Previous Workspace"),
+        ("Mod + Shift + r",     "Hot-Restart dwm In-Place"),
+        ("Mod + Shift + q",     "Quit dwm Session"),
+    ]),
+]
+
+
+def build_column(sections):
+    col = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+    for title, rows in sections:
+        lbl = Gtk.Label(label=f"▸ {title}", xalign=0)
+        lbl.get_style_context().add_class("section-title")
+        col.pack_start(lbl, False, False, 0)
+
+        grid = Gtk.Grid(column_spacing=18, row_spacing=4)
+        for r_idx, (k, d) in enumerate(rows):
+            kl = Gtk.Label(label=k, xalign=0)
+            kl.get_style_context().add_class("key")
+            dl = Gtk.Label(label=d, xalign=0)
+            dl.get_style_context().add_class("desc")
+            grid.attach(kl, 0, r_idx, 1, 1)
+            grid.attach(dl, 1, r_idx, 1, 1)
+        col.pack_start(grid, False, False, 2)
+    return col
+
+
+def cleanup(*_args):
+    try:
+        if os.path.exists(PID_FILE):
+            os.remove(PID_FILE)
+    except Exception:
+        pass
+    Gtk.main_quit()
+
+
+def on_key( _widget, event):
+    keyname = Gdk.keyval_name(event.keyval)
+    if keyname in ("Escape", "q", "Q", "Return", "F1", "slash", "question"):
+        cleanup()
+        return True
+    return False
+
+
+provider = Gtk.CssProvider()
+provider.load_from_data(CSS)
+Gtk.StyleContext.add_provider_for_screen(
+    Gdk.Screen.get_default(), provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
+)
+
+win = Gtk.Window(title="dwm-help")
+win.set_wmclass("dwm-help", "Dwm-help")
+win.set_type_hint(Gdk.WindowTypeHint.DIALOG)
+win.set_position(Gtk.WindowPosition.CENTER)
+win.set_resizable(False)
+win.set_border_width(20)
+
+outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=12)
+
+hdr_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL)
+hdr = Gtk.Label(label="⌨  dwm Keyboard Shortcuts", xalign=0)
+hdr.get_style_context().add_class("header")
+sub = Gtk.Label(label="Press Esc, q, or Mod+F1 to close", xalign=1)
+sub.get_style_context().add_class("sub")
+hdr_box.pack_start(hdr, True, True, 0)
+hdr_box.pack_end(sub, False, False, 0)
+outer.pack_start(hdr_box, False, False, 0)
+
+cols = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=36)
+cols.pack_start(build_column(SECTIONS_LEFT), True, True, 0)
+cols.pack_start(build_column(SECTIONS_RIGHT), True, True, 0)
+outer.pack_start(cols, True, True, 0)
+
+win.add(outer)
+win.connect("destroy", cleanup)
+win.connect("key-press-event", on_key)
+signal.signal(signal.SIGTERM, cleanup)
+
+win.show_all()
+Gtk.main()

@@ -1,0 +1,42 @@
+#!/bin/sh
+# dwm-shot: Screenshot utility for dwm (saves PNG to ~/Pictures/Screenshots and copies image/png to clipboard)
+
+DIR="$HOME/Pictures/Screenshots"
+mkdir -p "$DIR"
+FILE="$DIR/screenshot-$(date '+%Y%m%d-%H%M%S').png"
+
+case "$1" in
+    select|area)
+        # Interactive crosshair selection
+        import "$FILE" || exit 1
+        ;;
+    window)
+        win=$(xprop -root _NET_ACTIVE_WINDOW | awk '{print $NF}')
+        import -window "${win:-root}" "$FILE" || exit 1
+        ;;
+    *)
+        # Full screen
+        import -window root "$FILE" || exit 1
+        ;;
+esac
+
+# Copy PNG to X11 clipboard via GTK3 (stays alive until clipboard ownership changes)
+python3 - "$FILE" <<'PY' >/dev/null 2>&1 &
+import sys, gi
+gi.require_version("Gtk", "3.0")
+gi.require_version("Gdk", "3.0")
+gi.require_version("GdkPixbuf", "2.0")
+from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
+
+pixbuf = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1])
+clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+clip.set_image(pixbuf)
+clip.store()
+clip.connect("owner-change", lambda *a: Gtk.main_quit())
+GLib.timeout_add_seconds(300, Gtk.main_quit)
+Gtk.main()
+PY
+
+if command -v notify-send >/dev/null 2>&1; then
+    notify-send -i "$FILE" -t 3000 "Screenshot Saved & Copied" "$FILE" 2>/dev/null || true
+fi

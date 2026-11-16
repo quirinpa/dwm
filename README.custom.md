@@ -18,7 +18,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod + F1` or `Mod + /` | **Toggle Floating Keyboard Shortcuts Window** (closes with `Esc`, `q`, or second press) | `dwm-help` |
 
 ### Hardware Controls (Volume & Brightness)
-*(Updates the status bar in `<20ms` via `SIGUSR1` and displays a desktop notification)*
+*(Updates the status bar silently in `<20ms` via `SIGUSR1` — no popup notifications)*
 | Shortcut | Fallback Shortcut | Action | Command |
 |---|---|---|---|
 | `XF86AudioRaiseVolume` | `Mod + F12` | Volume `+5%` (up to 150%) | `dwm-ctl vol-up` |
@@ -75,12 +75,15 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 
 ## 2. Helper Scripts & Architecture
 
-| Path | Purpose |
-|---|---|
-| `~/.local/src/dwm/` | `dwm` C source repository (`config.h` & `dwm.c`). Build and install with `make -C ~/.local/src/dwm && install -m 755 ~/.local/src/dwm/dwm ~/.local/bin/dwm`, then press `Mod+Shift+r`. |
-| `~/.dwm/autostart.sh` | Runs automatically when `dwm` starts. Configures `1600x900` resolution, loads `~/.Xresources`, imports DBus/systemd env, sets wallpaper, starts `picom` and `notification-daemon`, and runs the status bar loop. |
-| `~/.local/bin/dwm-ctl` | Handles `vol-up`, `vol-down`, `vol-mute`, `mic-mute`, `bri-up`, `bri-down`, `power-menu`, and `refresh` (sends `SIGUSR1` to the bar loop PID in `/tmp/dwm-bar-$USER.pid` for instant `<20ms` status updates). |
-| `~/.local/bin/dwm-net` | `dmenu`-based network & system settings menu (`Mod+n` for Wi-Fi, `Mod+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, and `gnome-control-center`). |
-| `~/.local/bin/dwm-shot` | Captures full-screen, rectangular selection, or active window to `~/Pictures/Screenshots/`, copies PNG data to the X11 clipboard via GTK3, and sends a desktop notification with thumbnail. |
-| `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard shortcuts (`Mod+F1` or `Mod+/`). |
-| `~/.local/bin/gnome-control-center` | Wrapper that exports `XDG_CURRENT_DESKTOP=GNOME` before launching `/usr/bin/gnome-control-center` so GNOME Settings works inside `dwm`. |
+All custom scripts are tracked inside `scripts/` in the `dwm` Git repository (`~/.local/src/dwm/scripts/`) and installed automatically via `make -C ~/.local/src/dwm install`:
+
+| Source Path (`~/.local/src/dwm/`) | Installed Path | Purpose |
+|---|---|---|
+| `dwm.c`, `config.h` | `~/.local/bin/dwm` | Custom `dwm` window manager binary. Build & install everything with `make -C ~/.local/src/dwm install`, then press `Mod+Shift+r`. |
+| `scripts/autostart.sh` | `~/.dwm/autostart.sh` | Runs automatically when `dwm` starts. Configures `1600x900` resolution, loads `~/.Xresources`, imports DBus/systemd env, sets wallpaper, starts `picom` and `notification-daemon`, and runs the status bar loop. |
+| `scripts/dwm-ctl` | `~/.local/bin/dwm-ctl` | Handles `vol-up`, `vol-down`, `vol-mute`, `mic-mute`, `bri-up`, `bri-down`, `power-menu`, and `refresh` (sends `SIGUSR1` to `/tmp/dwm-bar-$USER.pid` for silent `<20ms` status bar updates). |
+| `scripts/dwm-net` | `~/.local/bin/dwm-net` | Vertical dropdown network & system settings menu (`Mod+n` for Wi-Fi, `Mod+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, GNOME Control Center, and Shortcuts Cheat Sheet). |
+| `scripts/dwm-shot` | `~/.local/bin/dwm-shot` | Captures full-screen, rectangular selection, or active window to `~/Pictures/Screenshots/`, copies PNG data to the X11 clipboard via GTK3, and sends a desktop notification with thumbnail. |
+| `scripts/dwm-help` | `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard shortcuts (`Mod+F1` or `Mod+/`). |
+| `scripts/dwm-session` | `~/.local/bin/dwm-session` | Session wrapper launched by the display manager (`dwm.desktop`). |
+| `scripts/gnome-control-center` | `~/.local/bin/gnome-control-center` | Wrapper that exports `XDG_CURRENT_DESKTOP=GNOME` before launching `/usr/bin/gnome-control-center` so GNOME Settings works inside `dwm`. |

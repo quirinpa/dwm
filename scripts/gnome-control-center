@@ -1,0 +1,4 @@
+#!/bin/sh
+# Wrapper so gnome-control-center works inside dwm
+export XDG_CURRENT_DESKTOP=GNOME
+exec /usr/bin/gnome-control-center "$@"

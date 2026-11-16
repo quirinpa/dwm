@@ -1,0 +1,9 @@
+#!/bin/sh
+# Ensure display resolution is set synchronously before dwm queries screen dimensions
+if command -v xrandr >/dev/null 2>&1; then
+    xrandr --output eDP-1 --mode 1600x900
+fi
+if [ -x "$HOME/.dwm/autostart.sh" ]; then
+    "$HOME/.dwm/autostart.sh" &
+fi
+exec "$HOME/.local/bin/dwm"
