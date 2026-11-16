@@ -1,4 +1,5 @@
 /* See LICENSE file for copyright and license details. */
+#include <X11/XF86keysym.h>
 
 /* appearance */
 static const unsigned int gappx     = 8;        /* gaps between windows */
@@ -34,9 +35,17 @@ static const Rule rules[] = {
 	 *	WM_CLASS(STRING) = instance, class
 	 *	WM_NAME(STRING) = title
 	 */
-	/* class      instance    title       tags mask     isfloating   monitor */
-	{ "Gimp",     NULL,       NULL,       0,            1,           -1 },
-	{ "Firefox",  NULL,       NULL,       0,            0,           -1 },
+	/* class                  instance    title       tags mask     isfloating   monitor */
+	{ "Gimp",                 NULL,       NULL,       0,            1,           -1 },
+	{ "Firefox",              NULL,       NULL,       0,            0,           -1 },
+	{ "Nm-connection-editor", NULL,       NULL,       0,            1,           -1 },
+	{ "Pavucontrol",          NULL,       NULL,       0,            1,           -1 },
+	{ "Blueman-manager",      NULL,       NULL,       0,            1,           -1 },
+	{ "gnome-control-center", NULL,       NULL,       0,            1,           -1 },
+	{ "Arandr",               NULL,       NULL,       0,            1,           -1 },
+	{ "Lxappearance",         NULL,       NULL,       0,            1,           -1 },
+	{ NULL,                   NULL,       "nmtui",    0,            1,           -1 },
+	{ NULL,                   NULL,       "alsamixer",0,            1,           -1 },
 };
 
 /* layout(s) */
@@ -66,13 +75,45 @@ static const Layout layouts[] = {
 
 /* commands */
 static char dmenumon[8]; /* component of dmenucmd, manipulated in spawn() */
-static const char *dmenucmd[] = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_cyan, "-sf", col_gray4, NULL };
-static const char *termcmd[]  = { "ghostty", NULL };
+static const char *dmenucmd[]  = { "dmenu_run", "-m", dmenumon, "-fn", dmenufont, "-nb", col_gray1, "-nf", col_gray3, "-sb", col_cyan, "-sf", col_gray4, NULL };
+static const char *termcmd[]   = { "ghostty", NULL };
+static const char *lockcmd[]   = { "slock", NULL };
+static const char *netcmd[]    = { "/home/quirinpa/.local/bin/dwm-net", "wifi", NULL };
+static const char *sysmenucmd[]= { "/home/quirinpa/.local/bin/dwm-net", NULL };
+static const char *pwrmenucmd[]= { "/home/quirinpa/.local/bin/dwm-ctl", "power-menu", NULL };
+static const char *volupcmd[]  = { "/home/quirinpa/.local/bin/dwm-ctl", "vol-up", NULL };
+static const char *voldncmd[]  = { "/home/quirinpa/.local/bin/dwm-ctl", "vol-down", NULL };
+static const char *volmutecmd[]= { "/home/quirinpa/.local/bin/dwm-ctl", "vol-mute", NULL };
+static const char *micmutecmd[]= { "/home/quirinpa/.local/bin/dwm-ctl", "mic-mute", NULL };
+static const char *briupcmd[]  = { "/home/quirinpa/.local/bin/dwm-ctl", "bri-up", NULL };
+static const char *bridncmd[]  = { "/home/quirinpa/.local/bin/dwm-ctl", "bri-down", NULL };
+static const char *shotfull[]  = { "/home/quirinpa/.local/bin/dwm-shot", "full", NULL };
+static const char *shotarea[]  = { "/home/quirinpa/.local/bin/dwm-shot", "select", NULL };
+static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window", NULL };
 
 static const Key keys[] = {
 	/* modifier                     key        function        argument */
 	{ MODKEY,                       XK_p,      spawn,          {.v = dmenucmd } },
 	{ MODKEY|ShiftMask,             XK_Return, spawn,          {.v = termcmd } },
+	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
+	{ MODKEY,                       XK_s,      spawn,          {.v = sysmenucmd } },
+	{ MODKEY|ShiftMask,             XK_l,      spawn,          {.v = lockcmd } },
+	{ MODKEY,                       XK_Escape, spawn,          {.v = pwrmenucmd } },
+	{ 0,                            XK_Print,  spawn,          {.v = shotfull } },
+	{ ShiftMask,                    XK_Print,  spawn,          {.v = shotarea } },
+	{ MODKEY,                       XK_Print,  spawn,          {.v = shotwin } },
+	{ MODKEY|ShiftMask,             XK_s,      spawn,          {.v = shotarea } },
+	{ 0,              XF86XK_AudioRaiseVolume, spawn,          {.v = volupcmd } },
+	{ 0,              XF86XK_AudioLowerVolume, spawn,          {.v = voldncmd } },
+	{ 0,              XF86XK_AudioMute,        spawn,          {.v = volmutecmd } },
+	{ 0,              XF86XK_AudioMicMute,     spawn,          {.v = micmutecmd } },
+	{ 0,              XF86XK_MonBrightnessUp,  spawn,          {.v = briupcmd } },
+	{ 0,              XF86XK_MonBrightnessDown,spawn,          {.v = bridncmd } },
+	{ MODKEY,                       XK_F12,    spawn,          {.v = volupcmd } },
+	{ MODKEY,                       XK_F11,    spawn,          {.v = voldncmd } },
+	{ MODKEY,                       XK_F10,    spawn,          {.v = volmutecmd } },
+	{ MODKEY,                       XK_F6,     spawn,          {.v = briupcmd } },
+	{ MODKEY,                       XK_F5,     spawn,          {.v = bridncmd } },
 	{ MODKEY,                       XK_b,      togglebar,      {0} },
 	{ MODKEY,                       XK_j,      focusstack,     {.i = +1 } },
 	{ MODKEY,                       XK_k,      focusstack,     {.i = -1 } },
