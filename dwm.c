@@ -1284,6 +1284,14 @@ sighup(int unused)
 {
 	Arg a = {.i = 1};
 	quit(&a);
+	if (dpy) {
+		XEvent ev = {0};
+		ev.type = ClientMessage;
+		ev.xclient.window = root;
+		ev.xclient.format = 32;
+		XSendEvent(dpy, root, False, SubstructureNotifyMask, &ev);
+		XFlush(dpy);
+	}
 }
 
 Monitor *
