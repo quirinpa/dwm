@@ -167,11 +167,13 @@ case "$1" in
     audio)       audio_menu ;;
     bt)          bt_menu ;;
     *)
-        main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 8 "#94e2d5" "#1e1e2e")
+        main=$(printf "  Wi-Fi Networks (Dropdown)\n  Wi-Fi TUI (nmtui)\n  Audio Output Switcher\n  Voice Dictation / Whisper (Mod+v / Mod+Shift+v)\n  Screenshots Menu (Full / Area / Window)\n  Bluetooth Devices\n  Advanced Network / VPN (nm-connection-editor)\n桌面 GNOME Control Center (Full Settings)\n  Keyboard Shortcuts Cheat Sheet (Mod+F1)\n" | dmenu_pick "Settings:" 9 "#94e2d5" "#1e1e2e")
         case "$main" in
             *"Wi-Fi Networks"*)    wifi_menu no ;;
             *"Wi-Fi TUI"*)         exec ghostty --class=dwm-float --title="nmtui" -e nmtui ;;
             *"Audio Output"*)      audio_menu ;;
+            *"Voice Dictation"*)   exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+            *"Screenshots Menu"*)  exec /home/quirinpa/.local/bin/dwm-shot menu ;;
             *"Bluetooth"*)         bt_menu ;;
             *"Advanced Network"*)  exec nm-connection-editor ;;
             *"GNOME Control"*)     exec /home/quirinpa/.local/bin/gnome-control-center ;;

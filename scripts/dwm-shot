@@ -7,6 +7,18 @@ mkdir -p "$DIR"
 FILE="$DIR/screenshot-$(date '+%Y%m%d-%H%M%S').png"
 
 case "$1" in
+    menu)
+        FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
+        choice=$(printf "  Select Area Screenshot (Mod+Shift+s / Shift+Print)\n🖥  Full Screen Screenshot (Print)\n  Active Window Screenshot (Mod+Print)\n⏱  Full Screen in 3s Delay\n" | \
+            dmenu -i -l 4 -p "Screenshot:" -fn "$FONT" -nb "#1e1e2e" -nf "#cdd6f4" -sb "#89dceb" -sf "#1e1e2e")
+        case "$choice" in
+            *"Select Area"*)   sleep 0.15; exec "$0" select ;;
+            *"Full Screen Screenshot"*) sleep 0.15; exec "$0" full ;;
+            *"Active Window"*) sleep 0.15; exec "$0" window ;;
+            *"3s Delay"*)      sleep 3; exec "$0" full ;;
+            *)                 exit 0 ;;
+        esac
+        ;;
     select|area)
         # Interactive crosshair selection
         import "$FILE" || exit 1

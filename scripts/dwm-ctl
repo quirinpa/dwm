@@ -88,10 +88,11 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 9 "#cba6f7" "#1e1e2e")
+        choice=$(printf "  Voice Dictation (Mod+v / Mod+Shift+v)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu_themed "System:" 10 "#cba6f7" "#1e1e2e")
         case "$choice" in
             *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+            *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
             *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
             *Lock*)                 exec slock ;;
