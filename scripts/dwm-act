@@ -525,7 +525,7 @@ def get_firefox_open_tabs():
                     e = entries[idx]
                     tabs_out.append({
                         "index": t_idx,
-                        "title": e.get("title", "") or "",
+                        "title": unicodedata.normalize("NFKC", e.get("title", "") or ""),
                         "url": e.get("url", "") or "",
                     })
             if tabs_out:
@@ -535,18 +535,314 @@ def get_firefox_open_tabs():
         return []
 
 
-def do_focus(target: str) -> str:
+def _readable_url_words(url: str) -> str:
+    from urllib.parse import urlparse
+    try:
+        u = urlparse(url)
+        host = u.netloc.lower()
+        if host.startswith("www."):
+            host = host[4:]
+        words = [host]
+        for seg in u.path.replace("-", " ").replace("_", " ").split("/"):
+            for w in seg.split():
+                if 2 <= len(w) <= 22 and w.isalpha():
+                    words.append(w.lower())
+        return " ".join(words)
+    except Exception:
+        return ""
+
+
+def get_firefox_places():
+    """Return top visited/bookmarked sites from Firefox places.sqlite (cached for 60s)."""
+    import glob, shutil, sqlite3
+    from urllib.parse import urlparse
+
+    cache_p = f"/tmp/dwm-places-cache-{os.environ.get('USER', 'user')}.json"
+    now = time.time()
+    if os.path.exists(cache_p):
+        try:
+            with open(cache_p, "r", encoding="utf-8") as f:
+                c = json.load(f)
+            if now - c.get("ts", 0) < 60.0:
+                return c.get("items", [])
+        except Exception:
+            pass
+
+    patterns = [
+        os.path.expanduser("~/snap/firefox/common/.mozilla/firefox/*.default*/places.sqlite"),
+        os.path.expanduser("~/.mozilla/firefox/*.default*/places.sqlite"),
+    ]
+    paths = []
+    for pat in patterns:
+        paths.extend(glob.glob(pat))
+    if not paths:
+        return []
+    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    tmp_db = f"/tmp/dwm-places-ro-{os.getpid()}.sqlite"
+    items = []
+    try:
+        shutil.copy2(paths[0], tmp_db)
+        con = sqlite3.connect(tmp_db)
+        cur = con.cursor()
+        cur.execute(
+            "SELECT url, title FROM moz_places "
+            "WHERE title IS NOT NULL AND title != '' AND visit_count > 1 "
+            "ORDER BY frecency DESC LIMIT 45"
+        )
+        seen = set()
+        for url, title in cur.fetchall():
+            u = urlparse(url)
+            key = f"{u.netloc}{u.path.rstrip('/')}"
+            if key not in seen:
+                seen.add(key)
+                clean_t = " ".join(unicodedata.normalize("NFKC", title).split())
+                items.append({"url": url, "title": clean_t})
+        con.close()
+    except Exception:
+        pass
+    finally:
+        if os.path.exists(tmp_db):
+            try:
+                os.unlink(tmp_db)
+            except Exception:
+                pass
+
+    try:
+        with open(cache_p, "w", encoding="utf-8") as f:
+            json.dump({"ts": now, "items": items}, f)
+    except Exception:
+        pass
+    return items
+
+
+def get_desktop_apps():
+    """Return installed desktop applications from .desktop files (cached for 300s)."""
+    import glob
+    cache_p = f"/tmp/dwm-apps-cache-{os.environ.get('USER', 'user')}.json"
+    now = time.time()
+    if os.path.exists(cache_p):
+        try:
+            with open(cache_p, "r", encoding="utf-8") as f:
+                c = json.load(f)
+            if now - c.get("ts", 0) < 300.0:
+                return c.get("items", [])
+        except Exception:
+            pass
+
+    dirs = [
+        os.path.expanduser("~/.local/share/applications/*.desktop"),
+        "/usr/share/applications/*.desktop",
+        "/var/lib/snapd/desktop/applications/*.desktop",
+    ]
+    apps = []
+    seen_exec = set()
+    for pat in dirs:
+        for path in glob.glob(pat):
+            try:
+                name = ""
+                gname = ""
+                comment = ""
+                exec_cmd = ""
+                nodisplay = False
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    in_entry = False
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("["):
+                            in_entry = (line == "[Desktop Entry]")
+                            continue
+                        if not in_entry or "=" not in line:
+                            continue
+                        k, v = line.split("=", 1)
+                        if k == "Name" and not name:
+                            name = v.strip()
+                        elif k == "GenericName" and not gname:
+                            gname = v.strip()
+                        elif k == "Comment" and not comment:
+                            comment = v.strip()
+                        elif k == "Exec" and not exec_cmd:
+                            exec_cmd = " ".join(tok for tok in v.split() if not tok.startswith("%"))
+                        elif k == "NoDisplay" and v.strip().lower() == "true":
+                            nodisplay = True
+                if name and exec_cmd and not nodisplay:
+                    bin_name = exec_cmd.split()[0]
+                    if bin_name not in seen_exec:
+                        seen_exec.add(bin_name)
+                        apps.append({"name": name, "desc": f"{name} {gname} {comment}".strip(), "exec": exec_cmd})
+            except Exception:
+                pass
+
+    try:
+        with open(cache_p, "w", encoding="utf-8") as f:
+            json.dump({"ts": now, "items": apps}, f)
+    except Exception:
+        pass
+    return apps
+
+
+def embed_with_cache(texts):
+    """Embed a list of strings via axil-auren /v1/embeddings using persistent text->vec cache."""
+    import math, urllib.request
+    cache_path = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "dwm-auren-embeddings.json")
+    vec_map = {}
+    if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data.get("vec_map"), dict):
+                    vec_map = data["vec_map"]
+        except Exception:
+            vec_map = {}
+
+    missing = [t for t in dict.fromkeys(texts) if t and t not in vec_map]
+    if missing:
+        try:
+            req = urllib.request.Request(
+                "http://localhost:4242/v1/embeddings",
+                data=json.dumps({"model": "bge-base", "input": missing}).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=8.0) as resp:
+                edata = json.loads(resp.read().decode("utf-8"))["data"]
+            for t_str, item in zip(missing, edata):
+                v = item["embedding"]
+                n = math.sqrt(sum(x * x for x in v))
+                vec_map[t_str] = [round(x / n, 6) for x in v] if n > 1e-9 else v
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump({"vec_map": vec_map}, f)
+        except Exception:
+            pass
+    return {t: vec_map.get(t) for t in texts}
+
+
+def resolve_semantic_target(target: str):
+    """Rank live X11 windows, open Firefox tabs, Firefox places.sqlite, and .desktop apps by semantic similarity."""
+    t_clean = " ".join(unicodedata.normalize("NFKC", target.strip().strip("\"'")).split())
+    if not t_clean:
+        return None
+
+    desktop_apps = get_desktop_apps()
+    app_desc_by_bin = {}
+    for app in desktop_apps:
+        b = app["exec"].split()[0].split("/")[-1].lower()
+        app_desc_by_bin[b] = app["desc"]
+
+    candidates = []
+    clients = get_clients()
+    for c in clients:
+        cls_short = c["class"].split(".")[-1].replace("_", " ").lower()
+        title_clean = " ".join(unicodedata.normalize("NFKC", c["title"]).split())
+        extra_app = app_desc_by_bin.get(cls_short, "terminal shell" if "ghostty" in cls_short else "")
+        desc = f"window {cls_short} {extra_app} {title_clean}".strip()
+        candidates.append({"kind": "win", "ref": c["id"], "title": title_clean, "desc": desc, "label": f"{cls_short}:{title_clean[:28]}"})
+
+    open_tabs = get_firefox_open_tabs()
+    for tab in open_tabs:
+        url_words = _readable_url_words(tab["url"])
+        desc = f"browser tab {tab['title']} {url_words}".strip()
+        candidates.append({"kind": "tab", "ref": str(tab["index"]), "url": tab["url"], "title": tab["title"], "desc": desc, "label": f"tab#{tab['index']}({tab['title'][:28]})"})
+
+    for place in get_firefox_places():
+        url_words = _readable_url_words(place["url"])
+        desc = f"website {place['title']} {url_words}".strip()
+        candidates.append({"kind": "place", "ref": place["url"], "title": place["title"], "desc": desc, "label": f"site({place['title'][:28]})"})
+
+    for app in desktop_apps:
+        desc = f"application {app['desc']}"
+        candidates.append({"kind": "app", "ref": app["exec"], "title": app["name"], "desc": desc, "label": f"app({app['name'][:24]})"})
+
+    if not candidates:
+        return None
+
+    all_texts = [t_clean] + [c["desc"] for c in candidates]
+    vecs = embed_with_cache(all_texts)
+    q_vec = vecs.get(t_clean)
+    q_words = {w for w in norm_text(t_clean).split() if len(w) >= 3}
+
+    best_cand = None
+    best_score = -1.0
+    for c in candidates:
+        c_vec = vecs.get(c["desc"])
+        sem_sim = sum(a * b for a, b in zip(q_vec, c_vec)) if (q_vec and c_vec) else 0.0
+        c_words = set(norm_text(c["desc"]).split())
+        title_words = {w for w in norm_text(c.get("title", "")).split() if len(w) >= 3}
+        overlap = len(q_words & c_words) / len(q_words) if q_words else 0.0
+        title_hit = 0.06 if (q_words and title_words and (q_words & title_words)) else 0.0
+        live_bonus = 0.04 if c["kind"] in ("win", "tab") else 0.0
+        score = sem_sim + 0.12 * overlap + title_hit + live_bonus
+        if score > best_score:
+            best_score = score
+            best_cand = dict(c, score=score, sem_sim=sem_sim)
+
+    # If the winner is a places.sqlite URL that is ALREADY open in a Firefox tab, upgrade to that open tab
+    if best_cand and best_cand["kind"] == "place":
+        from urllib.parse import urlparse
+        p_host = urlparse(best_cand["ref"]).netloc.lower()
+        for tab in open_tabs:
+            t_host = urlparse(tab["url"]).netloc.lower()
+            if p_host and p_host == t_host:
+                best_cand = {
+                    "kind": "tab",
+                    "ref": str(tab["index"]),
+                    "url": tab["url"],
+                    "desc": tab["title"],
+                    "label": f"tab#{tab['index']}({tab['title'][:28]})",
+                    "score": best_cand["score"] + 0.03,
+                    "sem_sim": best_cand["sem_sim"],
+                }
+                break
+
+    return best_cand
+
+
+def _focus_firefox_tab(idx: int, label: str) -> str:
+    for c in get_clients():
+        if "firefox" in c["class"].lower():
+            run_cmd(["dwm-msg", "focus-win", c["id"]])
+            time.sleep(0.14)
+            break
+    if 1 <= idx <= 8:
+        run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+        run_cmd(["xdotool", "key", "--clearmodifiers", f"alt+{idx}"])
+        time.sleep(0.15)
+    return f"focus:{label}"
+
+
+def do_focus(target: str, allow_open: bool = False) -> str:
     t = target.strip().strip("\"'")
     if not t:
         return "focus:noop"
-    ql = t.lower()
 
-    clients = get_clients()
-    for c in clients:
-        if ql in c["title"].lower() or ql in c["class"].lower():
-            run_cmd(["dwm-msg", "focus-win", c["id"]])
+    best = resolve_semantic_target(t)
+    if best and best["score"] >= 0.68:
+        kind = best["kind"]
+        if kind == "win":
+            run_cmd(["dwm-msg", "focus-win", best["ref"]])
             time.sleep(0.12)
-            return f"focus:{c['class']}({c['title'][:24]})"
+            return f"focus:{best['label']}"
+        if kind == "tab":
+            return _focus_firefox_tab(int(best["ref"]), best["label"])
+        if kind == "place" and allow_open:
+            subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.25)
+            for c in get_clients():
+                if "firefox" in c["class"].lower():
+                    run_cmd(["dwm-msg", "focus-win", c["id"]])
+                    break
+            return f"open:{best['label']}->{best['ref']}"
+        if kind == "app" and allow_open:
+            subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.35)
+            return f"open:{best['label']}"
+
+    if allow_open:
+        from urllib.parse import quote_plus
+        url = f"https://www.youtube.com/results?search_query={quote_plus(t)}"
+        subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(0.25)
+        return f"open:search({t})"
 
     run_cmd(["dwm-msg", "focus-class", t])
     time.sleep(0.10)
@@ -606,15 +902,10 @@ def _execute_step_inner(op: str, arg: str) -> str:
         return f"tag {tag}"
 
     if op in ("focus", "switch"):
-        return do_focus(arg)
+        return do_focus(arg, allow_open=True)
 
     if op in ("open", "launch", "spawn"):
-        app = arg.lower().strip()
-        if app in ("ghostty", "firefox", "ikhal"):
-            subprocess.Popen([app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.45)
-            return f"open {app}"
-        return do_focus(arg)
+        return do_focus(arg, allow_open=True)
 
     if op in ("key", "press", "shortcut", "hotkey"):
         combo = normalize_key_combo(arg)
@@ -766,6 +1057,12 @@ def main():
         if tabs_str:
             out_str += f"\nBrowser tabs: [{tabs_str}]"
         print(out_str)
+        return
+
+    if cmd == "resolve":
+        target = " ".join(sys.argv[2:])
+        best = resolve_semantic_target(target)
+        print(json.dumps(best or {}, ensure_ascii=False))
         return
 
     if cmd == "find":

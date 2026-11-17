@@ -69,7 +69,19 @@ def main():
         dt = (time.perf_counter() - t0) * 1000.0
         total_ms += dt
         _, score, intent, cmd = parse_dry_run(out)
-        print(f"{cat[:18]:<18} | {q[:48]:<48} | {dt:6.0f} | {score:>5} | {intent[:14]:<14} | {cmd}")
+        extra = ""
+        for pfx in ('open "', 'focus "'):
+            if cmd.startswith(pfx) and cmd.endswith('"'):
+                targ = cmd[len(pfx) : -1]
+                try:
+                    r_json = subprocess.check_output(["dwm-act", "resolve", targ], text=True, timeout=2.0).strip()
+                    import json as _json
+                    rj = _json.loads(r_json) if r_json else {}
+                    if rj.get("label"):
+                        extra = f" -> {rj['label']} ({rj.get('score', 0):.2f})"
+                except Exception:
+                    pass
+        print(f"{cat[:18]:<18} | {q[:48]:<48} | {dt:6.0f} | {score:>5} | {intent[:14]:<14} | {cmd}{extra}")
 
     print("-" * 128)
     if cases:

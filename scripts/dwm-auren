@@ -145,7 +145,8 @@ embed_url = base_url + "/v1/embeddings"
 chat_url = base_url + "/v1/chat/completions"
 
 commands = {}
-exemplar_list = []
+static_exemplars = []
+param_exemplars = []
 
 with open(conf_path, "r", encoding="utf-8") as f:
     conf_raw = f.read()
@@ -162,65 +163,190 @@ for line in conf_raw.splitlines():
     if iid and cmd and exemplars:
         commands[iid] = cmd
         for ex in exemplars:
-            exemplar_list.append((iid, ex))
+            if "{arg}" in cmd and "{arg}" in ex:
+                pre, suf = ex.split("{arg}", 1)
+                param_exemplars.append((iid, ex, pre.strip().lower(), suf.strip().lower()))
+            else:
+                static_exemplars.append((iid, ex))
 
-# 1. Semantic embedding similarity against intents.conf
-conf_hash = hashlib.sha256((embed_model + "\n" + conf_raw).encode("utf-8")).hexdigest()[:16]
-cache_data = None
+# Sort parametric templates by specificity (longest prefix + suffix first)
+param_exemplars.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
+
+vec_map = {}
 if os.path.exists(cache_path):
     try:
         with open(cache_path, "r", encoding="utf-8") as cf:
             loaded = json.load(cf)
-            if loaded.get("hash") == conf_hash and len(loaded.get("vecs", [])) == len(exemplar_list):
-                cache_data = loaded["vecs"]
+            if isinstance(loaded.get("vec_map"), dict):
+                vec_map = loaded["vec_map"]
     except Exception:
-        cache_data = None
+        vec_map = {}
 
 def normalize_vec(v):
     n = math.sqrt(sum(x * x for x in v))
-    return [x / n for x in v] if n > 1e-9 else v
+    return [round(x / n, 6) for x in v] if n > 1e-9 else v
 
-try:
-    if cache_data is None:
-        all_texts = [ex for _, ex in exemplar_list] + [raw_query]
+def ensure_embedded(texts):
+    missing = [t for t in dict.fromkeys(texts) if t and t not in vec_map]
+    if not missing:
+        return
+    try:
         req = urllib.request.Request(
             embed_url,
-            data=json.dumps({"model": embed_model, "input": all_texts}).encode("utf-8"),
+            data=json.dumps({"model": embed_model, "input": missing}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=4.0) as resp:
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
             edata = json.loads(resp.read().decode("utf-8"))["data"]
-        vecs = [normalize_vec(item["embedding"]) for item in edata]
-        cache_data = vecs[:-1]
-        q_vec = vecs[-1]
+        for t_str, item in zip(missing, edata):
+            vec_map[t_str] = normalize_vec(item["embedding"])
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w", encoding="utf-8") as cf:
-            json.dump({"hash": conf_hash, "vecs": cache_data}, cf)
-    else:
-        req = urllib.request.Request(
-            embed_url,
-            data=json.dumps({"model": embed_model, "input": raw_query}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            edata = json.loads(resp.read().decode("utf-8"))["data"]
-        q_vec = normalize_vec(edata[0]["embedding"])
+            json.dump({"vec_map": vec_map}, cf)
+    except Exception:
+        pass
+
+def cmd_to_dsl(cmd_str):
+    if cmd_str.startswith("dwm-act "):
+        return cmd_str[len("dwm-act "):].strip()
+    return f"sh {cmd_str}"
+
+def match_param_template(clause):
+    """Match a clause against configurable {arg} templates in intents.conf."""
+    c_clean = clause.strip().strip(",.!?;:")
+    c_low = c_clean.lower()
+    for iid, ex, pre, suf in param_exemplars:
+        if pre and not (c_low.startswith(pre + " ") or c_low == pre):
+            continue
+        if suf and not (c_low.endswith(" " + suf) or c_low == suf):
+            continue
+        start = len(pre)
+        end = len(c_clean) - len(suf) if suf else len(c_clean)
+        if end <= start:
+            continue
+        arg_val = c_clean[start:end].strip().strip("\"'")
+        if not arg_val:
+            continue
+        cmd_filled = commands[iid].replace("{arg}", arg_val)
+        return iid, 0.98, cmd_to_dsl(cmd_filled)
+    return None
+
+def match_static_embedding(clause):
+    """Match a clause against static exemplars in intents.conf via cosine similarity + coverage."""
+    c_clean = clause.strip().strip(",.!?;:")
+    if not c_clean:
+        return None
+    q_words = c_clean.lower().split()
+    q_digits = {w for w in q_words if w.isdigit()}
+    q_vec = vec_map.get(c_clean)
+    if not q_vec:
+        return None
 
     best_iid = ""
     best_sim = -1.0
-    for (iid, _), ex_vec in zip(exemplar_list, cache_data):
+    for iid, ex in static_exemplars:
+        ex_words = ex.lower().split()
+        # Coverage guard: static exemplar cannot hijack a much longer sentence
+        if len(q_words) > len(ex_words) + 3:
+            continue
+        ex_digits = {w for w in ex_words if w.isdigit()}
+        if q_digits != ex_digits:
+            continue
+        ex_vec = vec_map.get(ex)
+        if not ex_vec:
+            continue
         sim = sum(a * b for a, b in zip(q_vec, ex_vec))
         if sim > best_sim:
             best_sim = sim
             best_iid = iid
 
-    if best_iid and best_sim >= max(thresh, 0.76):
-        print(f"ACT\t{best_sim:.2f}\t{best_iid}\tsh {commands[best_iid]}")
+    if best_iid and best_sim >= max(thresh, 0.78):
+        return best_iid, best_sim, cmd_to_dsl(commands[best_iid])
+    return None
+
+def match_single_clause(clause):
+    """Resolve a single clause via intents.conf (parametric templatewith suffix first, then static embedding, then prefix template)."""
+    c_clean = clause.strip().strip(",.!?;:")
+    # 1. Parametric templates that have BOTH prefix and suffix (e.g. "type {arg} and press enter")
+    for iid, ex, pre, suf in param_exemplars:
+        if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
+            arg_val = c_clean[len(pre):len(c_clean) - len(suf)].strip().strip("\"'")
+            if arg_val:
+                return iid, 0.99, cmd_to_dsl(commands[iid].replace("{arg}", arg_val))
+    # 2. Static semantic embedding match
+    st = match_static_embedding(c_clean)
+    if st:
+        return st
+    # 3. General parametric template match from intents.conf
+    pm = match_param_template(c_clean)
+    if pm:
+        return pm
+    # 4. Direct semantic target match against live windows, open tabs, places.sqlite, and .desktop apps
+    try:
+        res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=3.0).strip()
+        if res_raw:
+            best_t = json.loads(res_raw)
+            t_score = float(best_t.get("score", 0.0))
+            if t_score >= 0.78:
+                return f"target:{best_t.get('kind', 'env')}", min(t_score, 0.99), f'open "{c_clean}"'
+    except Exception:
+        pass
+    return None
+
+# Prepare candidate clauses if ' and ' or ';' is present
+sub_parts = []
+for semi in raw_query.split(";"):
+    for part in semi.split(" and "):
+        p = part.strip()
+        if p:
+            sub_parts.append(p)
+
+texts_to_embed = [ex for _, ex in static_exemplars] + [raw_query.strip().strip(",.!?;:")]
+if len(sub_parts) > 1:
+    texts_to_embed.extend(p.strip().strip(",.!?;:") for p in sub_parts)
+ensure_embedded(texts_to_embed)
+
+# First check if the entire utterance matches a single intent (e.g. "type X and press enter" or static intent)
+whole_hit = None
+if len(sub_parts) == 1:
+    whole_hit = match_single_clause(raw_query)
+else:
+    # Check if the whole utterance matches a prefix+suffix template (like "type {arg} and press enter")
+    c_clean = raw_query.strip().strip(",.!?;:")
+    for iid, ex, pre, suf in param_exemplars:
+        if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
+            arg_val = c_clean[len(pre):len(c_clean) - len(suf)].strip().strip("\"'")
+            if arg_val:
+                whole_hit = (iid, 0.99, cmd_to_dsl(commands[iid].replace("{arg}", arg_val)))
+                break
+
+if whole_hit:
+    iid, sim, dsl = whole_hit
+    print(f"ACT\t{sim:.2f}\t{iid}\t{dsl}")
+    sys.exit(0)
+
+# If there are multiple sub-parts joined by ' and ' / ';', succeed if EVERY part matches intents.conf
+if len(sub_parts) > 1:
+    matched_steps = []
+    min_sim = 1.0
+    for p in sub_parts:
+        m = match_single_clause(p)
+        if not m:
+            matched_steps = []
+            break
+        matched_steps.append(m[2])
+        if m[1] < min_sim:
+            min_sim = m[1]
+    if matched_steps:
+        print(f"ACT\t{min_sim:.2f}\tsequence\t{' ; '.join(matched_steps)}")
         sys.exit(0)
-except Exception:
-    pass
+else:
+    # Single clause that didn't match above: check if it matches a parametric template
+    m = match_param_template(raw_query)
+    if m:
+        print(f"ACT\t{m[1]:.2f}\t{m[0]}\t{m[2]}")
+        sys.exit(0)
 
 # 2. Local Qwen2.5-1.5B-Instruct GGUF Natural-Language Planner on axil-auren (/v1/chat/completions)
 SYS_PROMPT = """Convert the user's voice request into a sequence of desktop commands, one per line. Output ONLY commands, no explanations.
