@@ -278,7 +278,7 @@ static void zoom(const Arg *arg);
 
 /* variables */
 static const char broken[] = "broken";
-static char stext[256];
+static char stext[512];
 static int statusw;
 static int statusseg;
 static int screen;

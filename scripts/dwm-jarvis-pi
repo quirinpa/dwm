@@ -1,0 +1,195 @@
+#!/bin/sh
+# dwm-jarvis-pi: Persistent tmux-backed Pi session controller for Jarvis voice assistant
+# Runs Pi silently in a detached tmux session ("jarvis") by default, notifies via Dunst/dwm-bar,
+# and allows attaching a real Ghostty terminal window at any time ("Jarvis, show pi").
+
+NODE_BIN_DIR=$(ls -d "$HOME"/.nvm/versions/node/*/bin 2>/dev/null | tail -n 1)
+export PATH="$HOME/.local/bin:$HOME/.pi/agent/bin:${NODE_BIN_DIR:+$NODE_BIN_DIR:}/usr/local/bin:/usr/bin:/bin:$PATH"
+
+SESSION="jarvis"
+WORKDIR="${JARVIS_PI_WORKDIR:-$HOME/site}"
+[ -d "$WORKDIR" ] || WORKDIR="$HOME"
+STATE_FILE="/tmp/dwm-pi-$USER.state"
+WATCH_PID_FILE="/tmp/dwm-pi-watch-$USER.pid"
+
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+notify_pi() {
+    timeout="${1:-4500}"
+    title="$2"
+    body="$3"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t "$timeout" -h "string:x-dunst-stack-tag:jarvis-pi" "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+set_pi_state() {
+    st="$1"
+    if [ -n "$st" ]; then
+        printf '%s\n' "$st" > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+    else
+        rm -f "$STATE_FILE"
+    fi
+    refresh_bar
+}
+
+has_jarvis_session() {
+    tmux has-session -t "$SESSION" 2>/dev/null
+}
+
+start_jarvis_session() {
+    init_prompt="$1"
+    if has_jarvis_session; then
+        return 0
+    fi
+    if [ -n "$init_prompt" ]; then
+        escaped_prompt=$(printf '%s' "$init_prompt" | sed "s/'/'\\\\''/g")
+        tmux new-session -d -s "$SESSION" -x 120 -y 36 -c "$WORKDIR" \
+            "export PATH='$PATH'; exec pi --name 'Jarvis' -- '$escaped_prompt'"
+    else
+        tmux new-session -d -s "$SESSION" -x 120 -y 36 -c "$WORKDIR" \
+            "export PATH='$PATH'; exec pi --name 'Jarvis'"
+    fi
+}
+
+watch_turn() {
+    prompt_preview="$1"
+    if [ -f "$WATCH_PID_FILE" ]; then
+        old_w=$(cat "$WATCH_PID_FILE" 2>/dev/null)
+        [ -n "$old_w" ] && kill "$old_w" 2>/dev/null || true
+    fi
+    (
+        printf '%s\n' "$$" > "$WATCH_PID_FILE"
+        set_pi_state "working"
+
+        # Wait briefly for Pi to begin processing the turn
+        sleep 1.2
+        prev_snap=""
+        stable_ticks=0
+        elapsed=0
+
+        while [ "$elapsed" -lt 180 ]; do
+            if ! has_jarvis_session; then
+                break
+            fi
+            snap=$(tmux capture-pane -p -t "$SESSION" -S -40 2>/dev/null | sed -E 's/[[:space:]]+$//')
+            if [ -n "$snap" ] && [ "$snap" = "$prev_snap" ]; then
+                stable_ticks=$(( stable_ticks + 1 ))
+                # If pane output has settled for ~2.4s after initial activity, turn is complete
+                if [ "$stable_ticks" -ge 3 ] && [ "$elapsed" -ge 3 ]; then
+                    break
+                fi
+            else
+                stable_ticks=0
+                prev_snap="$snap"
+            fi
+            sleep 0.8
+            elapsed=$(( elapsed + 1 ))
+        done
+
+        set_pi_state ""
+        rm -f "$WATCH_PID_FILE"
+
+        if has_jarvis_session; then
+            summary=$(tmux capture-pane -p -t "$SESSION" -S -25 2>/dev/null | \
+                awk 'NF { line=$0 } END { print line }' | cut -c 1-140)
+            notify_pi 6000 "  Jarvis Pi Finished" "“${prompt_preview}”\nSay “Jarvis, show pi” to inspect terminal."
+        fi
+    ) >/dev/null 2>&1 &
+}
+
+cmd_send() {
+    prompt="$*"
+    prompt=$(printf '%s\n' "$prompt" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    if [ -z "$prompt" ]; then
+        exit 0
+    fi
+
+    if ! has_jarvis_session; then
+        start_jarvis_session "$prompt"
+    else
+        # Ensure we are in normal input mode and send literal prompt + Enter
+        tmux send-keys -t "$SESSION" -l -- "$prompt" 2>/dev/null
+        tmux send-keys -t "$SESSION" Enter 2>/dev/null
+    fi
+
+    notify_pi 5000 "  Jarvis → Pi (Background tmux)" "“${prompt}”\nSay “Jarvis, show pi” for terminal or “Jarvis, stop pi” to abort."
+    watch_turn "$prompt"
+}
+
+cmd_show() {
+    if ! has_jarvis_session; then
+        start_jarvis_session ""
+        sleep 0.25
+    fi
+    # If a jarvis-pi terminal window is already open, focus it; otherwise spawn ghostty attached to tmux
+    if xdotool search --class "jarvis-pi" >/dev/null 2>&1; then
+        dwm-msg focus-class jarvis-pi >/dev/null 2>&1 || true
+    else
+        ghostty --class=jarvis-pi --title="Jarvis Pi Session (tmux)" \
+            -e tmux attach-session -t "$SESSION" >/dev/null 2>&1 &
+    fi
+    notify_pi 2800 "  Jarvis Pi Terminal" "Attached to tmux session '${SESSION}'. Close window anytime to keep running in background."
+}
+
+cmd_stop() {
+    if [ -f "$WATCH_PID_FILE" ]; then
+        old_w=$(cat "$WATCH_PID_FILE" 2>/dev/null)
+        [ -n "$old_w" ] && kill "$old_w" 2>/dev/null || true
+        rm -f "$WATCH_PID_FILE"
+    fi
+    set_pi_state ""
+    if has_jarvis_session; then
+        tmux send-keys -t "$SESSION" Escape C-c 2>/dev/null || true
+        notify_pi 3500 "⏹  Jarvis Pi Stopped" "Sent interrupt (Esc / Ctrl+C) to background Pi session."
+    else
+        notify_pi 2500 "  Jarvis Pi" "No active Pi session running."
+    fi
+}
+
+cmd_reset() {
+    if [ -f "$WATCH_PID_FILE" ]; then
+        old_w=$(cat "$WATCH_PID_FILE" 2>/dev/null)
+        [ -n "$old_w" ] && kill "$old_w" 2>/dev/null || true
+        rm -f "$WATCH_PID_FILE"
+    fi
+    set_pi_state ""
+    if has_jarvis_session; then
+        tmux send-keys -t "$SESSION" Escape C-u "/new" Enter 2>/dev/null || true
+        notify_pi 3500 "🔄  Jarvis Pi Reset" "Started a fresh conversation (/new) in tmux session '${SESSION}'."
+    else
+        start_jarvis_session ""
+        notify_pi 3500 "🔄  Jarvis Pi Ready" "Started fresh background tmux session '${SESSION}'."
+    fi
+}
+
+case "${1:-show}" in
+    send)
+        shift
+        cmd_send "$@"
+        ;;
+    show|open|attach)
+        cmd_show
+        ;;
+    stop|cancel|abort)
+        cmd_stop
+        ;;
+    reset|new)
+        cmd_reset
+        ;;
+    status)
+        if has_jarvis_session; then
+            echo "running"
+        else
+            echo "stopped"
+        fi
+        ;;
+    *)
+        echo "Usage: dwm-jarvis-pi {send <prompt>|show|stop|reset|status}" >&2
+        exit 1
+        ;;
+esac

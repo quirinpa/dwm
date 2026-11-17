@@ -1,15 +1,15 @@
 #!/bin/sh
-# dwm-auren: Declarative semantic desktop command router powered by axil-auren
-# Uses a 3-tier speed pipeline:
-#   1. Bilingual synonym + weighted token-overlap & fuzzy matching (< 20 ms)
-#   2. Cached exemplar embeddings + single /v1/embeddings cosine similarity (~250 ms)
-#   3. Fallback to /v1/systemone if /v1/embeddings is unavailable
-# Configured via ~/.Xresources (dwm.auren.*) and ~/.config/dwm/intents.conf
+# dwm-auren: Semantic Desktop Router & Action Planner powered by axil-auren + dwm-act
+# Uses:
+#   1. Cached exemplar embeddings (/v1/embeddings) against ~/.config/dwm/intents.conf
+#   2. Local Qwen2.5-1.5B-Instruct GGUF planner (/v1/chat/completions on axil-auren) with live X11
+#      window + browser tab context (dwm-act)
 export PATH="$HOME/.local/bin:$PATH"
 
 CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
 CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/dwm-auren-embeddings.json"
 XRES_CACHE="/tmp/dwm-auren-xres-$USER.env"
+AUREN_CFG="$HOME/.config/auren/config.json"
 
 load_xres_cache() {
     now_s=$(date +%s 2>/dev/null || echo 0)
@@ -48,7 +48,9 @@ case "$AUREN_URL" in
     http://*|https://*) ;;
     *) AUREN_URL="http://localhost:4242/v1/systemone" ;;
 esac
+AUREN_BASE=$(printf '%s' "$AUREN_URL" | sed 's|/v1/.*$||')
 AUREN_MODEL=$(get_xres "dwm.auren.model" "bge-base")
+AUREN_CHAT_MODEL=$(get_xres "dwm.auren.chat_model" "qwen")
 AUREN_THRESHOLD=$(get_xres "dwm.auren.threshold" "0.68")
 NB=$(get_xres "dwm.normbgcolor" "#11111b")
 NF=$(get_xres "dwm.normfgcolor" "#a6adc8")
@@ -60,7 +62,65 @@ notify_auren() {
     title="$1"
     body="$2"
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -t 3000 -h string:x-dunst-stack-tag:auren "$title" "$body" 2>/dev/null || true
+        notify-send -t 3500 -h string:x-dunst-stack-tag:voice "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+ensure_auren_server() {
+    if curl -s --max-time 0.3 "${AUREN_BASE}/v1/models" 2>/dev/null | grep -q '"qwen"'; then
+        return 0
+    fi
+    if [ -f "$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf" ]; then
+        mkdir -p "$(dirname "$AUREN_CFG")" "$HOME/.cache/auren"
+        if [ ! -f "$AUREN_CFG" ] || ! grep -q '"qwen"' "$AUREN_CFG" 2>/dev/null; then
+            cat > "$AUREN_CFG" << EOF
+{
+  "models": [
+    {
+      "id": "qwen",
+      "path": "$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
+      "capabilities": ["chat", "judge"],
+      "n_ctx": 4096,
+      "n_gpu_layers": 0,
+      "temperature": 0.1
+    },
+    {
+      "id": "bge-base",
+      "path": "$HOME/.models/bge-base-en-v1.5.gguf",
+      "capabilities": ["embed"],
+      "enable_embeddings": 1,
+      "n_ctx": 512,
+      "n_gpu_layers": 0
+    }
+  ],
+  "defaults": {
+    "chat": "qwen",
+    "judge": "qwen",
+    "embed": "bge-base"
+  },
+  "max_resident": 2
+}
+EOF
+        fi
+        fuser -k 4242/tcp >/dev/null 2>&1 || true
+        sleep 0.2
+        setsid env \
+            VK_ICD_FILENAMES="/dev/null" \
+            AUREN_PORT="4242" \
+            AUREN_CONFIG_PATH="$AUREN_CFG" \
+            AUREN_GPU_LAYERS="0" \
+            AUREN_N_GPU_LAYERS="0" \
+            LD_LIBRARY_PATH="$HOME/site/node_modules/@tty-pt/auren/prebuilds/linux-x64:$HOME/.pi/agent/npm/node_modules/@tty-pt/auren/prebuilds/linux-x64:$HOME/.local/lib:/usr/lib:/usr/local/lib:/lib:/usr/lib64:/usr/lib/x86_64-linux-gnu:$HOME/site/external/libsepal/lib:$HOME/.pi/agent/npm/node_modules/@tty-pt/axil/prebuilds/linux-x64:$HOME/site/node_modules/@tty-pt/corm/build/Release:$HOME/site/external/libcorm/npm/build/Release:$HOME/.pi/agent/npm/node_modules/@tty-pt/stele/prebuilds/linux-x64" \
+            "$HOME/site/external/axil/bin/axil" -d -A -p 4242 -m "$HOME/site/node_modules/@tty-pt/auren/prebuilds/linux-x64/libaxil-auren" \
+            < /dev/null >> "$HOME/.cache/auren/server.log" 2>&1 &
+        i=0
+        while [ "$i" -lt 15 ]; do
+            if curl -s --max-time 0.2 "${AUREN_BASE}/v1/models" >/dev/null 2>&1; then
+                break
+            fi
+            sleep 0.1
+            i=$(( i + 1 ))
+        done
     fi
 }
 
@@ -73,52 +133,17 @@ run_query() {
         exit 1
     fi
 
-    eval_out=$(python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
-import sys, os, re, json, math, hashlib, urllib.request
+    ensure_auren_server
 
-conf_path, cache_path, sys1_url, model, thresh_s, raw_query = sys.argv[1:7]
+    eval_out=$(python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_CHAT_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
+import sys, os, json, math, hashlib, subprocess, urllib.request
+
+conf_path, cache_path, sys1_url, embed_model, chat_model, thresh_s, raw_query = sys.argv[1:8]
 thresh = float(thresh_s)
-base_url = re.sub(r'/v1/.*$', '', sys1_url)
+base_url = sys1_url.split("/v1/")[0] if "/v1/" in sys1_url else sys1_url.rstrip("/")
 embed_url = base_url + "/v1/embeddings"
+chat_url = base_url + "/v1/chat/completions"
 
-STOP_WORDS = {
-    "please", "por", "favor", "now", "agora", "the", "a", "an", "o", "os", "as",
-    "um", "uma", "to", "para", "no", "na", "do", "da", "de", "in", "on", "at",
-    "my", "me", "meu", "minha", "this", "esta", "este", "can", "you", "podes"
-}
-
-SYN_MAP = {
-    "one": "1", "first": "1", "um": "1", "primeiro": "1",
-    "two": "2", "second": "2", "dois": "2", "segundo": "2",
-    "three": "3", "third": "3", "três": "3", "tres": "3", "terceiro": "3",
-    "four": "4", "fourth": "4", "quatro": "4", "quarto": "4",
-    "five": "5", "fifth": "5", "cinco": "5", "quinto": "5",
-    "workspace": "tag", "desktop": "tag", "ecrã": "tag", "ecra": "tag", "screen": "tag",
-    "switch": "go", "ir": "go", "muda": "go", "mudar": "go", "vai": "go", "change": "go",
-    "move": "send", "manda": "send", "enviar": "send",
-    "launch": "open", "abrir": "open", "abre": "open", "start": "open", "iniciar": "open",
-    "ghostty": "terminal", "shell": "terminal", "xterm": "terminal", "consola": "terminal",
-    "firefox": "browser", "navegador": "browser",
-    "audio": "volume", "som": "volume", "speaker": "volume", "áudio": "volume",
-    "louder": "increase", "up": "increase", "aumentar": "increase", "aumenta": "increase", "subir": "increase", "sobe": "increase",
-    "quieter": "decrease", "down": "decrease", "baixar": "decrease", "baixa": "decrease", "diminuir": "decrease", "diminui": "decrease",
-    "silence": "mute", "tirar": "mute", "silenciar": "mute", "mudo": "mute",
-    "Agenda": "calendar", "agenda": "calendar", "meetings": "calendar", "reuniões": "calendar", "calendário": "calendar", "calendario": "calendar",
-    "kill": "close", "fechar": "close", "fecha": "close",
-    "maximize": "fullscreen", "maximizar": "fullscreen",
-}
-
-def canonical_tokens(s):
-    s = s.lower().strip()
-    s = re.sub(r'[^\w\sáàâãéêíóôõúç]', ' ', s)
-    out = []
-    for w in s.split():
-        if w in STOP_WORDS:
-            continue
-        out.append(SYN_MAP.get(w, w))
-    return out
-
-labels = {}
 commands = {}
 exemplar_list = []
 
@@ -135,57 +160,13 @@ for line in conf_raw.splitlines():
     iid, cmd, ex_str = parts
     exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
     if iid and cmd and exemplars:
-        labels[iid] = exemplars
         commands[iid] = cmd
         for ex in exemplars:
-            exemplar_list.append((iid, ex, canonical_tokens(ex)))
+            exemplar_list.append((iid, ex))
 
-q_tok_list = canonical_tokens(raw_query)
-q_tokens = set(q_tok_list)
-q_norm = " ".join(q_tok_list)
-
-# Tier 1: Instant canonical token / phrase match (< 15 ms)
-best_lex_iid = ""
-best_lex_score = 0.0
-
-if q_tokens:
-    q_digits = {t for t in q_tokens if t.isdigit()}
-    for iid, ex_orig, ex_tok_list in exemplar_list:
-        if not ex_tok_list:
-            continue
-        ex_norm = " ".join(ex_tok_list)
-        if q_norm == ex_norm:
-            print(f"OK\t1.00\t{iid}\t{commands[iid]}")
-            sys.exit(0)
-        ex_tokens = set(ex_tok_list)
-        ex_digits = {t for t in ex_tokens if t.isdigit()}
-        if q_digits != ex_digits:
-            continue
-        # Distinguish view_N vs tag_N (move/send window)
-        has_move_q = bool(q_tokens & {"send", "window", "janela"})
-        has_move_ex = bool(ex_tokens & {"send", "window", "janela"})
-        if q_digits and has_move_q != has_move_ex:
-            continue
-        inter = len(q_tokens & ex_tokens)
-        if inter == 0:
-            continue
-        recall = inter / len(ex_tokens)
-        prec = inter / len(q_tokens)
-        score = 0.65 * recall + 0.35 * prec
-        if ex_norm in q_norm or q_norm in ex_norm:
-            score = max(score, 0.92)
-        if score > best_lex_score:
-            best_lex_score = score
-            best_lex_iid = iid
-
-if best_lex_iid and best_lex_score >= 0.72:
-    print(f"OK\t{best_lex_score:.2f}\t{best_lex_iid}\t{commands[best_lex_iid]}")
-    sys.exit(0)
-
-# Tier 2: Cached exemplar embeddings + single query embedding via /v1/embeddings
-conf_hash = hashlib.sha256((model + "\n" + conf_raw).encode("utf-8")).hexdigest()[:16]
+# 1. Semantic embedding similarity against intents.conf
+conf_hash = hashlib.sha256((embed_model + "\n" + conf_raw).encode("utf-8")).hexdigest()[:16]
 cache_data = None
-
 if os.path.exists(cache_path):
     try:
         with open(cache_path, "r", encoding="utf-8") as cf:
@@ -201,14 +182,14 @@ def normalize_vec(v):
 
 try:
     if cache_data is None:
-        all_texts = [ex for _, ex, _ in exemplar_list] + [raw_query]
+        all_texts = [ex for _, ex in exemplar_list] + [raw_query]
         req = urllib.request.Request(
             embed_url,
-            data=json.dumps({"model": model, "input": all_texts}).encode("utf-8"),
+            data=json.dumps({"model": embed_model, "input": all_texts}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8.0) as resp:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
             edata = json.loads(resp.read().decode("utf-8"))["data"]
         vecs = [normalize_vec(item["embedding"]) for item in edata]
         cache_data = vecs[:-1]
@@ -219,48 +200,119 @@ try:
     else:
         req = urllib.request.Request(
             embed_url,
-            data=json.dumps({"model": model, "input": raw_query}).encode("utf-8"),
+            data=json.dumps({"model": embed_model, "input": raw_query}).encode("utf-8"),
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=4.0) as resp:
+        with urllib.request.urlopen(req, timeout=2.5) as resp:
             edata = json.loads(resp.read().decode("utf-8"))["data"]
         q_vec = normalize_vec(edata[0]["embedding"])
 
     best_iid = ""
     best_sim = -1.0
-    for (iid, _, _), ex_vec in zip(exemplar_list, cache_data):
+    for (iid, _), ex_vec in zip(exemplar_list, cache_data):
         sim = sum(a * b for a, b in zip(q_vec, ex_vec))
         if sim > best_sim:
             best_sim = sim
             best_iid = iid
 
-    cmd = commands.get(best_iid, "")
-    if best_iid and cmd and best_sim >= thresh:
-        print(f"OK\t{best_sim:.2f}\t{best_iid}\t{cmd}")
-    else:
-        print(f"LOW\t{best_sim:.2f}\t{best_iid}\t{cmd}")
-    sys.exit(0)
+    if best_iid and best_sim >= max(thresh, 0.76):
+        print(f"ACT\t{best_sim:.2f}\t{best_iid}\tsh {commands[best_iid]}")
+        sys.exit(0)
 except Exception:
     pass
 
-# Tier 3: Fallback to /v1/systemone
-payload = json.dumps({"model": model, "text": raw_query, "labels": labels}).encode("utf-8")
-req = urllib.request.Request(sys1_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
-try:
-    with urllib.request.urlopen(req, timeout=8.0) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-except Exception as e:
-    print(f"ERR\t0.00\t{e}\t")
-    sys.exit(0)
+# 2. Local Qwen2.5-1.5B-Instruct GGUF Natural-Language Planner on axil-auren (/v1/chat/completions)
+SYS_PROMPT = """Convert the user's voice request into a sequence of desktop commands, one per line. Output ONLY commands, no explanations.
 
-choice = data.get("choice") or data.get("decision") or ""
-sim = float(data.get("similarity") or data.get("confidence") or 0.0)
-cmd = commands.get(choice, "")
-if choice and cmd and sim >= thresh:
-    print(f"OK\t{sim:.2f}\t{choice}\t{cmd}")
-else:
-    print(f"LOW\t{sim:.2f}\t{choice}\t{cmd}")
+Commands:
+view <1..9>
+tag <1..9>
+focus <app_or_tab_or_title>
+open <ghostty|firefox|whatsapp|youtube|github|gmail|url>
+key <Return|Escape|Tab|space|BackSpace|Up|Down|Left|Right|Page_Down|Page_Up|ctrl+t|ctrl+w|ctrl+Tab|ctrl+shift+Tab|ctrl+r|ctrl+f|ctrl+c|ctrl+v|ctrl+z|ctrl+s|ctrl+a|ctrl+l>
+type <text>
+click <visible_text_on_screen>
+click_pos <center|top-left|top-right|bottom-left|bottom-right|current>
+right_click <visible_text_or_current>
+double_click <visible_text_or_current>
+scroll <up|down> <1..10>
+wm <fullscreen|float|zoom|close|next|prev|tile|monocle|bar|kbd>
+sys <vol_up|vol_down|vol_mute|bri_up|bri_down|calendar|screenshot|lock>
+wait <ms>
+
+Examples:
+User: Move this window to workspace 3, switch to workspace 3, and make it fullscreen
+tag 3
+view 3
+wm fullscreen
+
+User: Go to Firefox, open a new tab, type github.com and press enter
+focus firefox
+key ctrl+t
+type github.com
+key Return
+
+User: Switch to WhatsApp, click Type a message, write I am on my way and hit enter
+focus WhatsApp
+click Type a message
+type I am on my way
+key Return
+
+User: Focus my terminal, press control c, then type make test and hit enter
+focus ghostty
+key ctrl+c
+type make test
+key Return"""
+
+VALID_OPS = {
+    "view", "workspace", "desktop", "tag", "move_to", "send_to", "focus", "switch",
+    "open", "launch", "spawn", "key", "press", "shortcut", "hotkey", "type", "write",
+    "input", "dictate", "type_enter", "submit", "click", "left_click", "click_pos",
+    "right_click", "middle_click", "double_click", "move_mouse", "hover", "point",
+    "scroll", "wm", "sys", "sh", "pi", "wait"
+}
+
+try:
+    ctx_out = subprocess.check_output(["dwm-act", "context"], text=True, timeout=1.5).strip()
+except Exception:
+    ctx_out = ""
+
+user_msg = f"{ctx_out}\nUser: {raw_query}" if ctx_out else f"User: {raw_query}"
+try:
+    req = urllib.request.Request(
+        chat_url,
+        data=json.dumps({
+            "model": chat_model,
+            "session_id": "jarvis-dsl",
+            "temperature": 0.0,
+            "max_tokens": 72,
+            "messages": [
+                {"role": "system", "content": SYS_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+        }).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=12.0) as resp:
+        cdata = json.loads(resp.read().decode("utf-8"))
+    raw_plan = cdata["choices"][0]["message"]["content"].strip()
+    llm_steps = []
+    for line in raw_plan.splitlines():
+        line = line.strip().lstrip("-*•0123456789.) ").strip("`").strip()
+        if not line:
+            continue
+        op = line.split()[0].lower()
+        if op in VALID_OPS:
+            llm_steps.append(line)
+    if llm_steps:
+        print(f"ACT\t0.95\tqwen-planner\t{' ; '.join(llm_steps)}")
+        sys.exit(0)
+except Exception as e:
+    pass
+
+print(f"LOW\t0.00\tnone\t")
 PYEOF
     )
 
@@ -275,16 +327,21 @@ PYEOF
     fi
 
     case "$status" in
+        ACT)
+            notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
+            exec /home/quirinpa/.local/bin/dwm-act exec "$cmd"
+            ;;
         OK)
             notify_auren "  Auren → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
             exec /bin/sh -c "$cmd"
             ;;
-        LOW)
-            notify_auren "  Low Confidence (${score} < ${AUREN_THRESHOLD})" "“${query}”\nClosest: ${intent:-none}"
-            return 1
-            ;;
         *)
-            notify_auren "  axil-auren Unreachable" "Check ${AUREN_URL}"
+            word_count=$(printf '%s\n' "$query" | wc -w | tr -d ' ')
+            alnum_len=$(printf '%s' "$query" | tr -cd '[:alnum:]' | wc -c | tr -d ' ')
+            if [ "${word_count:-0}" -ge 2 ] && [ "${alnum_len:-0}" -ge 6 ]; then
+                exec /home/quirinpa/.local/bin/dwm-jarvis-pi send "$query"
+            fi
+            notify_auren "  Low Confidence" "“${query}”"
             return 1
             ;;
     esac
@@ -301,7 +358,7 @@ case "${1:-dmenu}" in
                 split(ex, arr, ";");
                 printf "%-16s  ▸ %-28s (%s)\n", id, cmd, arr[1];
             }
-        ' "$CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Auren Intent / NL:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        ' "$CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Jarvis NL / Intent:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
         [ -z "$selection" ] && exit 0
         if printf '%s\n' "$selection" | grep -q "▸"; then
             direct_id=$(printf '%s\n' "$selection" | awk '{print $1}')
@@ -315,14 +372,16 @@ case "${1:-dmenu}" in
                 }
             ' "$CONF_FILE")
             if [ -n "$direct_cmd" ]; then
-                notify_auren "  Auren → ${direct_id}" "▸ ${direct_cmd}"
+                notify_auren "  Jarvis → ${direct_id}" "▸ ${direct_cmd}"
                 exec /bin/sh -c "$direct_cmd"
             fi
         fi
         run_query "$selection"
         ;;
     warmup)
-        run_query "check semantic cache warmup" "--dry-run" >/dev/null 2>&1 || true
+        ensure_auren_server
+        run_query "switch to workspace 1" "--dry-run" >/dev/null 2>&1 || true
+        run_query "Put this window on workspace 2 and go there and make it fullscreen" "--dry-run" >/dev/null 2>&1 || true
         ;;
     query|exec)
         shift

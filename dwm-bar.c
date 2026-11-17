@@ -275,13 +275,47 @@ seg_cpu(char *out, size_t len)
 static void
 seg_voice(char *out, size_t len, const char *user)
 {
-	char path[256], buf[64], jpid_path[256], jpid_buf[32];
+	char path[256], buf[160], jpid_path[256], jpid_buf[32];
+	char pi_path[256], pi_buf[64];
+	int pi_working = 0;
 
 	out[0] = '\0';
+	snprintf(pi_path, sizeof(pi_path), "/tmp/dwm-pi-%s.state", user);
+	if (read_small_file(pi_path, pi_buf, sizeof(pi_buf)) > 0 &&
+	    !strncmp(pi_buf, "working", 7)) {
+		pi_working = 1;
+	}
+	const char *pi_tag = pi_working ? "  Pi" : "";
+
 	snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
 	if (read_small_file(path, buf, sizeof(buf)) > 0) {
-		if (!strncmp(buf, "rec", 3)) {
+		if (!strncmp(buf, "rec:", 4) && buf[4]) {
+			const char *txt = buf + 4;
+			while (*txt == ' ')
+				txt++;
+			size_t tlen = strlen(txt);
+			if (tlen > 28) {
+				txt += (tlen - 28);
+				while (*txt && ((*txt & 0xC0) == 0x80))
+					txt++;
+			}
+			snprintf(out, len, "%s    REC%s %.28s", C_VOC, C_VAL, txt);
+			return;
+		} else if (!strncmp(buf, "rec", 3)) {
 			snprintf(out, len, "%s    REC", C_VOC);
+			return;
+		} else if ((!strncmp(buf, "cmd:", 4) && buf[4]) ||
+		           (!strncmp(buf, "jarvis-cmd:", 11) && buf[11])) {
+			const char *txt = strchr(buf, ':') + 1;
+			while (*txt == ' ')
+				txt++;
+			size_t tlen = strlen(txt);
+			if (tlen > 28) {
+				txt += (tlen - 28);
+				while (*txt && ((*txt & 0xC0) == 0x80))
+					txt++;
+			}
+			snprintf(out, len, "%s    JARVIS%s %.28s", C_VOC, C_VAL, txt);
 			return;
 		} else if (!strncmp(buf, "cmd", 3) || !strncmp(buf, "jarvis-cmd", 10)) {
 			snprintf(out, len, "%s    JARVIS", C_VOC);
@@ -290,16 +324,19 @@ seg_voice(char *out, size_t len, const char *user)
 			snprintf(out, len, "%s%s    ...", C_VOC, C_WRN);
 			return;
 		} else if (!strncmp(buf, "jarvis", 6)) {
-			snprintf(out, len, "%s%s   %s J", C_VOC, C_ICO, C_VAL);
+			snprintf(out, len, "%s%s   %s J%s", C_VOC, C_ICO, C_VAL, pi_tag);
 			return;
 		}
 	}
 	snprintf(jpid_path, sizeof(jpid_path), "/tmp/dwm-jarvis-%s.pid", user);
 	if (read_small_file(jpid_path, jpid_buf, sizeof(jpid_buf)) > 0) {
 		int jpid = atoi(jpid_buf);
-		if (jpid > 1 && kill((pid_t)jpid, 0) == 0)
-			snprintf(out, len, "%s%s   %s J", C_VOC, C_ICO, C_VAL);
+		if (jpid > 1 && kill((pid_t)jpid, 0) == 0) {
+			snprintf(out, len, "%s%s   %s J%s", C_VOC, C_ICO, C_VAL, pi_tag);
+			return;
+		}
 	}
+	snprintf(out, len, "%s%s   %s", C_VOC, C_ICO, pi_tag);
 }
 
 static void
@@ -419,8 +456,9 @@ seg_bat(char *out, size_t len)
 }
 
 static void
-seg_kbd(Display *dpy, Window root, Atom xkb_rules_atom, char *out, size_t len)
+seg_kbd(Display *dpy, Window root, Atom xkb_rules_atom, const char *user, char *out, size_t len)
 {
+	static char last_kbd[16] = "";
 	XkbStateRec state;
 	Atom actual;
 	int fmt;
@@ -452,6 +490,20 @@ seg_kbd(Display *dpy, Window root, Atom xkb_rules_atom, char *out, size_t len)
 		}
 		XFree(prop);
 	}
+	if (strcmp(layout_up, last_kbd) != 0) {
+		char kpath[256], ktmp[272];
+		snprintf(last_kbd, sizeof(last_kbd), "%s", layout_up);
+		snprintf(kpath, sizeof(kpath), "/tmp/dwm-kbd-%s.state", user);
+		snprintf(ktmp, sizeof(ktmp), "%s.tmp", kpath);
+		FILE *fp = fopen(ktmp, "w");
+		if (fp) {
+			for (size_t i = 0; layout_up[i]; i++)
+				fputc(tolower((unsigned char)layout_up[i]), fp);
+			fputc('\n', fp);
+			fclose(fp);
+			rename(ktmp, kpath);
+		}
+	}
 	snprintf(out, len, "%s   %s %s", C_KBD, C_VAL, layout_up);
 }
 
@@ -477,9 +529,9 @@ main(void)
 	Window root;
 	Atom xkb_rules_atom;
 	int xkb_ev_base = 0, xkb_err_base = 0, xkb_op = 0, xkb_maj = XkbMajorVersion, xkb_min = XkbMinorVersion;
-	int inot_fd = -1, ioctl_sock = -1;
+	int ioctl_sock = -1;
 	const char *user = getenv("USER");
-	char pid_path[256];
+	char pid_path[256], last_status[512] = "";
 	time_t last_probe = 0, last_cal_check = 0, last_cal_sync = 0;
 	int cached_tty_up = 1;
 
@@ -517,10 +569,6 @@ main(void)
 			XkbNewKeyboardNotifyMask | XkbStateNotifyMask);
 	}
 
-	inot_fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
-	if (inot_fd >= 0) {
-		inotify_add_watch(inot_fd, "/tmp", IN_CLOSE_WRITE | IN_MOVED_TO | IN_DELETE | IN_CREATE);
-	}
 	ioctl_sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 
 	while (running) {
@@ -569,7 +617,7 @@ main(void)
 			else if (!strcmp(tok, "bat"))
 				seg_bat(seg, sizeof(seg));
 			else if (!strcmp(tok, "kbd"))
-				seg_kbd(dpy, root, xkb_rules_atom, seg, sizeof(seg));
+				seg_kbd(dpy, root, xkb_rules_atom, user, seg, sizeof(seg));
 			else if (!strcmp(tok, "cal"))
 				seg_cal(seg, sizeof(seg), user);
 			else if (!strcmp(tok, "date"))
@@ -583,46 +631,34 @@ main(void)
 				strncat(status, seg, sizeof(status) - strlen(status) - 1);
 		}
 
-		XStoreName(dpy, root, status);
-		XFlush(dpy);
+		if (strcmp(status, last_status) != 0) {
+			snprintf(last_status, sizeof(last_status), "%s", status);
+			XStoreName(dpy, root, status);
+			XFlush(dpy);
+		}
 		force_refresh = 0;
 
-		/* Wait until next interval OR immediate XKB / inotify / SIGUSR1 wakeup */
-		struct pollfd pfds[2];
-		int nfds = 0;
-		pfds[nfds].fd = ConnectionNumber(dpy);
-		pfds[nfds].events = POLLIN;
-		nfds++;
-		if (inot_fd >= 0) {
-			pfds[nfds].fd = inot_fd;
-			pfds[nfds].events = POLLIN;
-			nfds++;
-		}
+		/* Wait until next interval OR immediate XKB / SIGUSR1 wakeup */
+		struct pollfd pfd;
+		pfd.fd = ConnectionNumber(dpy);
+		pfd.events = POLLIN;
+		pfd.revents = 0;
 
-		int ret = poll(pfds, nfds, cfg.interval_sec * 1000);
-		if (ret > 0) {
-			if (pfds[0].revents & POLLIN) {
-				while (XPending(dpy)) {
-					XEvent ev;
-					XNextEvent(dpy, &ev);
-					if (ev.type == PropertyNotify && ev.xproperty.window == root &&
-					    ev.xproperty.atom == XA_RESOURCE_MANAGER) {
-						load_bar_xrdb(dpy);
-					}
+		int ret = poll(&pfd, 1, cfg.interval_sec * 1000);
+		if (ret > 0 && (pfd.revents & POLLIN)) {
+			while (XPending(dpy)) {
+				XEvent ev;
+				XNextEvent(dpy, &ev);
+				if (ev.type == PropertyNotify && ev.xproperty.window == root &&
+				    ev.xproperty.atom == XA_RESOURCE_MANAGER) {
+					load_bar_xrdb(dpy);
 				}
-			}
-			if (nfds > 1 && (pfds[1].revents & POLLIN)) {
-				char ibuf[1024];
-				while (read(inot_fd, ibuf, sizeof(ibuf)) > 0)
-					;
 			}
 		}
 	}
 
 	if (ioctl_sock >= 0)
 		close(ioctl_sock);
-	if (inot_fd >= 0)
-		close(inot_fd);
 	XCloseDisplay(dpy);
 	return 0;
 }

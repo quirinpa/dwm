@@ -67,6 +67,7 @@ case "$1" in
             next_lbl="PT (Português)"
         fi
         setxkbmap "$next_kbd" 2>/dev/null
+        printf '%s\n' "$next_kbd" > "/tmp/dwm-kbd-$USER.state"
         refresh_bar
         if command -v notify-send >/dev/null 2>&1; then
             notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to ${next_lbl}" 2>/dev/null || true
@@ -81,6 +82,7 @@ case "$1" in
         case "$choice" in
             *"US —"*)
                 setxkbmap us 2>/dev/null
+                printf 'us\n' > "/tmp/dwm-kbd-$USER.state"
                 refresh_bar
                 if command -v notify-send >/dev/null 2>&1; then
                     notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to US (English)" 2>/dev/null || true
@@ -88,6 +90,7 @@ case "$1" in
                 ;;
             *"PT —"*)
                 setxkbmap pt 2>/dev/null
+                printf 'pt\n' > "/tmp/dwm-kbd-$USER.state"
                 refresh_bar
                 if command -v notify-send >/dev/null 2>&1; then
                     notify-send -t 1500 -h string:x-dunst-stack-tag:keyboard "  Keyboard Layout" "Switched to PT (Português)" 2>/dev/null || true
@@ -222,16 +225,10 @@ case "$1" in
                     3) exec /home/quirinpa/.local/bin/dwm-cal popup ;;
                 esac
                 ;;
-            12) # Voice / Jarvis segment (SchemeVoice=12)
+            12) # Voice segment (SchemeVoice=12)
                 case "$btn" in
-                    1)
-                        if [ -f "/tmp/dwm-voice-$USER.pid" ] && kill -0 "$(cat "/tmp/dwm-voice-$USER.pid" 2>/dev/null)" 2>/dev/null; then
-                            exec /home/quirinpa/.local/bin/dwm-voice stop
-                        else
-                            exec /home/quirinpa/.local/bin/dwm-voice cmd
-                        fi
-                        ;;
-                    2) exec /home/quirinpa/.local/bin/dwm-voice jarvis-toggle ;;
+                    1) exec /home/quirinpa/.local/bin/dwm-voice toggle ;;
+                    2) exec /home/quirinpa/.local/bin/dwm-voice cmd ;;
                     3) exec /home/quirinpa/.local/bin/dwm-voice menu ;;
                 esac
                 ;;

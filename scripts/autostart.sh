@@ -58,12 +58,14 @@ fi
 pkill -x dwm-bar 2>/dev/null || true
 /home/quirinpa/.local/bin/dwm-bar &
 
-# 7. Start warm whisper-server & Jarvis wake-word listener (if enabled in ~/.Xresources)
+# 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise) & start warm whisperd + Jarvis listener
 (
-    jarvis_auto=$(xrdb -query 2>/dev/null | awk '$1 == "dwm.voice.jarvis_autostart:" {print $2}')
-    if [ "$jarvis_auto" = "true" ] || [ "$jarvis_auto" = "1" ]; then
-        /home/quirinpa/.local/bin/dwm-voice jarvis-start >/dev/null 2>&1 &
-    else
-        /home/quirinpa/.local/bin/dwm-voice server-start >/dev/null 2>&1 &
+    if command -v amixer >/dev/null 2>&1; then
+        amixer -c 0 sset 'Internal Mic Boost' 0 >/dev/null 2>&1 || true
+        amixer -c 0 sset 'Capture' 42 >/dev/null 2>&1 || true
     fi
+    /home/quirinpa/.local/bin/dwm-voice server-start >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
+    sleep 0.5
+    /home/quirinpa/.local/bin/dwm-voice jarvis-start >/dev/null 2>&1 &
 ) &

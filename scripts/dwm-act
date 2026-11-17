@@ -1,0 +1,800 @@
+#!/usr/bin/env python3
+# dwm-act: Desktop Introspection, Visual Screen Understanding (OCR + AT-SPI2) & Action Executor
+# Executes multi-step desktop sequences: window/workspace management, keypresses, typing,
+# scrolling, and visual/accessibility target clicking on X11/dwm.
+
+import difflib
+import io
+import json
+import os
+import subprocess
+import sys
+import time
+import unicodedata
+
+os.environ["PATH"] = f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PATH', '/usr/bin:/bin')}"
+os.environ["OMP_THREAD_LIMIT"] = "1"
+
+OCR_CACHE_PATH = f"/tmp/dwm-ocr-{os.environ.get('USER', 'user')}.json"
+TESSERACT_BIN = os.path.expanduser("~/.local/bin/tesseract")
+if not os.path.exists(TESSERACT_BIN):
+    TESSERACT_BIN = "tesseract"
+
+
+def strip_accents(s: str) -> str:
+    if not s:
+        return ""
+    return "".join(
+        c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c)
+    )
+
+
+def norm_text(s: str) -> str:
+    s = strip_accents(s.lower().strip())
+    cleaned = "".join(c if (c.isalnum() or c.isspace()) else " " for c in s)
+    return " ".join(cleaned.split())
+
+
+def run_cmd(args, timeout=4.0, input_bytes=None):
+    try:
+        res = subprocess.run(
+            args,
+            input=input_bytes,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+        )
+        return res.stdout.decode("utf-8", errors="ignore").strip()
+    except Exception:
+        return ""
+
+
+def get_clients():
+    out = run_cmd(["dwm-msg", "clients"])
+    clients = []
+    for line in out.splitlines():
+        parts = line.split("\t")
+        if len(parts) >= 3:
+            clients.append({"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip()})
+    return clients
+
+
+def get_focused():
+    out = run_cmd(["dwm-msg", "focused"])
+    parts = out.split("\t")
+    if len(parts) >= 3:
+        return {"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip()}
+    return None
+
+
+def get_win_geometry(wid: str = None):
+    if not wid:
+        foc = get_focused()
+        wid = foc["id"] if foc else None
+    if wid:
+        out = run_cmd(["xwininfo", "-id", wid])
+        vals = {}
+        for line in out.splitlines():
+            if ":" in line:
+                k, v = line.split(":", 1)
+                k = k.strip()
+                v = v.strip().split()[0] if v.strip() else ""
+                if k in ("Absolute upper-left X", "Absolute upper-left Y", "Width", "Height"):
+                    try:
+                        vals[k] = int(v)
+                    except ValueError:
+                        pass
+        if len(vals) == 4:
+            return vals["Absolute upper-left X"], vals["Absolute upper-left Y"], vals["Width"], vals["Height"]
+    return 0, 0, 1600, 900
+
+
+def get_mouse_location():
+    out = run_cmd(["xdotool", "getmouselocation", "--shell"])
+    vals = {}
+    for line in out.splitlines():
+        if "=" in line:
+            k, v = line.split("=", 1)
+            if k in ("X", "Y") and v.strip().isdigit():
+                vals[k] = int(v.strip())
+    if "X" in vals and "Y" in vals:
+        return vals["X"], vals["Y"]
+    return 800, 450
+
+
+def query_atspi_elements(target_norm: str):
+    """Search AT-SPI2 accessibility tree (bounded to 120ms, skipping ibus/portal)."""
+    import signal
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError()
+
+    try:
+        import gi
+        gi.require_version("Atspi", "2.0")
+        from gi.repository import Atspi
+    except Exception:
+        return None
+
+    best_match = None
+    best_score = 0.0
+    foc = get_focused()
+    foc_cls = (foc["class"].lower() if foc else "")
+
+    def walk(node, depth=0):
+        nonlocal best_match, best_score
+        if not node or depth > 6:
+            return
+        name = node.get_name() or ""
+        if name:
+            n_norm = norm_text(name)
+            if n_norm:
+                score = 0.0
+                if n_norm == target_norm:
+                    score = 1.0
+                elif len(target_norm) >= 3 and len(n_norm) >= 3 and (target_norm in n_norm or n_norm in target_norm):
+                    ratio = min(len(target_norm), len(n_norm)) / max(len(target_norm), len(n_norm))
+                    score = 0.75 + 0.20 * ratio if ratio >= 0.4 else 0.0
+                else:
+                    score = difflib.SequenceMatcher(None, target_norm, n_norm).ratio()
+                if score > best_score and score >= 0.72:
+                    comp = node.get_component_iface()
+                    if comp:
+                        rect = comp.get_extents(Atspi.CoordType.SCREEN)
+                        if rect.width > 4 and rect.height > 4 and rect.x >= 0 and rect.y >= 0:
+                            best_score = score
+                            best_match = (rect.x + rect.width // 2, rect.y + rect.height // 2, name, score)
+        cnt = node.get_child_count()
+        for i in range(min(cnt, 40)):
+            walk(node.get_child_at_index(i), depth + 1)
+
+    old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
+    signal.setitimer(signal.ITIMER_REAL, 0.12)
+    try:
+        desktop = Atspi.get_desktop(0)
+        for i in range(desktop.get_child_count()):
+            app = desktop.get_child_at_index(i)
+            if not app:
+                continue
+            aname = (app.get_name() or "").lower()
+            if "ibus" in aname or "portal" in aname or "ghostty" in aname:
+                continue
+            if foc_cls and aname and (aname in foc_cls or foc_cls in aname):
+                walk(app, 0)
+    except BaseException:
+        pass
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0.0)
+        signal.signal(signal.SIGALRM, old_handler)
+    return best_match
+
+
+def invalidate_ocr_cache():
+    try:
+        if os.path.exists(OCR_CACHE_PATH):
+            os.unlink(OCR_CACHE_PATH)
+    except Exception:
+        pass
+
+
+def capture_screen_ocr(force=False):
+    """Capture screen and extract words + line phrases with bounding boxes via AVX2 Tesseract."""
+    foc = get_focused()
+    foc_key = foc["id"] if foc else "root"
+    now = time.time()
+
+    if not force and os.path.exists(OCR_CACHE_PATH):
+        try:
+            with open(OCR_CACHE_PATH, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            if cached.get("key") == foc_key and (now - cached.get("ts", 0)) < 2.2:
+                return cached.get("items", [])
+        except Exception:
+            pass
+
+    try:
+        from PIL import ImageGrab
+        img = ImageGrab.grab()
+        buf = io.BytesIO()
+        img.save(buf, format="BMP")
+        bmp_bytes = buf.getvalue()
+    except Exception:
+        return []
+
+    tsv = run_cmd(
+        [TESSERACT_BIN, "stdin", "stdout", "--oem", "1", "--psm", "3", "-l", "eng", "tsv"],
+        timeout=3.0,
+        input_bytes=bmp_bytes,
+    )
+    if not tsv:
+        return []
+
+    items = []
+    lines_map = {}
+
+    for row in tsv.splitlines()[1:]:
+        cols = row.split("\t")
+        if len(cols) < 12:
+            continue
+        text = cols[11].strip()
+        if not text:
+            continue
+        try:
+            conf = float(cols[10])
+            x, y, w, h = int(cols[6]), int(cols[7]), int(cols[8]), int(cols[9])
+            line_key = (cols[1], cols[2], cols[3], cols[4])
+        except ValueError:
+            continue
+        if conf < 30 or w < 3 or h < 3:
+            continue
+
+        cx, cy = x + w // 2, y + h // 2
+        items.append({"text": text, "norm": norm_text(text), "x": cx, "y": cy, "w": w, "h": h, "conf": conf})
+        lines_map.setdefault(line_key, []).append((x, y, w, h, text, conf))
+
+    # Build multi-word line phrases and sliding sub-phrases (2..4 words)
+    for words in lines_map.values():
+        if len(words) < 2:
+            continue
+        words.sort(key=lambda t: t[0])
+        n = len(words)
+        for start in range(n):
+            for end in range(start + 2, min(n + 1, start + 6)):
+                chunk = words[start:end]
+                x1 = min(w[0] for w in chunk)
+                y1 = min(w[1] for w in chunk)
+                x2 = max(w[0] + w[2] for w in chunk)
+                y2 = max(w[1] + w[3] for w in chunk)
+                phrase = " ".join(w[4] for w in chunk)
+                avg_conf = sum(w[5] for w in chunk) / len(chunk)
+                items.append({
+                    "text": phrase,
+                    "norm": norm_text(phrase),
+                    "x": (x1 + x2) // 2,
+                    "y": (y1 + y2) // 2,
+                    "w": x2 - x1,
+                    "h": y2 - y1,
+                    "conf": avg_conf,
+                })
+
+    try:
+        with open(OCR_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump({"key": foc_key, "ts": now, "items": items}, f)
+    except Exception:
+        pass
+    return items
+
+
+def resolve_target_coords(target: str):
+    """Resolve a positional keyword or visible UI label to screen (x, y) coordinates."""
+    t_raw = (target or "").strip().strip("\"'")
+    t_norm = norm_text(t_raw)
+    wx, wy, ww, wh = get_win_geometry()
+
+    # 1. Explicit positional anchors relative to focused window (or current cursor)
+    if not t_norm or t_norm in {"current", "cursor", "here", "mouse", "aqui"}:
+        mx, my = get_mouse_location()
+        return mx, my, "cursor"
+
+    pos_map = {
+        "center": (wx + ww // 2, wy + wh // 2),
+        "middle": (wx + ww // 2, wy + wh // 2),
+        "centro": (wx + ww // 2, wy + wh // 2),
+        "top left": (wx + int(ww * 0.15), wy + int(wh * 0.15)),
+        "topleft": (wx + int(ww * 0.15), wy + int(wh * 0.15)),
+        "top right": (wx + int(ww * 0.85), wy + int(wh * 0.15)),
+        "topright": (wx + int(ww * 0.85), wy + int(wh * 0.15)),
+        "bottom left": (wx + int(ww * 0.15), wy + int(wh * 0.85)),
+        "bottomleft": (wx + int(ww * 0.15), wy + int(wh * 0.85)),
+        "bottom right": (wx + int(ww * 0.85), wy + int(wh * 0.85)),
+        "bottomright": (wx + int(ww * 0.85), wy + int(wh * 0.85)),
+        "bottom center": (wx + ww // 2, wy + int(wh * 0.92)),
+        "bottom": (wx + ww // 2, wy + int(wh * 0.92)),
+        "top center": (wx + ww // 2, wy + int(wh * 0.08)),
+        "address bar": (wx + int(ww * 0.35), wy + 70),
+        "url bar": (wx + int(ww * 0.35), wy + 70),
+    }
+    if t_norm in pos_map:
+        px, py = pos_map[t_norm]
+        return px, py, t_norm
+
+    # Explicit "x y" coordinate pair
+    xy_parts = t_norm.split()
+    if len(xy_parts) == 2 and xy_parts[0].isdigit() and xy_parts[1].isdigit():
+        return int(xy_parts[0]), int(xy_parts[1]), f"({xy_parts[0]},{xy_parts[1]})"
+
+    # 2. Try AT-SPI2 accessibility tree first
+    atspi_hit = query_atspi_elements(t_norm)
+    if atspi_hit and atspi_hit[3] >= 0.88:
+        return atspi_hit[0], atspi_hit[1], f"atspi:{atspi_hit[2]}"
+
+    # 3. Visual Screen Understanding via OCR
+    t_tokens = set(t_norm.split())
+    for attempt in range(2):
+        items = capture_screen_ocr(force=(attempt == 1))
+        best_item = None
+        best_score = 0.0
+
+        for it in items:
+            inorm = it.get("norm", "")
+            if not inorm:
+                continue
+            if inorm == t_norm:
+                score = 1.0
+            elif len(t_norm) >= 3 and len(inorm) >= 3 and (t_norm in inorm or inorm in t_norm):
+                ratio = min(len(t_norm), len(inorm)) / max(len(t_norm), len(inorm))
+                score = (0.80 + 0.16 * ratio) if ratio >= 0.35 else 0.0
+            else:
+                i_tokens = set(inorm.split())
+                inter = len(t_tokens & i_tokens)
+                tok_score = inter / max(len(t_tokens), len(i_tokens)) if (t_tokens and i_tokens) else 0.0
+                seq_score = difflib.SequenceMatcher(None, t_norm, inorm).ratio()
+                score = max(tok_score * 0.9, seq_score)
+
+            # Prefer matches inside the currently focused window bounds
+            ix, iy = it["x"], it["y"]
+            if wx <= ix <= wx + ww and wy <= iy <= wy + wh:
+                score += 0.04
+
+            if score > best_score:
+                best_score = score
+                best_item = it
+
+        if best_item and best_score >= 0.64:
+            return best_item["x"], best_item["y"], f"ocr:{best_item['text']}"
+
+    # 4. Semantic UI region fallbacks (e.g. "message box", "chat input", "search box")
+    if any(w in t_norm for w in ("message", "mensagem", "chat", "write", "type")):
+        return wx + int(ww * 0.55), wy + int(wh * 0.93), "chat-input-box"
+    if any(w in t_norm for w in ("search", "pesquisa", "procurar", "find")):
+        return wx + int(ww * 0.20), wy + int(wh * 0.16), "search-box"
+
+    if atspi_hit:
+        return atspi_hit[0], atspi_hit[1], f"atspi:{atspi_hit[2]}"
+
+    # Final fallback: center of focused window
+    return wx + ww // 2, wy + wh // 2, "window-center"
+
+
+KEY_ALIASES = {
+    "enter": "Return",
+    "return": "Return",
+    "esc": "Escape",
+    "escape": "Escape",
+    "space": "space",
+    "spacebar": "space",
+    "espaco": "space",
+    "tab": "Tab",
+    "backspace": "BackSpace",
+    "apagar": "BackSpace",
+    "delete": "Delete",
+    "del": "Delete",
+    "up": "Up",
+    "cima": "Up",
+    "down": "Down",
+    "baixo": "Down",
+    "left": "Left",
+    "esquerda": "Left",
+    "right": "Right",
+    "direita": "Right",
+    "pagedown": "Page_Down",
+    "page_down": "Page_Down",
+    "pgdn": "Page_Down",
+    "pageup": "Page_Up",
+    "page_up": "Page_Up",
+    "pgup": "Page_Up",
+    "home": "Home",
+    "end": "End",
+    "plus": "plus",
+    "minus": "minus",
+    "slash": "slash",
+}
+
+MOD_ALIASES = {
+    "ctrl": "ctrl",
+    "control": "ctrl",
+    "ctl": "ctrl",
+    "alt": "alt",
+    "option": "alt",
+    "shift": "shift",
+    "super": "Super_L",
+    "win": "Super_L",
+    "meta": "Super_L",
+    "mod": "Super_L",
+    "cmd": "Super_L",
+}
+
+
+def normalize_key_combo(raw: str) -> str:
+    raw = raw.strip().strip("\"'")
+    if not raw:
+        return "Return"
+    # Handle named shortcuts like "new_tab", "close_tab", "copy", "paste"
+    shortcut_map = {
+        "new tab": "ctrl+t",
+        "new_tab": "ctrl+t",
+        "close tab": "ctrl+w",
+        "close_tab": "ctrl+w",
+        "next tab": "ctrl+Tab",
+        "next_tab": "ctrl+Tab",
+        "prev tab": "ctrl+shift+Tab",
+        "previous tab": "ctrl+shift+Tab",
+        "prev_tab": "ctrl+shift+Tab",
+        "reload": "ctrl+r",
+        "refresh": "ctrl+r",
+        "address bar": "ctrl+l",
+        "find": "ctrl+f",
+        "copy": "ctrl+c",
+        "paste": "ctrl+v",
+        "cut": "ctrl+x",
+        "undo": "ctrl+z",
+        "redo": "ctrl+y",
+        "save": "ctrl+s",
+        "select all": "ctrl+a",
+        "zoom in": "ctrl+plus",
+        "zoom out": "ctrl+minus",
+        "page down": "Page_Down",
+        "page up": "Page_Up",
+    }
+    low = raw.lower()
+    if low in shortcut_map:
+        return shortcut_map[low]
+
+    parts = raw.replace("+", " ").replace("-", " ").split()
+    if not parts:
+        return "Return"
+
+    out = []
+    for p in parts:
+        pl = p.lower()
+        if pl in MOD_ALIASES:
+            out.append(MOD_ALIASES[pl])
+        elif pl in KEY_ALIASES:
+            out.append(KEY_ALIASES[pl])
+        elif len(p) == 1:
+            out.append(p.lower())
+        else:
+            out.append(p)
+    return "+".join(out)
+
+
+def _decompress_mozlz4(path: str) -> bytes:
+    import struct
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:8] != b"mozLz40\x00":
+        return b""
+    src = data[12:]
+    out = bytearray()
+    i = 0
+    n = len(src)
+    while i < n:
+        token = src[i]
+        i += 1
+        lit_len = token >> 4
+        if lit_len == 15:
+            while i < n:
+                b = src[i]
+                i += 1
+                lit_len += b
+                if b != 255:
+                    break
+        out.extend(src[i : i + lit_len])
+        i += lit_len
+        if i >= n:
+            break
+        offset = src[i] | (src[i + 1] << 8)
+        i += 2
+        match_len = (token & 0x0F) + 4
+        if (token & 0x0F) == 15:
+            while i < n:
+                b = src[i]
+                i += 1
+                match_len += b
+                if b != 255:
+                    break
+        start = len(out) - offset
+        for j in range(match_len):
+            out.append(out[start + j])
+    return bytes(out)
+
+
+def get_firefox_open_tabs():
+    """Return list of open Firefox tabs: [{"index": 1..N, "title": str, "url": str}]"""
+    import glob
+    patterns = [
+        os.path.expanduser("~/snap/firefox/common/.mozilla/firefox/*.default*/sessionstore-backups/recovery.jsonlz4"),
+        os.path.expanduser("~/.mozilla/firefox/*.default*/sessionstore-backups/recovery.jsonlz4"),
+    ]
+    paths = []
+    for pat in patterns:
+        paths.extend(glob.glob(pat))
+    if not paths:
+        return []
+    paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+    try:
+        raw = _decompress_mozlz4(paths[0])
+        j = json.loads(raw.decode("utf-8", errors="ignore"))
+        tabs_out = []
+        for w in j.get("windows", []):
+            for t_idx, t in enumerate(w.get("tabs", []), 1):
+                entries = t.get("entries", [])
+                idx = t.get("index", len(entries)) - 1
+                if 0 <= idx < len(entries):
+                    e = entries[idx]
+                    tabs_out.append({
+                        "index": t_idx,
+                        "title": e.get("title", "") or "",
+                        "url": e.get("url", "") or "",
+                    })
+            if tabs_out:
+                break
+        return tabs_out
+    except Exception:
+        return []
+
+
+def do_focus(target: str) -> str:
+    t = target.strip().strip("\"'")
+    if not t:
+        return "focus:noop"
+    ql = t.lower()
+
+    clients = get_clients()
+    for c in clients:
+        if ql in c["title"].lower() or ql in c["class"].lower():
+            run_cmd(["dwm-msg", "focus-win", c["id"]])
+            time.sleep(0.12)
+            return f"focus:{c['class']}({c['title'][:24]})"
+
+    run_cmd(["dwm-msg", "focus-class", t])
+    time.sleep(0.10)
+    return f"focus:{t}"
+
+
+def do_click(target: str, button: int = 1, repeat: int = 1) -> str:
+    x, y, label = resolve_target_coords(target)
+    cmd = ["xdotool", "mousemove", "--sync", str(x), str(y), "click"]
+    if repeat > 1:
+        cmd.extend(["--repeat", str(repeat), "--delay", "65"])
+    cmd.append(str(button))
+    run_cmd(cmd)
+    time.sleep(0.10)
+    btn_name = {1: "click", 2: "middle_click", 3: "right_click"}.get(button, "click")
+    if repeat == 2 and button == 1:
+        btn_name = "double_click"
+    return f"{btn_name}({x},{y} {label})"
+
+
+def execute_step(line: str) -> str:
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return ""
+    line = line.lstrip("-*•0123456789.) ").strip()
+    if not line:
+        return ""
+
+    parts = line.split(None, 1)
+    op = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    res = _execute_step_inner(op, arg)
+    if op in ("view", "workspace", "desktop", "focus", "switch", "open", "launch", "spawn", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
+        invalidate_ocr_cache()
+    return res
+
+
+def _first_int(s: str, default: int = 1) -> int:
+    for tok in s.split():
+        if tok.isdigit():
+            return int(tok)
+    return default
+
+
+def _execute_step_inner(op: str, arg: str) -> str:
+    if op in ("view", "workspace", "desktop"):
+        tag = str(_first_int(arg, 1))
+        run_cmd(["dwm-msg", "view", tag])
+        time.sleep(0.10)
+        return f"view {tag}"
+
+    if op in ("tag", "move_to", "send_to"):
+        tag = str(_first_int(arg, 1))
+        run_cmd(["dwm-msg", "tag", tag])
+        time.sleep(0.08)
+        return f"tag {tag}"
+
+    if op in ("focus", "switch"):
+        return do_focus(arg)
+
+    if op in ("open", "launch", "spawn"):
+        app = arg.lower().strip()
+        if app in ("ghostty", "firefox", "ikhal"):
+            subprocess.Popen([app], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.45)
+            return f"open {app}"
+        return do_focus(arg)
+
+    if op in ("key", "press", "shortcut", "hotkey"):
+        combo = normalize_key_combo(arg)
+        run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+        run_cmd(["xdotool", "key", "--clearmodifiers", combo])
+        time.sleep(0.07)
+        return f"key {combo}"
+
+    if op in ("type", "write", "input", "dictate"):
+        text = arg.strip("\"'")
+        if text:
+            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
+            time.sleep(0.06)
+        return f"type “{text}”"
+
+    if op in ("type_enter", "submit"):
+        text = arg.strip("\"'")
+        if text:
+            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
+            time.sleep(0.05)
+        run_cmd(["xdotool", "key", "--clearmodifiers", "Return"])
+        time.sleep(0.07)
+        return f"type+Enter “{text}”"
+
+    if op in ("click", "left_click"):
+        return do_click(arg, button=1, repeat=1)
+
+    if op == "click_pos":
+        return do_click(arg, button=1, repeat=1)
+
+    if op == "right_click":
+        return do_click(arg, button=3, repeat=1)
+
+    if op == "middle_click":
+        return do_click(arg, button=2, repeat=1)
+
+    if op == "double_click":
+        return do_click(arg, button=1, repeat=2)
+
+    if op in ("move_mouse", "hover", "point"):
+        x, y, label = resolve_target_coords(arg)
+        run_cmd(["xdotool", "mousemove", "--sync", str(x), str(y)])
+        return f"move({x},{y} {label})"
+
+    if op == "scroll":
+        sp = arg.split()
+        direction = sp[0].lower() if sp else "down"
+        amt = 4
+        if len(sp) > 1 and sp[1].isdigit():
+            amt = max(1, min(20, int(sp[1])))
+        btn = {"up": "4", "cima": "4", "down": "5", "baixo": "5", "left": "6", "right": "7"}.get(direction, "5")
+        # Ensure mouse is inside the focused window before scrolling
+        wx, wy, ww, wh = get_win_geometry()
+        mx, my = get_mouse_location()
+        if not (wx <= mx <= wx + ww and wy <= my <= wy + wh):
+            run_cmd(["xdotool", "mousemove", "--sync", str(wx + ww // 2), str(wy + wh // 2)])
+        run_cmd(["xdotool", "click", "--repeat", str(amt), "--delay", "30", btn])
+        time.sleep(0.06)
+        return f"scroll {direction}x{amt}"
+
+    if op == "wm":
+        act = arg.lower().strip()
+        wm_map = {
+            "fullscreen": ["dwm-msg", "togglefullscreen"],
+            "maximize": ["dwm-msg", "togglefullscreen"],
+            "float": ["dwm-msg", "togglefloating"],
+            "floating": ["dwm-msg", "togglefloating"],
+            "zoom": ["dwm-msg", "zoom"],
+            "master": ["dwm-msg", "zoom"],
+            "close": ["dwm-msg", "killclient"],
+            "kill": ["dwm-msg", "killclient"],
+            "next": ["dwm-msg", "focusstack", "next"],
+            "prev": ["dwm-msg", "focusstack", "prev"],
+            "tile": ["dwm-msg", "layout", "tile"],
+            "monocle": ["dwm-msg", "layout", "monocle"],
+            "bar": ["dwm-msg", "togglebar"],
+            "togglebar": ["dwm-msg", "togglebar"],
+            "kbd": ["dwm-ctl", "kbd-toggle"],
+            "kbd_toggle": ["dwm-ctl", "kbd-toggle"],
+        }
+        if act in wm_map:
+            run_cmd(wm_map[act])
+            time.sleep(0.08)
+            return f"wm:{act}"
+
+    if op == "sys":
+        act = arg.lower().strip()
+        sys_map = {
+            "vol_up": ["dwm-ctl", "vol-up"],
+            "vol_down": ["dwm-ctl", "vol-down"],
+            "vol_mute": ["dwm-ctl", "vol-mute"],
+            "mute": ["dwm-ctl", "vol-mute"],
+            "bri_up": ["dwm-ctl", "bri-up"],
+            "bri_down": ["dwm-ctl", "bri-down"],
+            "calendar": ["dwm-cal", "popup"],
+            "cal_popup": ["dwm-cal", "popup"],
+            "cal_open": ["dwm-cal", "open"],
+            "wifi": ["dwm-net", "wifi"],
+            "battery": ["dwm-ctl", "battery-info"],
+            "reload_theme": ["dwm-ctl", "reload-xrdb"],
+            "screenshot": ["dwm-shot", "full"],
+            "screenshot_full": ["dwm-shot", "full"],
+            "screenshot_area": ["dwm-shot", "select"],
+            "lock": ["slock"],
+            "pi_show": ["dwm-jarvis-pi", "show"],
+            "pi_stop": ["dwm-jarvis-pi", "stop"],
+            "pi_reset": ["dwm-jarvis-pi", "reset"],
+        }
+        if act in sys_map:
+            subprocess.Popen(sys_map[act], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.08)
+            return f"sys:{act}"
+
+    if op == "sh":
+        if arg:
+            subprocess.run(["/bin/sh", "-c", arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.08)
+            return arg
+
+    if op == "pi":
+        if arg:
+            subprocess.Popen(["dwm-jarvis-pi", "send", arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return f"pi:{arg}"
+
+    if op == "wait":
+        ms = _first_int(arg, 200)
+        time.sleep(min(ms, 5000) / 1000.0)
+        return f"wait {ms}ms"
+
+    return ""
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: dwm-act {context|find <target>|ocr|exec [script]|<step>}", file=sys.stderr)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    if cmd == "context":
+        foc = get_focused()
+        clients = get_clients()
+        win_list = ", ".join(f"{c['class']} '{c['title'][:40]}'" for c in clients)
+        foc_str = f"{foc['class']} '{foc['title'][:45]}'" if foc else "none"
+        open_tabs = get_firefox_open_tabs()
+        tabs_str = ", ".join(f"#{t['index']} '{t['title'][:30]}'" for t in open_tabs[:8])
+        out_str = f"Focused: {foc_str}\nOpen windows: [{win_list}]"
+        if tabs_str:
+            out_str += f"\nBrowser tabs: [{tabs_str}]"
+        print(out_str)
+        return
+
+    if cmd == "find":
+        target = " ".join(sys.argv[2:])
+        x, y, label = resolve_target_coords(target)
+        print(f"{x}\t{y}\t{label}")
+        return
+
+    if cmd == "ocr":
+        items = capture_screen_ocr(force=True)
+        for it in items:
+            print(f"{it['x']}\t{it['y']}\t{it['conf']:.0f}\t{it['text']}")
+        return
+
+    if cmd == "exec":
+        script = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else sys.stdin.read()
+        executed = []
+        for raw_line in script.replace(";", "\n").splitlines():
+            res = execute_step(raw_line)
+            if res:
+                executed.append(res)
+        print(" → ".join(executed))
+        return
+
+    # Single command invocation: dwm-act <op> [args...]
+    res = execute_step(" ".join(sys.argv[1:]))
+    if res:
+        print(res)
+
+
+if __name__ == "__main__":
+    main()
