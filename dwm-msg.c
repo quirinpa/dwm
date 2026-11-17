@@ -28,13 +28,19 @@ usage(void)
 		"  togglebar               Toggle top status bar visibility\n"
 		"  focus-win <win_id>      Focus window by X11 Window ID (hex or dec)\n"
 		"  focus-class <name>      Focus first window matching WM_CLASS / title\n"
-		"  clients                 List managed windows (id, class, title)\n"
+		"  tag-win <win_id> <1..9> Move specific window ID to tag 1..9 without switching focus\n"
+		"  pull-win <win_id>       Pull specific window ID onto current workspace and focus it\n"
+		"  pull-class <name>       Pull first window matching WM_CLASS / title onto current workspace\n"
+		"  close-win <win_id>      Close specific window ID without switching focus\n"
+		"  curtag                  Print current active workspace number (1..9)\n"
+		"  other                   Print the unfocused window on the current workspace\n"
+		"  clients                 List managed windows (id, class, title, tag, visible)\n"
 		"  focused                 Print currently focused window info\n");
 	exit(1);
 }
 
 static int
-send_cmd(Display *dpy, Window root, long cmd, long arg)
+send_cmd2(Display *dpy, Window root, long cmd, long arg1, long arg2)
 {
 	XEvent ev;
 	Atom cmd_atom = XInternAtom(dpy, "_DWM_CMD", False);
@@ -45,11 +51,48 @@ send_cmd(Display *dpy, Window root, long cmd, long arg)
 	ev.xclient.message_type = cmd_atom;
 	ev.xclient.format = 32;
 	ev.xclient.data.l[0] = cmd;
-	ev.xclient.data.l[1] = arg;
+	ev.xclient.data.l[1] = arg1;
+	ev.xclient.data.l[2] = arg2;
 
 	XSendEvent(dpy, root, False, SubstructureRedirectMask | SubstructureNotifyMask, &ev);
 	XFlush(dpy);
 	return 0;
+}
+
+static int
+send_cmd(Display *dpy, Window root, long cmd, long arg)
+{
+	return send_cmd2(dpy, root, cmd, arg, 0);
+}
+
+static unsigned int
+get_cardinal_prop(Display *dpy, Window w, const char *atom_name, unsigned int def_val)
+{
+	Atom prop_atom = XInternAtom(dpy, atom_name, False);
+	Atom actual_type;
+	int actual_format;
+	unsigned long nitems = 0, bytes_after;
+	unsigned char *prop = NULL;
+	unsigned int val = def_val;
+
+	if (XGetWindowProperty(dpy, w, prop_atom, 0, 1, False, XA_CARDINAL,
+		&actual_type, &actual_format, &nitems, &bytes_after, &prop) == Success && prop) {
+		if (nitems > 0)
+			val = (unsigned int)(*(unsigned long *)prop);
+		XFree(prop);
+	}
+	return val;
+}
+
+static int
+mask_to_tag_num(unsigned int mask)
+{
+	int t;
+	for (t = 1; t <= 9; t++) {
+		if (mask & (1U << (t - 1)))
+			return t;
+	}
+	return 1;
 }
 
 static void
@@ -154,31 +197,88 @@ main(int argc, char *argv[])
 	} else if (!strcmp(argv[1], "focus-win") && argc >= 3) {
 		Window w = (Window)strtoul(argv[2], NULL, 0);
 		send_cmd(dpy, root, 12, (long)w);
-	} else if (!strcmp(argv[1], "clients") || !strcmp(argv[1], "focus-class")) {
+	} else if (!strcmp(argv[1], "tag-win") && argc >= 4) {
+		Window w = (Window)strtoul(argv[2], NULL, 0);
+		int t = atoi(argv[3]);
+		unsigned int mask = (t == 0) ? ~0U : (t >= 1 && t <= 9 ? (1U << (t - 1)) : 0);
+		if (w && mask)
+			send_cmd2(dpy, root, 13, (long)w, (long)mask);
+	} else if (!strcmp(argv[1], "pull-win") && argc >= 3) {
+		Window w = (Window)strtoul(argv[2], NULL, 0);
+		if (w)
+			send_cmd(dpy, root, 14, (long)w);
+	} else if (!strcmp(argv[1], "close-win") && argc >= 3) {
+		Window w = (Window)strtoul(argv[2], NULL, 0);
+		if (w)
+			send_cmd(dpy, root, 15, (long)w);
+	} else if (!strcmp(argv[1], "curtag")) {
+		unsigned int cur_mask = get_cardinal_prop(dpy, root, "_DWM_CUR_TAG", 1U);
+		printf("%d\n", mask_to_tag_num(cur_mask));
+	} else if (!strcmp(argv[1], "clients") || !strcmp(argv[1], "focus-class") ||
+	           !strcmp(argv[1], "pull-class") || !strcmp(argv[1], "other")) {
 		Atom net_clients = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
+		Atom net_active = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", False);
 		Atom actual_type;
 		int actual_format;
 		unsigned long nitems = 0, bytes_after;
 		unsigned char *prop = NULL;
+		unsigned char *act_prop = NULL;
+		Window active_win = 0;
+		unsigned int cur_mask = get_cardinal_prop(dpy, root, "_DWM_CUR_TAG", 1U);
 
+		if (XGetWindowProperty(dpy, root, net_active, 0, 1, False, XA_WINDOW,
+			&actual_type, &actual_format, &nitems, &bytes_after, &act_prop) == Success && act_prop) {
+			if (nitems > 0)
+				active_win = *(Window *)act_prop;
+			XFree(act_prop);
+		}
+
+		nitems = 0;
 		if (XGetWindowProperty(dpy, root, net_clients, 0, 1024, False, XA_WINDOW,
 			&actual_type, &actual_format, &nitems, &bytes_after, &prop) == Success && prop) {
 			Window *wins = (Window *)prop;
 			unsigned long i;
+			Window fallback_other = 0;
+			char fallback_cls[128] = "-", fallback_title[256] = "";
+			int fallback_tag = 1;
+
 			for (i = 0; i < nitems; i++) {
 				XClassHint ch = { NULL, NULL };
 				char title[256];
+				unsigned int c_mask = get_cardinal_prop(dpy, wins[i], "_DWM_CLIENT_TAGS", cur_mask);
+				int c_tag = mask_to_tag_num(c_mask);
+				int on_cur = (c_mask & cur_mask) ? 1 : 0;
+
 				XGetClassHint(dpy, wins[i], &ch);
 				get_win_title(dpy, wins[i], title, sizeof(title));
 				if (!strcmp(argv[1], "clients")) {
-					printf("0x%08lx\t%s\t%s\n", wins[i],
+					printf("0x%08lx\t%s\t%s\t%d\t%d\n", wins[i],
 						ch.res_class ? ch.res_class : "-",
-						title);
+						title, c_tag, on_cur);
+				} else if (!strcmp(argv[1], "other")) {
+					if (wins[i] != active_win) {
+						if (on_cur) {
+							printf("0x%08lx\t%s\t%s\t%d\n", wins[i],
+								ch.res_class ? ch.res_class : "-",
+								title, c_tag);
+							if (ch.res_class) XFree(ch.res_class);
+							if (ch.res_name) XFree(ch.res_name);
+							fallback_other = 0;
+							break;
+						} else if (!fallback_other) {
+							fallback_other = wins[i];
+							snprintf(fallback_cls, sizeof(fallback_cls), "%s",
+								ch.res_class ? ch.res_class : "-");
+							snprintf(fallback_title, sizeof(fallback_title), "%s", title);
+							fallback_tag = c_tag;
+						}
+					}
 				} else if (argc >= 3) {
 					if (strcasestr_match(ch.res_class, argv[2]) ||
 					    strcasestr_match(ch.res_name, argv[2]) ||
 					    strcasestr_match(title, argv[2])) {
-						send_cmd(dpy, root, 12, (long)wins[i]);
+						long op = !strcmp(argv[1], "pull-class") ? 14 : 12;
+						send_cmd(dpy, root, op, (long)wins[i]);
 						if (ch.res_class) XFree(ch.res_class);
 						if (ch.res_name) XFree(ch.res_name);
 						break;
@@ -186,6 +286,10 @@ main(int argc, char *argv[])
 				}
 				if (ch.res_class) XFree(ch.res_class);
 				if (ch.res_name) XFree(ch.res_name);
+			}
+			if (!strcmp(argv[1], "other") && fallback_other) {
+				printf("0x%08lx\t%s\t%s\t%d\n", fallback_other,
+					fallback_cls, fallback_title, fallback_tag);
 			}
 			XFree(prop);
 		}

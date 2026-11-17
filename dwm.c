@@ -303,7 +303,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[PropertyNotify] = propertynotify,
 	[UnmapNotify] = unmapnotify
 };
-static Atom wmatom[WMLast], netatom[NetLast], dwmcmdatom;
+static Atom wmatom[WMLast], netatom[NetLast], dwmcmdatom, dwmcurtagatom, dwmclienttagsatom;
 static int restart = 0;
 static int running = 1;
 static Cur *cursor[CurLast];
@@ -441,9 +441,24 @@ arrange(Monitor *m)
 void
 arrangemon(Monitor *m)
 {
+	Client *c;
+	unsigned long curtag;
+
 	snprintf(m->ltsymbol, sizeof(m->ltsymbol), "%s", m->lt[m->sellt]->symbol);
 	if (m->lt[m->sellt]->arrange)
 		m->lt[m->sellt]->arrange(m);
+	if (m == selmon && dwmcurtagatom) {
+		curtag = (unsigned long)m->tagset[m->seltags];
+		XChangeProperty(dpy, root, dwmcurtagatom, XA_CARDINAL, 32,
+			PropModeReplace, (unsigned char *)&curtag, 1);
+	}
+	if (dwmclienttagsatom) {
+		for (c = m->clients; c; c = c->next) {
+			unsigned long ctags = (unsigned long)c->tags;
+			XChangeProperty(dpy, c->win, dwmclienttagsatom, XA_CARDINAL, 32,
+				PropModeReplace, (unsigned char *)&ctags, 1);
+		}
+	}
 }
 
 void
@@ -640,6 +655,35 @@ clientmessage(XEvent *e)
 				}
 				focus(c);
 				restack(selmon);
+			}
+			break;
+		case 13: /* tag specific client by window id without switching workspace */
+			if ((c = wintoclient((Window)cme->data.l[1])) && (cme->data.l[2] & TAGMASK)) {
+				c->tags = (unsigned int)cme->data.l[2] & TAGMASK;
+				focus(NULL);
+				arrange(c->mon);
+			}
+			break;
+		case 14: /* pull specific client into current tagset and focus it */
+			if ((c = wintoclient((Window)cme->data.l[1]))) {
+				if (c->mon != selmon)
+					sendmon(c, selmon);
+				c->tags = selmon->tagset[selmon->seltags];
+				focus(c);
+				arrange(selmon);
+			}
+			break;
+		case 15: /* close specific client by window id */
+			if ((c = wintoclient((Window)cme->data.l[1]))) {
+				if (!sendevent(c, wmatom[WMDelete])) {
+					XGrabServer(dpy);
+					XSetErrorHandler(xerrordummy);
+					XSetCloseDownMode(dpy, DestroyAll);
+					XKillClient(dpy, c->win);
+					XSync(dpy, False);
+					XSetErrorHandler(xerror);
+					XUngrabServer(dpy);
+				}
 			}
 			break;
 		}
@@ -1327,6 +1371,21 @@ manage(Window w, XWindowAttributes *wa)
 	} else {
 		c->mon = selmon;
 		applyrules(c);
+		if (dwmclienttagsatom) {
+			Atom actual_type;
+			int actual_fmt;
+			unsigned long nitems = 0, bytes_after;
+			unsigned char *prop = NULL;
+			if (XGetWindowProperty(dpy, w, dwmclienttagsatom, 0, 1, False, XA_CARDINAL,
+				&actual_type, &actual_fmt, &nitems, &bytes_after, &prop) == Success && prop) {
+				if (nitems > 0) {
+					unsigned int saved = (unsigned int)(*(unsigned long *)prop) & TAGMASK;
+					if (saved)
+						c->tags = saved;
+				}
+				XFree(prop);
+			}
+		}
 	}
 
 	c->bw = borderpx;
@@ -1880,6 +1939,8 @@ setup(void)
 	netatom[NetWMWindowTypeDialog] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
 	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
 	dwmcmdatom = XInternAtom(dpy, "_DWM_CMD", False);
+	dwmcurtagatom = XInternAtom(dpy, "_DWM_CUR_TAG", False);
+	dwmclienttagsatom = XInternAtom(dpy, "_DWM_CLIENT_TAGS", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);

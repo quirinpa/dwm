@@ -10,15 +10,14 @@ CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
 CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/dwm-auren-embeddings.json"
 XRES_CACHE="/tmp/dwm-auren-xres-$USER.env"
 AUREN_CFG="$HOME/.config/auren/config.json"
+JARVISD_SOCK="/tmp/dwm-auren-$USER.sock"
+JARVISD_PID="/tmp/dwm-auren-daemon-$USER.pid"
+DONE_CHIME_WAV="/tmp/dwm-voice-done-$USER.wav"
 
 load_xres_cache() {
-    now_s=$(date +%s 2>/dev/null || echo 0)
     if [ -f "$XRES_CACHE" ]; then
-        mtime=$(stat -c %Y "$XRES_CACHE" 2>/dev/null || echo 0)
-        if [ $(( now_s - mtime )) -lt 15 ]; then
-            . "$XRES_CACHE"
-            return 0
-        fi
+        . "$XRES_CACHE"
+        return 0
     fi
     if command -v xrdb >/dev/null 2>&1; then
         xrdb -query 2>/dev/null | awk '
@@ -43,19 +42,20 @@ get_xres() {
     [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
-AUREN_URL=$(get_xres "dwm.auren.url" "http://localhost:4242/v1/systemone")
+load_xres_cache
+AUREN_URL="${XRES_auren_url:-http://localhost:4242/v1/systemone}"
 case "$AUREN_URL" in
     http://*|https://*) ;;
     *) AUREN_URL="http://localhost:4242/v1/systemone" ;;
 esac
-AUREN_BASE=$(printf '%s' "$AUREN_URL" | sed 's|/v1/.*$||')
-AUREN_MODEL=$(get_xres "dwm.auren.model" "bge-base")
-AUREN_CHAT_MODEL=$(get_xres "dwm.auren.chat_model" "qwen")
-AUREN_THRESHOLD=$(get_xres "dwm.auren.threshold" "0.68")
-NB=$(get_xres "dwm.normbgcolor" "#11111b")
-NF=$(get_xres "dwm.normfgcolor" "#a6adc8")
-SB=$(get_xres "dwm.mauvecolor" "#7c6ff2")
-SF=$(get_xres "dwm.selfgcolor" "#ffffff")
+AUREN_BASE="${AUREN_URL%%/v1/*}"
+AUREN_MODEL="${XRES_auren_model:-bge-base}"
+AUREN_CHAT_MODEL="${XRES_auren_chat_model:-qwen}"
+AUREN_THRESHOLD="${XRES_auren_threshold:-0.68}"
+NB="${XRES_normbgcolor:-#11111b}"
+NF="${XRES_normfgcolor:-#a6adc8}"
+SB="${XRES_mauvecolor:-#7c6ff2}"
+SF="${XRES_selfgcolor:-#ffffff}"
 FN="Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true"
 
 notify_auren() {
@@ -130,30 +130,41 @@ EOF
     fi
 }
 
-run_query() {
-    query="$1"
-    dry_run="$2"
-    [ -z "$query" ] && exit 0
-    if [ ! -f "$CONF_FILE" ]; then
-        notify_auren "  Auren Router" "Missing $CONF_FILE"
-        exit 1
+play_done_earcon() {
+    if [ -f "$DONE_CHIME_WAV" ] && command -v pw-play >/dev/null 2>&1; then
+        pw-play --volume=0.30 "$DONE_CHIME_WAV" >/dev/null 2>&1 &
     fi
+}
 
-    ensure_auren_server
+run_auren_python() {
+    mode_or_query="$1"
+    python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_CHAT_MODEL" "$AUREN_THRESHOLD" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
+import sys, os, re, json, math, socket, subprocess, urllib.request, importlib.util, importlib.machinery
 
-    eval_out=$(python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_CHAT_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
-import sys, os, json, math, hashlib, subprocess, urllib.request
-
-conf_path, cache_path, sys1_url, embed_model, chat_model, thresh_s, raw_query = sys.argv[1:8]
+conf_path, cache_path, sys1_url, embed_model, chat_model, thresh_s, raw_query, sock_path = sys.argv[1:9]
 thresh = float(thresh_s)
 base_url = sys1_url.split("/v1/")[0] if "/v1/" in sys1_url else sys1_url.rstrip("/")
 embed_url = base_url + "/v1/embeddings"
 chat_url = base_url + "/v1/chat/completions"
 
+dwm_act = None
+try:
+    act_path = os.path.expanduser("~/.local/bin/dwm-act")
+    if not os.path.exists(act_path):
+        act_path = os.path.join(os.path.dirname(os.path.abspath(conf_path)), "dwm-act")
+    if os.path.exists(act_path):
+        loader = importlib.machinery.SourceFileLoader("dwm_act", act_path)
+        spec = importlib.util.spec_from_loader("dwm_act", loader)
+        dwm_act = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(dwm_act)
+except Exception:
+    dwm_act = None
+
 commands = {}
 static_exemplars = []
 param_exemplars = []
 param_frames = []
+conf_mtime = 0.0
 
 PARTICLES = {
     "to", "on", "up", "in", "at", "for", "of", "from", "with", "into",
@@ -162,33 +173,45 @@ PARTICLES = {
 }
 LEADING_ARTICLES = {"the", "some", "a", "an", "o", "a", "os", "as", "um", "uma"}
 
-with open(conf_path, "r", encoding="utf-8") as f:
-    conf_raw = f.read()
+def reload_conf_if_needed():
+    global conf_mtime, commands, static_exemplars, param_exemplars, param_frames
+    try:
+        mt = os.path.getmtime(conf_path)
+    except Exception:
+        return
+    if mt == conf_mtime and commands:
+        return
+    conf_mtime = mt
+    commands = {}
+    static_exemplars = []
+    param_exemplars = []
+    param_frames = []
+    with open(conf_path, "r", encoding="utf-8") as f:
+        conf_raw = f.read()
+    for line in conf_raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|", 2)]
+        if len(parts) < 3:
+            continue
+        iid, cmd, ex_str = parts
+        exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
+        if iid and cmd and exemplars:
+            commands[iid] = cmd
+            for ex in exemplars:
+                if "{arg}" in cmd and "{arg}" in ex:
+                    pre, suf = ex.split("{arg}", 1)
+                    pre_c = pre.strip().lower()
+                    suf_c = suf.strip().lower()
+                    param_exemplars.append((iid, ex, pre_c, suf_c))
+                    if pre_c and not suf_c:
+                        param_frames.append((iid, f"{pre_c} something"))
+                else:
+                    static_exemplars.append((iid, ex))
+    param_exemplars.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
 
-for line in conf_raw.splitlines():
-    line = line.strip()
-    if not line or line.startswith("#") or "|" not in line:
-        continue
-    parts = [p.strip() for p in line.split("|", 2)]
-    if len(parts) < 3:
-        continue
-    iid, cmd, ex_str = parts
-    exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
-    if iid and cmd and exemplars:
-        commands[iid] = cmd
-        for ex in exemplars:
-            if "{arg}" in cmd and "{arg}" in ex:
-                pre, suf = ex.split("{arg}", 1)
-                pre_c = pre.strip().lower()
-                suf_c = suf.strip().lower()
-                param_exemplars.append((iid, ex, pre_c, suf_c))
-                if pre_c and not suf_c:
-                    param_frames.append((iid, f"{pre_c} something"))
-            else:
-                static_exemplars.append((iid, ex))
-
-# Sort parametric templates by specificity (longest prefix + suffix first)
-param_exemplars.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
+reload_conf_if_needed()
 
 vec_map = {}
 if os.path.exists(cache_path):
@@ -228,6 +251,25 @@ def ensure_embedded(texts):
 def cmd_to_dsl(cmd_str):
     if cmd_str.startswith("dwm-act "):
         return cmd_str[len("dwm-act "):].strip()
+    if cmd_str.startswith("dwm-msg "):
+        rest = cmd_str[len("dwm-msg "):].strip()
+        if rest.startswith(("view ", "tag ")):
+            return rest
+        if rest.startswith("focus-class "):
+            return "focus " + rest[len("focus-class "):].strip()
+        wm_map = {
+            "togglefullscreen": "wm fullscreen",
+            "togglefloating": "wm float",
+            "zoom": "wm zoom",
+            "focusstack next": "wm next",
+            "focusstack prev": "wm prev",
+            "killclient": "wm close",
+            "layout tile": "wm tile",
+            "layout monocle": "wm monocle",
+            "togglebar": "wm bar",
+        }
+        if rest in wm_map:
+            return wm_map[rest]
     return f"sh {cmd_str}"
 
 MEDIA_WORDS = {
@@ -340,6 +382,7 @@ def match_static_embedding(clause):
     if not q_vec:
         return None
 
+    q_has_other = bool({"other", "outra", "outro"} & set(q_words))
     best_iid = ""
     best_sim = -1.0
     for iid, ex in static_exemplars:
@@ -349,6 +392,9 @@ def match_static_embedding(clause):
             continue
         ex_digits = {w for w in ex_words if w.isdigit()}
         if q_digits != ex_digits:
+            continue
+        ex_has_other = bool({"other", "outra", "outro"} & set(ex_words))
+        if q_has_other != ex_has_other:
             continue
         ex_vec = vec_map.get(ex)
         if not ex_vec:
@@ -385,215 +431,270 @@ def match_single_clause(clause):
         return sf
     # 5. Direct semantic target match against live windows, open tabs, places.sqlite, and .desktop apps
     try:
-        res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=3.0).strip()
-        if res_raw:
-            best_t = json.loads(res_raw)
-            t_score = float(best_t.get("score", 0.0))
-            if t_score >= 0.78:
-                return f"target:{best_t.get('kind', 'env')}", min(t_score, 0.99), f'open "{c_clean}"'
+        if dwm_act is not None:
+            best_t = dwm_act.resolve_semantic_target(c_clean) or {}
+        else:
+            res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=3.0).strip()
+            best_t = json.loads(res_raw) if res_raw else {}
+        t_score = float(best_t.get("score", 0.0))
+        if t_score >= 0.78:
+            return f"target:{best_t.get('kind', 'env')}", min(t_score, 0.99), f'open "{c_clean}"'
     except Exception:
         pass
     return None
 
-# Normalize compound recording noun-phrases so 'screen and audio' is not split on ' and '
-import re
+def evaluate_query(raw_query):
+    reload_conf_if_needed()
+    q_trimmed = raw_query.strip().strip(",.!?;:")
+    q_low = q_trimmed.lower()
 
-q_trimmed = raw_query.strip().strip(",.!?;:")
-q_low = q_trimmed.lower()
+    # Fast-path 1: Direct Jarvis lockdown phrases
+    if re.match(r"^(jarvis[\s,.!?;:-]+)?(lock[\s-]*down|locked[\s-]*down|log[\s-]*down|enter\s+lock[\s-]*down|lock[\s-]*down\s+mode|turn\s+off(\s+jarvis)?|shut\s+down\s+jarvis|stop\s+listening|disable\s+jarvis|go\s+to\s+sleep|bloquear(\s+jarvis)?|modo\s+bloqueio|desligar\s+jarvis)$", q_low):
+        return "ACT\t1.00\tjarvis_lockdown\tsys lockdown"
 
-# Fast-path 1: Direct Jarvis lockdown phrases
-if re.match(r"^(jarvis[\s,.!?;:-]+)?(lock[\s-]*down|locked[\s-]*down|log[\s-]*down|enter\s+lock[\s-]*down|lock[\s-]*down\s+mode|turn\s+off(\s+jarvis)?|shut\s+down\s+jarvis|stop\s+listening|disable\s+jarvis|go\s+to\s+sleep|bloquear(\s+jarvis)?|modo\s+bloqueio|desligar\s+jarvis)$", q_low):
-    print("ACT\t1.00\tjarvis_lockdown\tsys lockdown")
-    sys.exit(0)
+    # Fast-path 1b: Voice Undo ("Scratch that", "Undo", "Undo that", "Desfazer")
+    if re.match(r"^(jarvis[\s,.!?;:-]+)?(scratch\s+that|undo(\s+that|\s+last(\s+command|\s+action)?)?|revert(\s+that)?|never\s*mind\s+that|take\s+that\s+back|desfazer|anular(\s+comando)?)$", q_low):
+        return "ACT\t1.00\tvoice_undo\tundo"
 
-# Fast-path 2: Window manager instructions & "how do I..." questions
-if (
-    re.match(r"^(how\s+do\s+i|how\s+can\s+i|how\s+to|what\s+is\s+the\s+(shortcut|keybinding|key|command)|what\s+(shortcut|keybinding|key)|which\s+(shortcut|key)|tell\s+me\s+how\s+to|explain\s+how\s+to|can\s+you\s+(tell|explain|show)\s+me\s+how|give\s+me\s+instructions|instructions\s+(on|for)|help\s+me\s+use|como\s+(fa[cç]o|posso|usar|utilizar)|qual\s+([eé]\s+)?o\s+atalho|instru[cç][oõ]es\s+(para|de|do))\b", q_low)
-    or re.search(r"\b(window\s+manager\s+(instructions|help|shortcuts|guide)|dwm\s+(instructions|help|shortcuts|guide)|(show|open)\s+(keyboard\s+)?shortcuts|mostrar\s+atalhos|ajuda\s+do\s+(dwm|gestor\s+de\s+janelas))\b", q_low)
-):
-    safe_q = q_trimmed.replace('"', "")
-    print(f'ACT\t0.99\twm_help\thelp "{safe_q}"')
-    sys.exit(0)
+    # Fast-path 1c: Context-aware X11 pronouns ("the other window", "pull <app> here", "search google for <X>", "ask pi <X>")
+    m_other_tag = re.match(r"^(?:move|send|put|throw|muda|envia)\s+(?:the\s+|a\s+)?(?:other|outra)\s+(?:window|janela)\s+(?:to|on|into|para\s+o|para)\s+(?:workspace|tag|desktop|screen|ecr[aã])\s+([1-9])$", q_low)
+    if m_other_tag:
+        t_num = m_other_tag.group(1)
+        return f"ACT\t1.00\ttag_other_{t_num}\ttag_other {t_num}"
 
-norm_query = raw_query
-for pat, rep in (
-    (r"(?i)\b(screen|desktop|video)\s+and\s+(audio|sound|mic|microphone|voice)\b", r"\1 with \2"),
-    (r"(?i)\b(audio|sound|mic|microphone|voice)\s+and\s+(screen|desktop|video)\b", r"\2 with \1"),
-    (r"(?i)\b(ecrã|ecra|tela)\s+e\s+(áudio|audio|som|voz|microfone)\b", r"\1 com \2"),
-):
-    norm_query = re.sub(pat, rep, norm_query)
+    if re.match(r"^(?:close|kill|fechar|fecha)\s+(?:the\s+|a\s+)?(?:other|outra)\s+(?:window|janela)$", q_low):
+        return "ACT\t1.00\tclose_other\tclose_other"
 
-raw_query = norm_query
+    if re.match(r"^(?:focus|switch\s+to|go\s+to|focar|mudar\s+para)\s+(?:the\s+|a\s+)?(?:other|outra)\s+(?:window|janela)$", q_low):
+        return "ACT\t1.00\tfocus_other\tfocus_other"
 
-# Prepare candidate clauses if ';', ', then ', ' and then ', ' then ', or ' and ' is present
-sub_parts = []
-for chunk in re.split(r"(?i);|,\s+and\s+then\s+|,\s+then\s+|,\s+and\s+|\s+and\s+then\s+|\s+then\s+|\s+and\s+|,\s+", raw_query):
-    p = chunk.strip().strip(",")
-    if p:
-        sub_parts.append(p)
+    m_pull = re.match(r"^(?:pull|bring|summon|puxar|trazer)\s+(.+?)(?:\s+here|\s+to\s+this\s+(?:workspace|tag|desktop)|\s+para\s+aqui)?$", q_trimmed, re.I)
+    if m_pull:
+        p_arg = clean_extracted_arg("pull_target", m_pull.group(1))
+        for suf in (" here", " to this workspace", " to this tag", " to this desktop", " para aqui"):
+            if p_arg.lower().endswith(suf):
+                p_arg = p_arg[:-len(suf)].strip()
+        if p_arg and p_arg.lower() not in ("up",):
+            return f'ACT\t0.99\tpull_target\tpull "{p_arg}"'
 
-texts_to_embed = (
-    [ex for _, ex in static_exemplars]
-    + [tf for _, tf in param_frames]
-    + [raw_query.strip().strip(",.!?;:")]
-)
-if len(sub_parts) > 1:
-    for p in sub_parts:
-        texts_to_embed.append(p.strip().strip(",.!?;:"))
-ensure_embedded(texts_to_embed)
+    m_search = re.match(r"^(?:search\s+google\s+for|search\s+the\s+web\s+for|search\s+for|google|look\s+up|pesquisar\s+no\s+google\s+por|pesquisar\s+por|procurar\s+no\s+google)\s+(.+?)(?:\s+on\s+google)?$", q_trimmed, re.I)
+    if m_search:
+        s_arg = m_search.group(1).strip().strip("\"'")
+        if s_arg:
+            return f'ACT\t0.99\tsearch_web\tsearch "{s_arg}"'
 
-# First check if the entire utterance matches a single intent (e.g. "type X and press enter" or static intent)
-whole_hit = None
-if len(sub_parts) == 1:
-    whole_hit = match_single_clause(raw_query)
-else:
-    # Check if the whole utterance matches a prefix+suffix template (like "type {arg} and press enter")
-    c_clean = raw_query.strip().strip(",.!?;:")
-    for iid, ex, pre, suf in param_exemplars:
-        if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
-            arg_val = c_clean[len(pre):len(c_clean) - len(suf)].strip().strip("\"'")
-            if arg_val:
-                whole_hit = (iid, 0.99, cmd_to_dsl(commands[iid].replace("{arg}", arg_val)))
+    m_pi = re.match(r"^(?:ask\s+pi\s+to|ask\s+pi|tell\s+pi\s+to|pede\s+ao\s+pi\s+para|pergunta\s+ao\s+pi)\s+(.+)$", q_trimmed, re.I)
+    if m_pi:
+        pi_arg = m_pi.group(1).strip().strip("\"'")
+        if pi_arg:
+            return f'ACT\t0.99\tpi_ask\tpi "{pi_arg}"'
+
+    # Fast-path 2: Window manager instructions & "how do I..." questions
+    if (
+        re.match(r"^(how\s+do\s+i|how\s+can\s+i|how\s+to|what\s+is\s+the\s+(shortcut|keybinding|key|command)|what\s+(shortcut|keybinding|key)|which\s+(shortcut|key)|tell\s+me\s+how\s+to|explain\s+how\s+to|can\s+you\s+(tell|explain|show)\s+me\s+how|give\s+me\s+instructions|instructions\s+(on|for)|help\s+me\s+use|como\s+(fa[cç]o|posso|usar|utilizar)|qual\s+([eé]\s+)?o\s+atalho|instru[cç][oõ]es\s+(para|de|do))\b", q_low)
+        or re.search(r"\b(window\s+manager\s+(instructions|help|shortcuts|guide)|dwm\s+(instructions|help|shortcuts|guide)|(show|open)\s+(keyboard\s+)?shortcuts|mostrar\s+atalhos|ajuda\s+do\s+(dwm|gestor\s+de\s+janelas))\b", q_low)
+    ):
+        safe_q = q_trimmed.replace('"', "")
+        return f'ACT\t0.99\twm_help\thelp "{safe_q}"'
+
+    norm_query = raw_query
+    for pat, rep in (
+        (r"(?i)\b(screen|desktop|video)\s+and\s+(audio|sound|mic|microphone|voice)\b", r"\1 with \2"),
+        (r"(?i)\b(audio|sound|mic|microphone|voice)\s+and\s+(screen|desktop|video)\b", r"\2 with \1"),
+        (r"(?i)\b(ecrã|ecra|tela)\s+e\s+(áudio|audio|som|voz|microfone)\b", r"\1 com \2"),
+    ):
+        norm_query = re.sub(pat, rep, norm_query)
+
+    raw_query = norm_query
+
+    sub_parts = []
+    for chunk in re.split(r"(?i);|,\s+and\s+then\s+|,\s+then\s+|,\s+and\s+|\s+and\s+then\s+|\s+then\s+|\s+and\s+|,\s+", raw_query):
+        p = chunk.strip().strip(",")
+        if p:
+            sub_parts.append(p)
+
+    texts_to_embed = (
+        [ex for _, ex in static_exemplars]
+        + [tf for _, tf in param_frames]
+        + [raw_query.strip().strip(",.!?;:")]
+    )
+    if len(sub_parts) > 1:
+        for p in sub_parts:
+            texts_to_embed.append(p.strip().strip(",.!?;:"))
+    ensure_embedded(texts_to_embed)
+
+    whole_hit = None
+    if len(sub_parts) == 1:
+        whole_hit = match_single_clause(raw_query)
+    else:
+        c_clean = raw_query.strip().strip(",.!?;:")
+        for iid, ex, pre, suf in param_exemplars:
+            if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
+                arg_val = c_clean[len(pre):len(c_clean) - len(suf)].strip().strip("\"'")
+                if arg_val:
+                    whole_hit = (iid, 0.99, cmd_to_dsl(commands[iid].replace("{arg}", arg_val)))
+                    break
+
+    if whole_hit:
+        iid, sim, dsl = whole_hit
+        return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
+
+    if len(sub_parts) > 1:
+        matched_steps = []
+        min_sim = 1.0
+        for p in sub_parts:
+            m = match_single_clause(p)
+            if not m:
+                matched_steps = []
                 break
+            matched_steps.append(m[2])
+            if m[1] < min_sim:
+                min_sim = m[1]
+        if matched_steps:
+            return f"ACT\t{min_sim:.2f}\tsequence\t{' ; '.join(matched_steps)}"
+    else:
+        m = match_param_template(raw_query)
+        if m:
+            return f"ACT\t{m[1]:.2f}\t{m[0]}\t{m[2]}"
 
-if whole_hit:
-    iid, sim, dsl = whole_hit
-    print(f"ACT\t{sim:.2f}\t{iid}\t{dsl}")
+    try:
+        ctx_out = subprocess.check_output(["dwm-act", "context"], text=True, timeout=1.5).strip()
+    except Exception:
+        ctx_out = ""
+
+    user_msg = f"{ctx_out}\nUser: {raw_query}" if ctx_out else f"User: {raw_query}"
+    try:
+        req = urllib.request.Request(
+            chat_url,
+            data=json.dumps({
+                "model": chat_model,
+                "session_id": "jarvis-dsl",
+                "temperature": 0.0,
+                "max_tokens": 72,
+                "messages": [
+                    {"role": "system", "content": SYS_PROMPT},
+                    {"role": "user", "content": user_msg},
+                ],
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=12.0) as resp:
+            cdata = json.loads(resp.read().decode("utf-8"))
+        raw_plan = cdata["choices"][0]["message"]["content"].strip()
+        llm_steps = []
+        for line in raw_plan.splitlines():
+            line = line.strip().lstrip("-*•0123456789.) ").strip("`").strip()
+            if not line:
+                continue
+            op = line.split()[0].lower()
+            if op in VALID_OPS:
+                llm_steps.append(line)
+        if llm_steps:
+            return f"ACT\t0.95\tqwen-planner\t{' ; '.join(llm_steps)}"
+    except Exception:
+        pass
+
+    return "LOW\t0.00\tnone\t"
+
+if raw_query == "--daemon":
+    ensure_embedded([ex for _, ex in static_exemplars] + [tf for _, tf in param_frames])
+    try:
+        if os.path.exists(sock_path):
+            os.unlink(sock_path)
+    except Exception:
+        pass
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(sock_path)
+    os.chmod(sock_path, 0o600)
+    srv.listen(16)
+    while True:
+        try:
+            conn, _ = srv.accept()
+            data = b""
+            while len(data) < 8192:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"\n" in chunk:
+                    break
+            line = data.decode("utf-8", errors="ignore").strip()
+            if line == "PING":
+                conn.sendall(b"PONG\n")
+            elif line.startswith("EVAL\t"):
+                q = line[5:].strip()
+                res = evaluate_query(q)
+                conn.sendall((res + "\n").encode("utf-8"))
+            elif line.startswith("ACT_EXEC\t"):
+                dsl = line[9:].strip()
+                if dwm_act is not None:
+                    out = dwm_act.execute_script(dsl)
+                else:
+                    out = subprocess.check_output(["dwm-act", "exec", dsl], text=True, timeout=30.0).strip()
+                conn.sendall((out + "\n").encode("utf-8"))
+            conn.close()
+        except KeyboardInterrupt:
+            break
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
     sys.exit(0)
 
-# If there are multiple sub-parts joined by ' and ' / ';', succeed if EVERY part matches intents.conf
-if len(sub_parts) > 1:
-    matched_steps = []
-    min_sim = 1.0
-    for p in sub_parts:
-        m = match_single_clause(p)
-        if not m:
-            matched_steps = []
-            break
-        matched_steps.append(m[2])
-        if m[1] < min_sim:
-            min_sim = m[1]
-    if matched_steps:
-        print(f"ACT\t{min_sim:.2f}\tsequence\t{' ; '.join(matched_steps)}")
-        sys.exit(0)
-else:
-    # Single clause that didn't match above: check if it matches a parametric template
-    m = match_param_template(raw_query)
-    if m:
-        print(f"ACT\t{m[1]:.2f}\t{m[0]}\t{m[2]}")
-        sys.exit(0)
-
-# 2. Local Qwen2.5-1.5B-Instruct GGUF Natural-Language Planner on axil-auren (/v1/chat/completions)
-SYS_PROMPT = """Convert the user's voice request into a sequence of desktop commands, one per line. Output ONLY commands, no explanations.
-
-Commands:
-view <1..9>
-tag <1..9>
-focus <app_or_tab_or_title>
-open <ghostty|firefox|whatsapp|youtube|github|gmail|url>
-play <song_or_genre_or_video>
-media <play|pause|toggle|next|prev>
-key <Return|Escape|Tab|space|BackSpace|Up|Down|Left|Right|Page_Down|Page_Up|ctrl+t|ctrl+w|ctrl+Tab|ctrl+shift+Tab|ctrl+r|ctrl+f|ctrl+c|ctrl+v|ctrl+z|ctrl+s|ctrl+a|ctrl+l>
-type <text>
-type_enter <text>
-click <visible_text_on_screen>
-click_pos <center|top-left|top-right|bottom-left|bottom-right|current>
-right_click <visible_text_or_current>
-double_click <visible_text_or_current>
-scroll <up|down> <1..10>
-wm <fullscreen|float|zoom|close|next|prev|tile|monocle|bar|kbd>
-sys <vol_up|vol_down|vol_mute|bri_up|bri_down|calendar|screenshot|lock>
-record <start|stop|toggle|screen>
-wait_for <page|window|audio|element|recording> [target]
-wait_sec <1..60>
-wait <ms>
-
-Examples:
-User: Move this window to workspace 3, switch to workspace 3, and make it fullscreen
-tag 3
-view 3
-wm fullscreen
-
-User: Go to Firefox, open a new tab, type github.com and press enter
-focus firefox
-key ctrl+t
-type github.com
-key Return
-
-User: Switch to WhatsApp, click Type a message, write I am on my way and hit enter
-focus WhatsApp
-click Type a message
-type I am on my way
-key Return
-
-User: Focus my terminal, press control c, then type make test and hit enter
-focus ghostty
-key ctrl+c
-type make test
-key Return
-
-User: Start recording my screen and audio, switch to workspace 2, open firefox, and stop recording
-record start
-view 2
-open firefox
-record stop"""
-
-VALID_OPS = {
-    "view", "workspace", "desktop", "tag", "move_to", "send_to", "focus", "switch",
-    "open", "launch", "spawn", "play", "media", "player", "mpris", "key", "press",
-    "shortcut", "hotkey", "type", "write", "input", "dictate", "type_enter", "submit",
-    "click", "left_click", "click_pos", "right_click", "middle_click", "double_click",
-    "move_mouse", "hover", "point", "scroll", "wm", "sys", "sh", "pi", "record", "rec",
-    "screenrec", "wait_for", "wait_sec", "sleep_sec", "wait", "sleep"
+print(evaluate_query(raw_query))
+PYEOF
 }
 
-try:
-    ctx_out = subprocess.check_output(["dwm-act", "context"], text=True, timeout=1.5).strip()
-except Exception:
-    ctx_out = ""
+ensure_jarvisd() {
+    if [ -S "$JARVISD_SOCK" ]; then
+        if [ -f "$JARVISD_PID" ]; then
+            dpid=$(cat "$JARVISD_PID" 2>/dev/null)
+            if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+                return 0
+            fi
+        fi
+    fi
+    rm -f "$JARVISD_SOCK"
+    setsid "$0" daemon </dev/null >/dev/null 2>&1 &
+    printf '%s\n' "$!" > "$JARVISD_PID"
+    i=0
+    while [ "$i" -lt 15 ]; do
+        [ -S "$JARVISD_SOCK" ] && return 0
+        sleep 0.04
+        i=$(( i + 1 ))
+    done
+}
 
-user_msg = f"{ctx_out}\nUser: {raw_query}" if ctx_out else f"User: {raw_query}"
-try:
-    req = urllib.request.Request(
-        chat_url,
-        data=json.dumps({
-            "model": chat_model,
-            "session_id": "jarvis-dsl",
-            "temperature": 0.0,
-            "max_tokens": 72,
-            "messages": [
-                {"role": "system", "content": SYS_PROMPT},
-                {"role": "user", "content": user_msg},
-            ],
-        }).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=12.0) as resp:
-        cdata = json.loads(resp.read().decode("utf-8"))
-    raw_plan = cdata["choices"][0]["message"]["content"].strip()
-    llm_steps = []
-    for line in raw_plan.splitlines():
-        line = line.strip().lstrip("-*•0123456789.) ").strip("`").strip()
-        if not line:
-            continue
-        op = line.split()[0].lower()
-        if op in VALID_OPS:
-            llm_steps.append(line)
-    if llm_steps:
-        print(f"ACT\t0.95\tqwen-planner\t{' ; '.join(llm_steps)}")
-        sys.exit(0)
-except Exception as e:
-    pass
+run_query() {
+    query="$1"
+    dry_run="$2"
+    [ -z "$query" ] && exit 0
+    if [ ! -f "$CONF_FILE" ]; then
+        notify_auren "  Auren Router" "Missing $CONF_FILE"
+        exit 1
+    fi
 
-print(f"LOW\t0.00\tnone\t")
-PYEOF
-    )
+    eval_out=""
+    if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
+        eval_out=$(printf 'EVAL\t%s\n' "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
+    fi
+    if [ -z "$eval_out" ]; then
+        ensure_auren_server
+        ensure_jarvisd
+        if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
+            eval_out=$(printf 'EVAL\t%s\n' "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
+        fi
+    fi
+    if [ -z "$eval_out" ]; then
+        eval_out=$(run_auren_python "$query")
+    fi
 
-    status=$(printf '%s\n' "$eval_out" | cut -f1)
-    score=$(printf '%s\n' "$eval_out" | cut -f2)
-    intent=$(printf '%s\n' "$eval_out" | cut -f3)
-    cmd=$(printf '%s\n' "$eval_out" | cut -f4-)
+    tab_char=$(printf '\t')
+    IFS="$tab_char" read -r status score intent cmd <<EOF
+$eval_out
+EOF
 
     if [ "$dry_run" = "--dry-run" ]; then
         printf 'status=%s score=%s intent=%s cmd=%s\n' "$status" "$score" "$intent" "$cmd"
@@ -605,8 +706,14 @@ PYEOF
             notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
             printf '%s\n' "$$" > "/tmp/dwm-acting-$USER.pid"
             refresh_bar
-            /home/quirinpa/.local/bin/dwm-act exec "$cmd"
-            rc=$?
+            if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
+                printf 'ACT_EXEC\t%s\n' "$cmd" | nc -w 30 -N -U "$JARVISD_SOCK" >/dev/null 2>&1
+                rc=$?
+            else
+                /home/quirinpa/.local/bin/dwm-act exec "$cmd"
+                rc=$?
+            fi
+            play_done_earcon
             rm -f "/tmp/dwm-acting-$USER.pid"
             refresh_bar
             exit "$rc"
@@ -617,6 +724,7 @@ PYEOF
             refresh_bar
             /bin/sh -c "$cmd"
             rc=$?
+            play_done_earcon
             rm -f "/tmp/dwm-acting-$USER.pid"
             refresh_bar
             exit "$rc"
@@ -625,6 +733,7 @@ PYEOF
             word_count=$(printf '%s\n' "$query" | wc -w | tr -d ' ')
             alnum_len=$(printf '%s' "$query" | tr -cd '[:alnum:]' | wc -c | tr -d ' ')
             if [ "${word_count:-0}" -ge 2 ] && [ "${alnum_len:-0}" -ge 6 ]; then
+                play_done_earcon
                 exec /home/quirinpa/.local/bin/dwm-jarvis-pi send "$query"
             fi
             notify_auren "  Low Confidence" "“${query}”"
@@ -666,8 +775,13 @@ case "${1:-dmenu}" in
         ;;
     warmup)
         ensure_auren_server
+        ensure_jarvisd
         run_query "switch to workspace 1" "--dry-run" >/dev/null 2>&1 || true
         run_query "Put this window on workspace 2 and go there and make it fullscreen" "--dry-run" >/dev/null 2>&1 || true
+        ;;
+    daemon)
+        ensure_auren_server
+        run_auren_python "--daemon"
         ;;
     query|exec)
         shift

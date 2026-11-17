@@ -4,39 +4,37 @@ This document captures architectural and UX ideas for evolving the **dwm + Jarvi
 
 ---
 
-## 1. Zero-Fork Persistent Daemon for `dwm-auren` & `dwm-act` (Latency: ~150ms → <15ms)
-Currently, each transcribed voice command from `dwm-whisperd` spawns `scripts/dwm-auren` (which starts a Python process and loads cached embeddings) and then spawns `scripts/dwm-act` (another Python process).
-- **Improvement**: Run a single persistent Unix-socket daemon (`dwm-jarvisd`) in memory with `intents.conf` embeddings pre-loaded and X11/AT-SPI connections warm.
-- **Benefit**: Sub-15ms intent classification and action dispatch after Whisper transcription completes, eliminating Python startup overhead.
+## 1. [IMPLEMENTED] Zero-Fork Persistent Daemon for `dwm-auren` & `dwm-act` (Latency: ~150ms → ~13ms)
+- **Implemented**: `dwm-auren daemon` listens on `/tmp/dwm-auren-$USER.sock` with `intents.conf`, cached embeddings (`~/.cache/dwm-auren-embeddings.json`), and `dwm-act` dynamically imported in-process.
+- **Result**: ~13ms average intent classification and action dispatch over Unix socket (`EVAL` / `ACT_EXEC`), eliminating Python and subprocess startup overhead.
 
 ---
 
-## 2. Local Neural TTS & Subtle Audio Earcons (Eyes-Free Feedback)
+## 2. [IMPLEMENTED: Earcons] Local Neural TTS & Subtle Audio Earcons (Eyes-Free Feedback)
 Visual feedback via Dunst notifications and the status bar robot icon (`Yellow` / `Red` / `Silver`) requires looking at the top bar.
-- **Subtle Two-Tone Earcons**: Play a crisp 30ms synthesized chime when transitioning from `Yellow → Red` (wake word detected) and `Red → Yellow` (command completed).
+- **Subtle Two-Tone Earcons (Implemented)**: Synthesizes and plays a crisp ascending wake chime (`587 Hz → 880 Hz`, `/tmp/dwm-voice-chime-$USER.wav`) when transitioning from `Yellow → Red` and a soft descending completion chime (`659 Hz → 523 Hz`, `/tmp/dwm-voice-done-$USER.wav`) when an action completes.
 - **Ultra-Fast Local TTS (`piper` or `espeak-ng`)**: Optionally speak concise answers aloud in ~50ms when answering questions via `dwm-help ask` or reporting system status (battery, network, time).
 
 ---
 
-## 3. Short Conversational Follow-Up Window (Multi-Turn Chaining Without Repeating "Jarvis")
-Currently, `dwm-whisperd` immediately returns to wake-word standby after executing a command.
-- **Improvement**: Keep a configurable 3–4 second follow-up window after an action completes so follow-up commands can be spoken naturally without repeating *"Jarvis"* (e.g. *"Jarvis, open Firefox"* → *"go to github.com"* → *"move window to workspace 2"*).
-- **Voice Undo**: Support saying *"Scratch that"* or *"Undo"* within 5 seconds to reverse the last window/workspace state change.
+## 3. [IMPLEMENTED] Short Conversational Follow-Up Window & Voice Undo ("Scratch that")
+- **Conversational Follow-Up Window (Implemented)**: `dwm-whisperd` accepts an 8th parameter `followup_ms` (default `3800` ms via `dwm.voice.followup_ms`) in `JARVIS_WAIT`. After executing a command, Jarvis stays in active command-listening mode (`Red` icon) for 3.8 seconds so follow-up commands can be spoken naturally without repeating *"Jarvis"*, then transitions back to wake-word standby (`Yellow` icon) automatically if silent.
+- **Voice Undo (Implemented)**: `dwm-act` snapshots window tags, active workspace, and focused window to `/tmp/dwm-undo-$USER.json` before mutating actions; saying *"Scratch that"* or *"Undo"* restores the prior window/workspace state.
 
 ---
 
-## 4. Optional Auto-Resume After Unlocking `slock`
-Distinguish between:
-1. **Silent / Privacy Mode (`Mod+v`)**: Toggles the Jarvis microphone listener Off (`Silver`) without locking the screen.
-2. **Voice Lockdown (`"Jarvis, lockdown"`)**: Turns the Jarvis microphone listener Off (`Silver`) and locks the X11 screen (`slock`), with an optional setting to automatically resume listening once `slock` is unlocked.
+## 4. [IMPLEMENTED] Separate Privacy Toggle (`Mod+v`) vs. Voice Lockdown (`"Jarvis, lockdown"`) + `Mod+s` Lock
+1. **Silent / Privacy Mode (`Mod+v`)**: Toggles the Jarvis microphone listener Off (`Silver`) and On (`Yellow`) without locking the screen.
+2. **Immediate Screen Lock (`Mod+s` / `Mod+Shift+l`)**: Locks the X11 screen via `slock`.
+3. **Voice Lockdown (`"Jarvis, lockdown"`)**: Turns the Jarvis microphone listener Off (`Silver`) and locks the X11 screen (`slock`).
 
 ---
 
-## 5. Context-Aware Disambiguation & Live X11 Pronouns ("this", "that", "other")
-Feed live desktop state (`dwm-msg` client list, active workspace, primary selection, clipboard) into the intent resolver:
-- *"Jarvis, search Google for **this**"* → reads the current X11 primary selection (`xclip -o`) and opens the search in Firefox.
-- *"Jarvis, move **the other window** to workspace 4"* → targets the unfocused window in the current stack without losing focus on the active window.
-- *"Jarvis, pull **Firefox** here"* → locates the workspace where Firefox is open and brings it to the current tag.
+## 5. [IMPLEMENTED] Context-Aware Disambiguation & Live X11 Pronouns ("this", "that", "other")
+Live desktop state (`_DWM_CUR_TAG`, `_DWM_CLIENT_TAGS`, `dwm-msg other`, `xsel`/`xclip` primary & clipboard selections) is wired into `dwm`, `dwm-msg`, `dwm-act`, and `dwm-auren`:
+- *"Jarvis, search Google for **this**"* / *"ask Pi to explain **this**"* → reads the current X11 primary/clipboard selection and opens the search in Firefox or sends it to Pi.
+- *"Jarvis, move **the other window** to workspace 4"* / *"close **the other window**"* / *"focus **the other window**"* → targets the unfocused window on the current workspace (`dwm-msg other` + `tag-win` / `close-win` / `focus-win`) without losing focus on the active window.
+- *"Jarvis, pull **Firefox** here"* → locates the workspace where the target window is open and pulls it onto the current workspace (`dwm-msg pull-win`).
 
 ---
 

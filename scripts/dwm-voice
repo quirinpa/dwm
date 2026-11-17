@@ -17,6 +17,7 @@ JARVIS_OUT="/tmp/dwm-jarvis-$USER.out"
 SRV_PID_FILE="/tmp/dwm-whisper-srv-$USER.pid"
 XRES_CACHE="/tmp/dwm-voice-xres-$USER.env"
 CHIME_WAV="/tmp/dwm-voice-chime-$USER.wav"
+DONE_CHIME_WAV="/tmp/dwm-voice-done-$USER.wav"
 
 CONF_DIR="$HOME/.config/dwm-voice"
 MODEL_DIR="$HOME/.local/share/whisper"
@@ -155,20 +156,24 @@ notify_voice() {
 }
 
 ensure_chime_wav() {
-    if [ ! -f "$CHIME_WAV" ]; then
-        python3 - "$CHIME_WAV" << 'PYEOF2' 2>/dev/null || true
+    if [ ! -f "$CHIME_WAV" ] || [ ! -f "$DONE_CHIME_WAV" ]; then
+        python3 - "$CHIME_WAV" "$DONE_CHIME_WAV" << 'PYEOF2' 2>/dev/null || true
 import sys, wave, struct, math
 rate = 16000
-frames = bytearray()
-for freq, dur in [(587.33, 0.045), (880.0, 0.070)]:
-    n = int(rate * dur)
-    for i in range(n):
-        env = math.sin(math.pi * i / n)
-        val = int(7500 * env * math.sin(2.0 * math.pi * freq * i / rate))
-        frames.extend(struct.pack("<h", val))
-with wave.open(sys.argv[1], "wb") as w:
-    w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-    w.writeframes(bytes(frames))
+def make_wav(path, notes, amp):
+    frames = bytearray()
+    for freq, dur in notes:
+        n = int(rate * dur)
+        for i in range(n):
+            env = math.sin(math.pi * i / n)
+            val = int(amp * env * math.sin(2.0 * math.pi * freq * i / rate))
+            frames.extend(struct.pack("<h", val))
+    with wave.open(path, "wb") as w:
+        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+        w.writeframes(bytes(frames))
+
+make_wav(sys.argv[1], [(587.33, 0.040), (880.00, 0.060)], 7200)
+make_wav(sys.argv[2], [(659.25, 0.032), (523.25, 0.045)], 5200)
 PYEOF2
     fi
 }
@@ -246,12 +251,16 @@ jarvis_loop() {
 
     trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT"; restore_idle_state; exit 0' INT TERM
 
+    next_followup_ms=0
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
-        printf 'jarvis\n' > "$STATE_FILE"
-        refresh_bar
+        if [ "${next_followup_ms:-0}" -le 0 ]; then
+            printf 'jarvis\n' > "$STATE_FILE"
+            refresh_bar
+        fi
 
         thresh_db=$(get_xres "dwm.voice.threshold_db" "-36")
         cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "650")
+        followup_cfg=$(get_xres "dwm.voice.followup_ms" "3800")
         wake_word=$(get_wake_word)
         lang_mode=$(get_lang_mode)
         port=$(get_srv_port)
@@ -259,7 +268,7 @@ jarvis_loop() {
         ensure_whisper_server
         rm -f "$JARVIS_OUT"
 
-        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
+        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|${next_followup_ms}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
         jvad_pid=$!
         printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
         wait "$jvad_pid"
@@ -268,6 +277,7 @@ jarvis_loop() {
 
         if [ "$rc" -eq 130 ]; then
             rm -f "$JARVIS_OUT"
+            next_followup_ms=0
             sleep 0.15
             continue
         fi
@@ -288,13 +298,14 @@ jarvis_loop() {
                 rm -f "$ACTING_PID_FILE"
                 refresh_bar
             ) </dev/null >/dev/null 2>&1 &
-            printf 'jarvis\n' > "$STATE_FILE"
-            refresh_bar
+            next_followup_ms="$followup_cfg"
         elif [ "$rc" -eq 2 ]; then
+            next_followup_ms=0
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
             notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
         else
+            next_followup_ms=0
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
         fi

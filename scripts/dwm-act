@@ -16,6 +16,7 @@ os.environ["PATH"] = f"{os.path.expanduser('~/.local/bin')}:{os.environ.get('PAT
 os.environ["OMP_THREAD_LIMIT"] = "1"
 
 OCR_CACHE_PATH = f"/tmp/dwm-ocr-{os.environ.get('USER', 'user')}.json"
+UNDO_STATE_PATH = f"/tmp/dwm-undo-{os.environ.get('USER', 'user')}.json"
 TESSERACT_BIN = os.path.expanduser("~/.local/bin/tesseract")
 if not os.path.exists(TESSERACT_BIN):
     TESSERACT_BIN = "tesseract"
@@ -56,7 +57,15 @@ def get_clients():
     for line in out.splitlines():
         parts = line.split("\t")
         if len(parts) >= 3:
-            clients.append({"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip()})
+            tag_num = int(parts[3].strip()) if (len(parts) >= 4 and parts[3].strip().isdigit()) else 1
+            vis = (parts[4].strip() == "1") if len(parts) >= 5 else True
+            clients.append({
+                "id": parts[0].strip(),
+                "class": parts[1].strip(),
+                "title": parts[2].strip(),
+                "tag": tag_num,
+                "visible": vis,
+            })
     return clients
 
 
@@ -66,6 +75,155 @@ def get_focused():
     if len(parts) >= 3:
         return {"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip()}
     return None
+
+
+def get_curtag() -> int:
+    out = run_cmd(["dwm-msg", "curtag"])
+    return int(out) if out.isdigit() else 1
+
+
+def get_other_window():
+    out = run_cmd(["dwm-msg", "other"])
+    parts = out.split("\t")
+    if len(parts) >= 3:
+        tag_num = int(parts[3].strip()) if (len(parts) >= 4 and parts[3].strip().isdigit()) else get_curtag()
+        return {"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip(), "tag": tag_num}
+    return None
+
+
+def get_x11_selection(max_chars: int = 600) -> str:
+    """Read live X11 PRIMARY selection (highlighted text) with fallback to CLIPBOARD."""
+    for sel in ("primary", "clipboard"):
+        val = run_cmd(["xclip", "-o", "-selection", sel], timeout=0.6)
+        if not val:
+            flag = "-op" if sel == "primary" else "-ob"
+            val = run_cmd(["xsel", flag], timeout=0.6)
+        if val:
+            cleaned = " ".join(val.split())
+            if cleaned:
+                return cleaned[:max_chars]
+    return ""
+
+
+PRONOUN_EXACT = {
+    "this", "that", "it", "selection", "the selection", "selected text",
+    "the selected text", "highlighted text", "clipboard", "the clipboard",
+    "isto", "isso", "aquilo", "a selecao", "a seleção", "texto selecionado",
+}
+
+
+def expand_selection_pronouns(text: str, for_pi: bool = False) -> str:
+    """Substitute X11 selection pronouns ('this', 'selection', 'clipboard') with live X11 selection."""
+    t_clean = (text or "").strip().strip("\"'")
+    if not t_clean:
+        return t_clean
+    t_low = t_clean.lower()
+    if t_low in PRONOUN_EXACT:
+        sel = get_x11_selection()
+        return sel if sel else t_clean
+    if for_pi:
+        import re
+        if re.search(r"\b(this|that|selection|selected\s+text|clipboard|isto|isso)\b", t_low):
+            sel = get_x11_selection()
+            if sel:
+                return f"{t_clean}\n\n[Selected X11 text: {sel}]"
+    return t_clean
+
+
+def save_undo_snapshot(op_desc: str = ""):
+    """Persist reversible X11 window/workspace snapshot before mutating desktop state."""
+    try:
+        cur_tag = get_curtag()
+        foc = get_focused()
+        clients = get_clients()
+        snap = {
+            "ts": time.time(),
+            "op": op_desc,
+            "active_tag": cur_tag,
+            "focused_id": foc["id"] if foc else "",
+            "client_tags": {c["id"]: c.get("tag", cur_tag) for c in clients},
+        }
+        with open(UNDO_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(snap, f)
+    except Exception:
+        pass
+
+
+def do_undo() -> str:
+    """Restore the most recent window/workspace state snapshot ('Scratch that' / 'Undo')."""
+    if not os.path.exists(UNDO_STATE_PATH):
+        return "undo:empty"
+    try:
+        with open(UNDO_STATE_PATH, "r", encoding="utf-8") as f:
+            snap = json.load(f)
+    except Exception:
+        return "undo:error"
+
+    cur_state = {
+        "ts": time.time(),
+        "op": "undo",
+        "active_tag": get_curtag(),
+        "focused_id": (get_focused() or {}).get("id", ""),
+        "client_tags": {c["id"]: c.get("tag", 1) for c in get_clients()},
+    }
+
+    client_tags = snap.get("client_tags", {})
+    for wid, tnum in client_tags.items():
+        if wid and isinstance(tnum, int) and 1 <= tnum <= 9:
+            run_cmd(["dwm-msg", "tag-win", str(wid), str(tnum)])
+
+    active_tag = snap.get("active_tag", 1)
+    if isinstance(active_tag, int) and 1 <= active_tag <= 9:
+        run_cmd(["dwm-msg", "view", str(active_tag)])
+
+    focused_id = snap.get("focused_id", "")
+    if focused_id:
+        run_cmd(["dwm-msg", "focus-win", str(focused_id)])
+
+    try:
+        with open(UNDO_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(cur_state, f)
+    except Exception:
+        pass
+
+    prev_op = snap.get("op", "last action")
+    return f"undo({prev_op}->tag {active_tag})"
+
+
+def do_pull(target: str) -> str:
+    """Pull a window from another workspace onto the current workspace and focus it."""
+    t_clean = (target or "").strip().strip("\"'")
+    if not t_clean:
+        return "pull:noop"
+    save_undo_snapshot(f"pull {t_clean}")
+    t_low = t_clean.lower()
+    if t_low in {"other", "other window", "the other window", "outra janela", "a outra janela"}:
+        other = get_other_window()
+        if other:
+            run_cmd(["dwm-msg", "pull-win", other["id"]])
+            return f"pull:{other['class']}({other['id']})"
+    best = resolve_semantic_target(t_clean)
+    if best and best.get("kind") == "win":
+        run_cmd(["dwm-msg", "pull-win", best["ref"]])
+        wait_window_focused(best["ref"], timeout=1.0)
+        return f"pull:{best['label']}"
+    run_cmd(["dwm-msg", "pull-class", t_clean])
+    wait_window_focused(t_clean, timeout=1.0)
+    return f"pull:{t_clean}"
+
+
+def do_search(query: str) -> str:
+    """Search Google in Firefox for the query (expanding 'this'/'selection' from X11 selection)."""
+    import urllib.parse
+    q_expanded = expand_selection_pronouns(query)
+    if not q_expanded:
+        return "search:empty"
+    prev_title = _get_firefox_title()
+    url = f"https://www.google.com/search?q={urllib.parse.quote_plus(q_expanded)}"
+    subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _focus_firefox_window()
+    wait_page_ready(prev_title=prev_title, target_hint=q_expanded, timeout=4.0)
+    return f"search:“{q_expanded[:40]}”"
 
 
 def get_win_geometry(wid: str = None):
@@ -1526,9 +1684,20 @@ def execute_step(line: str, in_chain: bool = False) -> str:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     res = _execute_step_inner(op, arg, in_chain=in_chain)
-    if op in ("view", "workspace", "desktop", "focus", "switch", "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
+    if op in ("view", "workspace", "desktop", "focus", "switch", "focus_other", "pull", "bring", "tag_other", "close_other", "undo", "scratch", "search", "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
         invalidate_ocr_cache()
     return res
+
+
+def execute_script(script: str) -> str:
+    lines = [ln.strip() for ln in (script or "").replace(";", "\n").splitlines() if ln.strip()]
+    in_chain = len(lines) > 1
+    executed = []
+    for raw_line in lines:
+        res = execute_step(raw_line, in_chain=in_chain)
+        if res:
+            executed.append(res)
+    return " → ".join(executed)
 
 
 def _first_int(s: str, default: int = 1) -> int:
@@ -1539,29 +1708,73 @@ def _first_int(s: str, default: int = 1) -> int:
 
 
 def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
+    if op in ("undo", "scratch", "scratch_that", "revert"):
+        return do_undo()
+
     if op in ("record", "rec", "screenrec"):
         return do_record(arg, in_chain=in_chain)
 
     if op in ("view", "workspace", "desktop"):
         tag = str(_first_int(arg, 1))
+        save_undo_snapshot(f"view {tag}")
         run_cmd(["dwm-msg", "view", tag])
         time.sleep(0.10)
         return f"view {tag}"
 
-    if op in ("tag", "move_to", "send_to"):
+    if op in ("tag_other", "move_other", "send_other"):
         tag = str(_first_int(arg, 1))
+        other = get_other_window()
+        if not other:
+            return "tag_other:none"
+        save_undo_snapshot(f"tag_other {tag}")
+        run_cmd(["dwm-msg", "tag-win", other["id"], tag])
+        time.sleep(0.08)
+        return f"tag_other({other['class']}->{tag})"
+
+    if op in ("close_other", "kill_other"):
+        other = get_other_window()
+        if not other:
+            return "close_other:none"
+        run_cmd(["dwm-msg", "close-win", other["id"]])
+        time.sleep(0.08)
+        return f"close_other({other['class']})"
+
+    if op in ("focus_other", "switch_other"):
+        other = get_other_window()
+        if not other:
+            return "focus_other:none"
+        save_undo_snapshot("focus_other")
+        run_cmd(["dwm-msg", "focus-win", other["id"]])
+        wait_window_focused(other["id"], timeout=1.0)
+        return f"focus_other({other['class']})"
+
+    if op in ("pull", "bring", "summon"):
+        return do_pull(arg)
+
+    if op in ("search", "google", "lookup"):
+        return do_search(arg)
+
+    if op in ("tag", "move_to", "send_to"):
+        if "other" in arg.lower() or "outra" in arg.lower():
+            return _execute_step_inner("tag_other", arg, in_chain=in_chain)
+        tag = str(_first_int(arg, 1))
+        save_undo_snapshot(f"tag {tag}")
         run_cmd(["dwm-msg", "tag", tag])
         time.sleep(0.08)
         return f"tag {tag}"
 
     if op in ("focus", "switch"):
+        if arg.strip().lower() in {"other", "other window", "the other window", "outra janela", "a outra janela"}:
+            return _execute_step_inner("focus_other", "", in_chain=in_chain)
+        save_undo_snapshot(f"focus {arg}")
         return do_focus(arg, allow_open=True)
 
     if op in ("open", "launch", "spawn"):
-        return do_focus(arg, allow_open=True)
+        save_undo_snapshot(f"open {arg}")
+        return do_focus(expand_selection_pronouns(arg), allow_open=True)
 
     if op == "play":
-        return do_play(arg)
+        return do_play(expand_selection_pronouns(arg))
 
     if op in ("key", "press", "shortcut", "hotkey"):
         combo = normalize_key_combo(arg)
@@ -1571,7 +1784,7 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         return f"key {combo}"
 
     if op in ("type", "write", "input", "dictate"):
-        text = arg.strip("\"'")
+        text = expand_selection_pronouns(arg.strip("\"'"))
         if text:
             ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
@@ -1580,7 +1793,7 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         return f"type “{text}”"
 
     if op in ("type_enter", "submit"):
-        text = arg.strip("\"'")
+        text = expand_selection_pronouns(arg.strip("\"'"))
         if text:
             ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
@@ -1685,6 +1898,8 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
             "kbd_toggle": ["dwm-ctl", "kbd-toggle"],
         }
         if act in wm_map:
+            if act in ("next", "prev", "zoom", "master"):
+                save_undo_snapshot(f"wm {act}")
             run_cmd(wm_map[act])
             time.sleep(0.08)
             return f"wm:{act}"
@@ -1738,8 +1953,9 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
 
     if op == "pi":
         if arg:
-            subprocess.Popen(["dwm-jarvis-pi", "send", arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            return f"pi:{arg}"
+            expanded = expand_selection_pronouns(arg, for_pi=True)
+            subprocess.Popen(["dwm-jarvis-pi", "send", expanded], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return f"pi:{expanded[:60]}"
 
     if op in ("wait_sec", "sleep_sec"):
         sec = _first_int(arg, 2)
@@ -1773,21 +1989,35 @@ def main():
         return
 
     if cmd == "context":
+        cur_tag = get_curtag()
         foc = get_focused()
+        other = get_other_window()
         clients = get_clients()
-        win_list = ", ".join(f"{c['class']} '{c['title'][:40]}'" for c in clients)
+        win_list = ", ".join(f"{c['class']} '{c['title'][:36]}' [tag {c.get('tag', 1)}]" for c in clients)
         foc_str = f"{foc['class']} '{foc['title'][:45]}'" if foc else "none"
+        other_str = f"{other['class']} '{other['title'][:40]}' [tag {other.get('tag', cur_tag)}]" if other else "none"
         open_tabs = get_firefox_open_tabs()
         tabs_str = ", ".join(f"#{t['index']} '{t['title'][:30]}'" for t in open_tabs[:8])
+        sel_txt = get_x11_selection(max_chars=120)
         audio = get_audio_state()
-        out_str = f"Focused: {foc_str}\nOpen windows: [{win_list}]"
+        out_str = f"Active workspace: {cur_tag}\nFocused: {foc_str}\nOther window: {other_str}\nOpen windows: [{win_list}]"
         if tabs_str:
             out_str += f"\nBrowser tabs: [{tabs_str}]"
+        if sel_txt:
+            out_str += f"\nSelected text (this): \"{sel_txt}\""
         rec = get_recording_state()
         out_str += f"\nAudio playing: {'yes' if audio.get('playing') else 'no'}"
         if rec.get("recording"):
             out_str += f"\nScreen recording: active ({rec.get('path', '')})"
         print(out_str)
+        return
+
+    if cmd == "selection":
+        print(get_x11_selection())
+        return
+
+    if cmd == "undo":
+        print(do_undo())
         return
 
     if cmd in ("resolve", "resolve-play"):
@@ -1813,14 +2043,7 @@ def main():
 
     if cmd == "exec":
         script = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else sys.stdin.read()
-        lines = [ln.strip() for ln in script.replace(";", "\n").splitlines() if ln.strip()]
-        in_chain = len(lines) > 1
-        executed = []
-        for raw_line in lines:
-            res = execute_step(raw_line, in_chain=in_chain)
-            if res:
-                executed.append(res)
-        print(" → ".join(executed))
+        print(execute_script(script))
         return
 
     # Single command invocation: dwm-act <op> [args...]

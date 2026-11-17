@@ -71,7 +71,8 @@ static struct {
 static const char *WAKE_INITIAL_PROMPT = "Jarvis.";
 static const char *CMD_INITIAL_PROMPT =
 	"Go to workspace 1, 2, 3, 4, 5, and then focus browser, firefox, ghostty, WhatsApp. "
-	"Move window to workspace 1, 2, 3, 4, 5. "
+	"Move window to workspace 1, 2, 3, 4, 5. Move the other window to workspace 2, 3, 4. "
+	"Pull firefox here, pull terminal here, search Google for this, ask pi to explain this, scratch that, undo. "
 	"Open a new tab, close tab, next tab, type, press enter, escape, tab, control c, "
 	"click, double click, right click, scroll down, scroll up, "
 	"mute volume, volume up, volume down, toggle fullscreen, close window, show pi, stop pi, reset pi.";
@@ -1387,13 +1388,14 @@ handle_stream(int srv, int cli, const char *mode, const char *lang,
 	}
 }
 
-/* Always-On Streaming Jarvis Wake + Command handler (kept for optional background mode):
- *   JARVIS_WAIT|<lang>|<thresh_db>|<cmd_silence_ms>|<wake_word>|<state_file>|<chime_wav>
+/* Always-On Streaming Jarvis Wake + Command handler (with optional follow-up window):
+ *   JARVIS_WAIT|<lang>|<thresh_db>|<cmd_silence_ms>|<wake_word>|<state_file>|<chime_wav>[|<followup_ms>]
  */
 static void
 handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_threads,
                    const char *lang, double thresh_db, int cmd_silence_ms,
-                   const char *wake_word, const char *state_file, const char *chime_wav)
+                   const char *wake_word, const char *state_file, const char *chime_wav,
+                   int followup_ms)
 {
 	int preroll_f = 10; /* 200 ms pre-roll */
 	float *wake_pcm = malloc((size_t)MAX_UTTER_FRAMES * FRAME_SAMPLES * sizeof(float));
@@ -1419,20 +1421,24 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	int64_t speech_start_f = scan_f;
 	int64_t last_voiced_f = scan_f;
 
-	int wake_confirmed = 0;
-	int waiting_post_wake = 0;
-	int chime_played = 0;
+	int is_followup_window = (followup_ms > 0) ? 1 : 0;
+	int wake_confirmed = is_followup_window;
+	int waiting_post_wake = is_followup_window;
+	int chime_played = is_followup_window;
 	int non_jarvis_utter = 0;
 	int post_change_frames = 0;
 	int unchanged_decodes = 0;
-	long post_wake_deadline_ms = 0;
-	int64_t chime_ignore_until_f = 0;
-	int64_t wake_end_f = 0;
+	long post_wake_deadline_ms = is_followup_window ? (now_ms() + (long)followup_ms) : 0;
+	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 4) : 0;
+	int64_t wake_end_f = chime_ignore_until_f;
 	int64_t cmd_start_f = scan_f;
 	int64_t decoded_wake_voiced_f = -1;
 	int64_t decoded_cmd_voiced_f = -1;
 	int64_t final_submitted_voiced_f = -1;
 	char live_cmd[4096] = {0};
+
+	if (is_followup_window)
+		write_state_file(state_file, "jarvis-cmd", NULL, NULL);
 
 	if (cmd_silence_ms < 360)
 		cmd_silence_ms = 360;
@@ -1582,6 +1588,18 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 		if (wake_confirmed && waiting_post_wake) {
 			if (now_ms() >= post_wake_deadline_ms) {
+				if (is_followup_window) {
+					is_followup_window = 0;
+					wake_confirmed = 0;
+					waiting_post_wake = 0;
+					chime_played = 0;
+					in_speech = 0;
+					consec_voiced = 0;
+					voiced_frames = 0;
+					silence_frames = 0;
+					write_state_file(state_file, "jarvis", NULL, NULL);
+					continue;
+				}
 				decode_reset_session();
 				audio_release(WARM_HOLD_MS);
 				free(wake_pcm);
@@ -1724,12 +1742,45 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					char stripped[2048];
 					int wm = match_wake_prefix(final_raw, wake_word,
 					                           stripped, sizeof(stripped));
-					if (wm == 2 && stripped[0])
+					if (wm == 2 && stripped[0]) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", stripped);
-					else if (wm == 0)
+					} else if (wm == 0) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", final_raw);
-					else
+					} else if (wm == 1 && is_followup_window) {
+						/* User explicitly said "Jarvis" again during follow-up window */
+						is_followup_window = 0;
+						waiting_post_wake = 1;
+						in_speech = 0;
+						consec_voiced = 0;
+						voiced_frames = 0;
+						silence_frames = 0;
 						live_cmd[0] = '\0';
+						play_chime_async(chime_wav);
+						post_wake_deadline_ms = now_ms() + 7000L;
+						write_state_file(state_file, "jarvis-cmd", NULL, NULL);
+						notify_osd_async("  Jarvis Listening...",
+						                 "Speak your command now.", 6000);
+						continue;
+					} else {
+						live_cmd[0] = '\0';
+					}
+				}
+				if (live_cmd[0] == '\0' && is_followup_window) {
+					/* Ambient click/cough during follow-up window: resume waiting or return to standby */
+					in_speech = 0;
+					consec_voiced = 0;
+					voiced_frames = 0;
+					silence_frames = 0;
+					if (now_ms() < post_wake_deadline_ms) {
+						waiting_post_wake = 1;
+					} else {
+						is_followup_window = 0;
+						wake_confirmed = 0;
+						waiting_post_wake = 0;
+						chime_played = 0;
+						write_state_file(state_file, "jarvis", NULL, NULL);
+					}
+					continue;
 				}
 				break;
 			}
@@ -1918,18 +1969,20 @@ serve_client_request(int srv, int cli, char *buf,
 	}
 
 	if (strcmp(cmd, "JARVIS_WAIT") == 0) {
-		char *lang       = strtok_r(NULL, "|", &save);
-		char *thresh_str = strtok_r(NULL, "|", &save);
-		char *sil_str    = strtok_r(NULL, "|", &save);
-		char *wake_word  = strtok_r(NULL, "|", &save);
-		char *state_file = strtok_r(NULL, "|", &save);
-		char *chime_wav  = strtok_r(NULL, "|", &save);
+		char *lang         = strtok_r(NULL, "|", &save);
+		char *thresh_str   = strtok_r(NULL, "|", &save);
+		char *sil_str      = strtok_r(NULL, "|", &save);
+		char *wake_word    = strtok_r(NULL, "|", &save);
+		char *state_file   = strtok_r(NULL, "|", &save);
+		char *chime_wav    = strtok_r(NULL, "|", &save);
+		char *followup_str = strtok_r(NULL, "|", &save);
 
 		if (lang && thresh_str && sil_str && wake_word) {
 			handle_jarvis_wait(srv, cli, ctx_wake, n_threads,
 			                   lang, strtod(thresh_str, NULL), atoi(sil_str),
 			                   wake_word, state_file ? state_file : "-",
-			                   chime_wav ? chime_wav : "-");
+			                   chime_wav ? chime_wav : "-",
+			                   followup_str ? atoi(followup_str) : 0);
 		}
 		close(cli);
 		return;
