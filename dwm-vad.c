@@ -267,7 +267,7 @@ main(int argc, char *argv[])
 
 			if (db >= eff_start_db) {
 				consec_voiced++;
-				if (consec_voiced >= 3) { /* 60ms of solid voice energy triggers speech */
+				if (consec_voiced >= 2) { /* 40ms of solid voice energy triggers speech */
 					in_speech = 1;
 					voiced_frames = consec_voiced;
 					silence_frames = 0;
@@ -346,8 +346,8 @@ main(int argc, char *argv[])
 		return 2; /* Too short / noise spike only */
 	}
 
-	/* Trim excessive trailing silence (keep up to 240ms of natural tail pad) */
-	int keep_tail_frames = 240 / FRAME_MS;
+	/* Trim excessive trailing silence (keep up to 140ms of natural tail pad) */
+	int keep_tail_frames = 140 / FRAME_MS;
 	if (silence_frames > keep_tail_frames) {
 		size_t trim_samples = (size_t)(silence_frames - keep_tail_frames) * FRAME_SAMPLES;
 		if (pcm_samples > trim_samples + (size_t)FRAME_SAMPLES * 5)

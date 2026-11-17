@@ -1,22 +1,46 @@
 #!/bin/sh
-# dwm-auren: Declarative semantic desktop command router powered by axil-auren (/v1/systemone)
+# dwm-auren: Declarative semantic desktop command router powered by axil-auren
+# Uses a 3-tier speed pipeline:
+#   1. Bilingual synonym + weighted token-overlap & fuzzy matching (< 20 ms)
+#   2. Cached exemplar embeddings + single /v1/embeddings cosine similarity (~250 ms)
+#   3. Fallback to /v1/systemone if /v1/embeddings is unavailable
 # Configured via ~/.Xresources (dwm.auren.*) and ~/.config/dwm/intents.conf
 export PATH="$HOME/.local/bin:$PATH"
 
 CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
+CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/dwm-auren-embeddings.json"
+XRES_CACHE="/tmp/dwm-auren-xres-$USER.env"
+
+load_xres_cache() {
+    now_s=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$XRES_CACHE" ]; then
+        mtime=$(stat -c %Y "$XRES_CACHE" 2>/dev/null || echo 0)
+        if [ $(( now_s - mtime )) -lt 15 ]; then
+            . "$XRES_CACHE"
+            return 0
+        fi
+    fi
+    if command -v xrdb >/dev/null 2>&1; then
+        xrdb -query 2>/dev/null | awk '
+            /^dwm\./ {
+                k = $1; sub(/^dwm\./, "", k); sub(/:$/, "", k);
+                gsub(/[^a-zA-Z0-9_]/, "_", k);
+                v = $0; sub(/^[^:]+:[ \t]*/, "", v);
+                gsub(/["$\\`]/, "", v);
+                printf "XRES_%s=\"%s\"\n", k, v;
+            }
+        ' > "$XRES_CACHE.tmp" 2>/dev/null && mv -f "$XRES_CACHE.tmp" "$XRES_CACHE"
+        [ -f "$XRES_CACHE" ] && . "$XRES_CACHE"
+    fi
+}
 
 get_xres() {
     key="$1"
     def="$2"
-    val=""
-    if command -v xrdb >/dev/null 2>&1; then
-        val=$(xrdb -query 2>/dev/null | awk -v k="${key}:" '$1 == k {sub(/^[^:]+:[ \t]*/, ""); print; exit}')
-    fi
-    if [ -n "$val" ]; then
-        printf '%s' "$val"
-    else
-        printf '%s' "$def"
-    fi
+    load_xres_cache
+    short_k=$(printf '%s' "$key" | sed 's/^dwm\.//; s/[^a-zA-Z0-9_]/_/g')
+    eval "val=\${XRES_${short_k}:-}"
+    [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
 AUREN_URL=$(get_xres "dwm.auren.url" "http://localhost:4242/v1/systemone")
@@ -49,31 +73,180 @@ run_query() {
         exit 1
     fi
 
-    # Build /v1/systemone JSON request & evaluate response via python3 (zero external deps, safe JSON encoding)
-    eval_out=$(python3 - "$CONF_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
-import sys, json, urllib.request
+    eval_out=$(python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
+import sys, os, re, json, math, hashlib, urllib.request
 
-conf_path, url, model, thresh_s, query = sys.argv[1:6]
+conf_path, cache_path, sys1_url, model, thresh_s, raw_query = sys.argv[1:7]
 thresh = float(thresh_s)
+base_url = re.sub(r'/v1/.*$', '', sys1_url)
+embed_url = base_url + "/v1/embeddings"
+
+STOP_WORDS = {
+    "please", "por", "favor", "now", "agora", "the", "a", "an", "o", "os", "as",
+    "um", "uma", "to", "para", "no", "na", "do", "da", "de", "in", "on", "at",
+    "my", "me", "meu", "minha", "this", "esta", "este", "can", "you", "podes"
+}
+
+SYN_MAP = {
+    "one": "1", "first": "1", "um": "1", "primeiro": "1",
+    "two": "2", "second": "2", "dois": "2", "segundo": "2",
+    "three": "3", "third": "3", "três": "3", "tres": "3", "terceiro": "3",
+    "four": "4", "fourth": "4", "quatro": "4", "quarto": "4",
+    "five": "5", "fifth": "5", "cinco": "5", "quinto": "5",
+    "workspace": "tag", "desktop": "tag", "ecrã": "tag", "ecra": "tag", "screen": "tag",
+    "switch": "go", "ir": "go", "muda": "go", "mudar": "go", "vai": "go", "change": "go",
+    "move": "send", "manda": "send", "enviar": "send",
+    "launch": "open", "abrir": "open", "abre": "open", "start": "open", "iniciar": "open",
+    "ghostty": "terminal", "shell": "terminal", "xterm": "terminal", "consola": "terminal",
+    "firefox": "browser", "navegador": "browser",
+    "audio": "volume", "som": "volume", "speaker": "volume", "áudio": "volume",
+    "louder": "increase", "up": "increase", "aumentar": "increase", "aumenta": "increase", "subir": "increase", "sobe": "increase",
+    "quieter": "decrease", "down": "decrease", "baixar": "decrease", "baixa": "decrease", "diminuir": "decrease", "diminui": "decrease",
+    "silence": "mute", "tirar": "mute", "silenciar": "mute", "mudo": "mute",
+    "Agenda": "calendar", "agenda": "calendar", "meetings": "calendar", "reuniões": "calendar", "calendário": "calendar", "calendario": "calendar",
+    "kill": "close", "fechar": "close", "fecha": "close",
+    "maximize": "fullscreen", "maximizar": "fullscreen",
+}
+
+def canonical_tokens(s):
+    s = s.lower().strip()
+    s = re.sub(r'[^\w\sáàâãéêíóôõúç]', ' ', s)
+    out = []
+    for w in s.split():
+        if w in STOP_WORDS:
+            continue
+        out.append(SYN_MAP.get(w, w))
+    return out
+
 labels = {}
 commands = {}
+exemplar_list = []
 
 with open(conf_path, "r", encoding="utf-8") as f:
-    for line in f:
-        line = line.strip()
-        if not line or line.startswith("#") or "|" not in line:
-            continue
-        parts = [p.strip() for p in line.split("|", 2)]
-        if len(parts) < 3:
-            continue
-        iid, cmd, ex_str = parts
-        exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
-        if iid and cmd and exemplars:
-            labels[iid] = exemplars
-            commands[iid] = cmd
+    conf_raw = f.read()
 
-payload = json.dumps({"model": model, "text": query, "labels": labels}).encode("utf-8")
-req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+for line in conf_raw.splitlines():
+    line = line.strip()
+    if not line or line.startswith("#") or "|" not in line:
+        continue
+    parts = [p.strip() for p in line.split("|", 2)]
+    if len(parts) < 3:
+        continue
+    iid, cmd, ex_str = parts
+    exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
+    if iid and cmd and exemplars:
+        labels[iid] = exemplars
+        commands[iid] = cmd
+        for ex in exemplars:
+            exemplar_list.append((iid, ex, canonical_tokens(ex)))
+
+q_tok_list = canonical_tokens(raw_query)
+q_tokens = set(q_tok_list)
+q_norm = " ".join(q_tok_list)
+
+# Tier 1: Instant canonical token / phrase match (< 15 ms)
+best_lex_iid = ""
+best_lex_score = 0.0
+
+if q_tokens:
+    q_digits = {t for t in q_tokens if t.isdigit()}
+    for iid, ex_orig, ex_tok_list in exemplar_list:
+        if not ex_tok_list:
+            continue
+        ex_norm = " ".join(ex_tok_list)
+        if q_norm == ex_norm:
+            print(f"OK\t1.00\t{iid}\t{commands[iid]}")
+            sys.exit(0)
+        ex_tokens = set(ex_tok_list)
+        ex_digits = {t for t in ex_tokens if t.isdigit()}
+        if q_digits != ex_digits:
+            continue
+        # Distinguish view_N vs tag_N (move/send window)
+        has_move_q = bool(q_tokens & {"send", "window", "janela"})
+        has_move_ex = bool(ex_tokens & {"send", "window", "janela"})
+        if q_digits and has_move_q != has_move_ex:
+            continue
+        inter = len(q_tokens & ex_tokens)
+        if inter == 0:
+            continue
+        recall = inter / len(ex_tokens)
+        prec = inter / len(q_tokens)
+        score = 0.65 * recall + 0.35 * prec
+        if ex_norm in q_norm or q_norm in ex_norm:
+            score = max(score, 0.92)
+        if score > best_lex_score:
+            best_lex_score = score
+            best_lex_iid = iid
+
+if best_lex_iid and best_lex_score >= 0.72:
+    print(f"OK\t{best_lex_score:.2f}\t{best_lex_iid}\t{commands[best_lex_iid]}")
+    sys.exit(0)
+
+# Tier 2: Cached exemplar embeddings + single query embedding via /v1/embeddings
+conf_hash = hashlib.sha256((model + "\n" + conf_raw).encode("utf-8")).hexdigest()[:16]
+cache_data = None
+
+if os.path.exists(cache_path):
+    try:
+        with open(cache_path, "r", encoding="utf-8") as cf:
+            loaded = json.load(cf)
+            if loaded.get("hash") == conf_hash and len(loaded.get("vecs", [])) == len(exemplar_list):
+                cache_data = loaded["vecs"]
+    except Exception:
+        cache_data = None
+
+def normalize_vec(v):
+    n = math.sqrt(sum(x * x for x in v))
+    return [x / n for x in v] if n > 1e-9 else v
+
+try:
+    if cache_data is None:
+        all_texts = [ex for _, ex, _ in exemplar_list] + [raw_query]
+        req = urllib.request.Request(
+            embed_url,
+            data=json.dumps({"model": model, "input": all_texts}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8.0) as resp:
+            edata = json.loads(resp.read().decode("utf-8"))["data"]
+        vecs = [normalize_vec(item["embedding"]) for item in edata]
+        cache_data = vecs[:-1]
+        q_vec = vecs[-1]
+        os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+        with open(cache_path, "w", encoding="utf-8") as cf:
+            json.dump({"hash": conf_hash, "vecs": cache_data}, cf)
+    else:
+        req = urllib.request.Request(
+            embed_url,
+            data=json.dumps({"model": model, "input": raw_query}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
+            edata = json.loads(resp.read().decode("utf-8"))["data"]
+        q_vec = normalize_vec(edata[0]["embedding"])
+
+    best_iid = ""
+    best_sim = -1.0
+    for (iid, _, _), ex_vec in zip(exemplar_list, cache_data):
+        sim = sum(a * b for a, b in zip(q_vec, ex_vec))
+        if sim > best_sim:
+            best_sim = sim
+            best_iid = iid
+
+    cmd = commands.get(best_iid, "")
+    if best_iid and cmd and best_sim >= thresh:
+        print(f"OK\t{best_sim:.2f}\t{best_iid}\t{cmd}")
+    else:
+        print(f"LOW\t{best_sim:.2f}\t{best_iid}\t{cmd}")
+    sys.exit(0)
+except Exception:
+    pass
+
+# Tier 3: Fallback to /v1/systemone
+payload = json.dumps({"model": model, "text": raw_query, "labels": labels}).encode("utf-8")
+req = urllib.request.Request(sys1_url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
 try:
     with urllib.request.urlopen(req, timeout=8.0) as resp:
         data = json.loads(resp.read().decode("utf-8"))
@@ -119,7 +292,6 @@ PYEOF
 
 case "${1:-dmenu}" in
     dmenu|omni)
-        # Show interactive prompt where user can either type natural language OR pick a listed intent
         selection=$(awk -F'|' '
             !/^[[:space:]]*#/ && NF >= 3 {
                 id=$1; cmd=$2; ex=$3;
@@ -131,7 +303,6 @@ case "${1:-dmenu}" in
             }
         ' "$CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Auren Intent / NL:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
         [ -z "$selection" ] && exit 0
-        # If user selected an exact row from the list, extract the command directly; otherwise classify via axil-auren
         if printf '%s\n' "$selection" | grep -q "▸"; then
             direct_id=$(printf '%s\n' "$selection" | awk '{print $1}')
             direct_cmd=$(awk -F'|' -v target="$direct_id" '
@@ -149,6 +320,9 @@ case "${1:-dmenu}" in
             fi
         fi
         run_query "$selection"
+        ;;
+    warmup)
+        run_query "check semantic cache warmup" "--dry-run" >/dev/null 2>&1 || true
         ;;
     query|exec)
         shift

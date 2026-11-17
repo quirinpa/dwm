@@ -1,6 +1,7 @@
 #!/bin/sh
 # dwm-voice: System-wide Whisper voice dictation & "Jarvis" wake-word command assistant for dwm
-# Uses dwm-vad (real-time VAD + auto-stop on silence), warm whisper-server, and dwm-auren (/v1/systemone).
+# Uses dwm-vad (real-time VAD + auto-stop on silence), dwm-whisperd (fast C libwhisper daemon
+# with proportional audio_ctx scaling & dual q5_1 models), and dwm-auren (3-tier semantic router).
 export PATH="$HOME/.local/bin:$PATH"
 
 PID_FILE="/tmp/dwm-voice-$USER.pid"
@@ -13,11 +14,25 @@ JARVIS_PID_FILE="/tmp/dwm-jarvis-$USER.pid"
 JARVIS_VAD_PID="/tmp/dwm-jarvis-vad-$USER.pid"
 JARVIS_WAV="/tmp/dwm-jarvis-$USER.wav"
 SRV_PID_FILE="/tmp/dwm-whisper-srv-$USER.pid"
+XRES_CACHE="/tmp/dwm-voice-xres-$USER.env"
 CHIME_WAV="/tmp/dwm-voice-chime-$USER.wav"
 
 CONF_DIR="$HOME/.config/dwm-voice"
 MODEL_DIR="$HOME/.local/share/whisper"
-DEFAULT_MODEL="$MODEL_DIR/ggml-base.bin"
+
+if [ -f "$MODEL_DIR/ggml-base-q5_1.bin" ]; then
+    DEFAULT_MODEL="$MODEL_DIR/ggml-base-q5_1.bin"
+else
+    DEFAULT_MODEL="$MODEL_DIR/ggml-base.bin"
+fi
+
+if [ -f "$MODEL_DIR/ggml-tiny-q5_1.bin" ]; then
+    WAKE_MODEL="$MODEL_DIR/ggml-tiny-q5_1.bin"
+elif [ -f "$MODEL_DIR/ggml-tiny.bin" ]; then
+    WAKE_MODEL="$MODEL_DIR/ggml-tiny.bin"
+else
+    WAKE_MODEL="$DEFAULT_MODEL"
+fi
 
 FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
 NB="#1e1e2e"
@@ -25,13 +40,35 @@ NF="#cdd6f4"
 
 mkdir -p "$CONF_DIR" "$MODEL_DIR"
 
+load_xres_cache() {
+    now_s=$(date +%s 2>/dev/null || echo 0)
+    if [ -f "$XRES_CACHE" ]; then
+        mtime=$(stat -c %Y "$XRES_CACHE" 2>/dev/null || echo 0)
+        if [ $(( now_s - mtime )) -lt 15 ]; then
+            . "$XRES_CACHE"
+            return 0
+        fi
+    fi
+    if command -v xrdb >/dev/null 2>&1; then
+        xrdb -query 2>/dev/null | awk '
+            /^dwm\.voice\./ {
+                k = $1; sub(/^dwm\.voice\./, "", k); sub(/:$/, "", k);
+                gsub(/[^a-zA-Z0-9_]/, "_", k);
+                v = $0; sub(/^[^:]+:[ \t]*/, "", v);
+                gsub(/["$\\`]/, "", v);
+                printf "XRES_%s=\"%s\"\n", k, v;
+            }
+        ' > "$XRES_CACHE.tmp" 2>/dev/null && mv -f "$XRES_CACHE.tmp" "$XRES_CACHE"
+        [ -f "$XRES_CACHE" ] && . "$XRES_CACHE"
+    fi
+}
+
 get_xres() {
     key="$1"
     def="$2"
-    val=""
-    if command -v xrdb >/dev/null 2>&1; then
-        val=$(xrdb -query 2>/dev/null | awk -v k="${key}:" '$1 == k {sub(/^[^:]+:[ \t]*/, ""); print; exit}')
-    fi
+    load_xres_cache
+    short_k=$(printf '%s' "$key" | sed 's/^dwm\.voice\.//; s/[^a-zA-Z0-9_]/_/g')
+    eval "val=\${XRES_${short_k}:-}"
     [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
@@ -45,16 +82,17 @@ get_lang() {
     fi
     auto_kbd=$(get_xres "dwm.voice.auto_kbd_lang" "true")
     if [ "$auto_kbd" = "true" ] || [ "$auto_kbd" = "1" ]; then
-        kbd=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print $2}')
-        if [ "$kbd" = "pt" ]; then
-            printf 'pt'
-            return
-        elif [ "$kbd" = "us" ]; then
-            printf 'en'
-            return
+        if [ -f "/tmp/dwm-kbd-$USER.state" ]; then
+            kbd=$(cat "/tmp/dwm-kbd-$USER.state" 2>/dev/null)
+        else
+            kbd=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print $2}')
         fi
+        case "$kbd" in
+            pt|PT*) printf 'pt'; return ;;
+            us|US*|en*) printf 'en'; return ;;
+        esac
     fi
-    printf 'auto'
+    printf 'en'
 }
 
 get_model() {
@@ -102,7 +140,7 @@ play_chime() {
 import sys, wave, struct, math
 rate = 16000
 frames = bytearray()
-for freq, dur in [(587.33, 0.055), (880.0, 0.085)]:
+for freq, dur in [(587.33, 0.045), (880.0, 0.070)]:
     n = int(rate * dur)
     for i in range(n):
         env = math.sin(math.pi * i / n)
@@ -155,16 +193,19 @@ ensure_whisper_server() {
             return 0
         fi
     fi
-    if pgrep -f "whisper-server.*--port $port" >/dev/null 2>&1; then
-        pgrep -f "whisper-server.*--port $port" | head -n 1 > "$SRV_PID_FILE"
+    if pgrep -x "dwm-whisperd" >/dev/null 2>&1; then
+        pgrep -x "dwm-whisperd" | head -n 1 > "$SRV_PID_FILE"
         return 0
     fi
-    if command -v whisper-server >/dev/null 2>&1; then
+    # Kill any legacy whisper-server holding the port
+    pkill -f "whisper-server.*--port $port" 2>/dev/null || true
+
+    if command -v dwm-whisperd >/dev/null 2>&1; then
         model=$(get_model)
-        whisper-server -m "$model" --host 127.0.0.1 --port "$port" -t 6 >/dev/null 2>&1 &
+        dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 >/dev/null 2>&1 &
         printf '%s\n' "$!" > "$SRV_PID_FILE"
         i=0
-        while [ "$i" -lt 16 ]; do
+        while [ "$i" -lt 20 ]; do
             if curl -s --max-time 0.1 "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
                 break
             fi
@@ -177,49 +218,37 @@ ensure_whisper_server() {
 transcribe_wav() {
     wav_in="$1"
     lang_in="$2"
-    prompt_in="$3"
+    prompt_in="${3:--}"
+    mode_in="${4:-cmd}"
     port=$(get_srv_port)
-    raw_out=""
 
     ensure_whisper_server
 
-    if [ -n "$prompt_in" ]; then
-        json_resp=$(curl -s --max-time 12 \
-            -F "file=@${wav_in}" \
-            -F "language=${lang_in}" \
-            -F "prompt=${prompt_in}" \
-            -F "temperature=0.0" \
-            -F "response_format=json" \
-            "http://127.0.0.1:${port}/inference" 2>/dev/null)
-    else
-        json_resp=$(curl -s --max-time 12 \
-            -F "file=@${wav_in}" \
-            -F "language=${lang_in}" \
-            -F "temperature=0.0" \
-            -F "response_format=json" \
-            "http://127.0.0.1:${port}/inference" 2>/dev/null)
+    max_tok=24
+    if [ "$mode_in" = "wake" ]; then
+        max_tok=8
+    elif [ "$mode_in" = "type" ] || [ "$mode_in" = "clip" ]; then
+        max_tok=96
     fi
 
-    if [ -n "$json_resp" ]; then
-        raw_out=$(python3 - "$json_resp" << 'PYEOF2'
-import sys, json
+    raw_out=$(python3 - "$port" "$mode_in" "$lang_in" "$max_tok" "$prompt_in" "$wav_in" << 'PYEOF2' 2>/dev/null
+import sys, socket
+port, mode, lang, mt, prompt, wav = sys.argv[1:7]
 try:
-    d = json.loads(sys.argv[1])
-    print(d.get("text", ""))
+    s = socket.create_connection(("127.0.0.1", int(port)), timeout=6.0)
+    s.sendall(f"TRANSCRIBE|{mode}|{lang}|{mt}|{prompt}|{wav}\n".encode("utf-8"))
+    data = b""
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    s.close()
+    print(data.decode("utf-8", errors="replace").strip())
 except Exception:
     pass
 PYEOF2
-        )
-    fi
-
-    if [ -z "$raw_out" ] && [ -z "$json_resp" ]; then
-        model=$(get_model)
-        if [ -n "$prompt_in" ]; then
-            raw_out=$(whisper-cli -m "$model" -l "$lang_in" --prompt "$prompt_in" -t 8 -nt -np "$wav_in" 2>/dev/null)
-        else
-            raw_out=$(whisper-cli -m "$model" -l "$lang_in" -t 8 -nt -np "$wav_in" 2>/dev/null)
-        fi
-    fi
+    )
 
     printf '%s\n' "$raw_out" | \
         sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/\[BLANK_AUDIO\]//gI; s/\(blank audio\)//gI; s/\[[[:space:]]*Silence[[:space:]]*\]//gI; s/\[[[:space:]]*Music[[:space:]]*\]//gI; s/\([[:space:]]*music[[:space:]]*\)//gI' | \
@@ -246,7 +275,7 @@ dispatch_transcript() {
     rest_after_wake=$(python3 - "$text" "$wake" << 'PYEOF2'
 import sys, re
 txt, wake = sys.argv[1], sys.argv[2]
-m = re.match(r'^[\s,.!?;:-]*(?:' + re.escape(wake) + r'|jarvis|charvis|jarves|j[áa]rvis)\b[\s,:;.!?-]*(.+)$', txt, flags=re.I)
+m = re.match(r'^[\s,.!?;:-]*(?:hey\s+|oi\s+|ol[áa]\s+|ok\s+)?(?:' + re.escape(wake) + r'|jarvis|charvis|jarves|j[áa]rvis|travis|jervis)\b[\s,:;.!?-]*(.+)$', txt, flags=re.I)
 if m:
     print(m.group(1).strip())
 PYEOF2
@@ -293,11 +322,11 @@ start_recording() {
 
     lang=$(get_lang)
     auto_stop=$(get_xres "dwm.voice.auto_stop" "true")
-    thresh_db=$(get_xres "dwm.voice.threshold_db" "-38")
+    thresh_db=$(get_xres "dwm.voice.threshold_db" "-36")
     if [ "$out_mode" = "cmd" ]; then
-        sil_ms=$(get_xres "dwm.voice.cmd_silence_ms" "750")
+        sil_ms=$(get_xres "dwm.voice.cmd_silence_ms" "480")
     else
-        sil_ms=$(get_xres "dwm.voice.silence_ms" "1100")
+        sil_ms=$(get_xres "dwm.voice.silence_ms" "850")
     fi
     if [ "$auto_stop" = "false" ] || [ "$auto_stop" = "0" ]; then
         sil_ms=0
@@ -313,7 +342,7 @@ start_recording() {
     fi
 
     (
-        dwm-vad -t "$thresh_db" -s "$sil_ms" -w 8000 -m 200 -M 30000 "$WAV_FILE" &
+        dwm-vad -t "$thresh_db" -s "$sil_ms" -w 7000 -m 180 -M 30000 "$WAV_FILE" &
         vad_pid=$!
         printf '%s\n' "$vad_pid" > "$PID_FILE"
         wait "$vad_pid"
@@ -341,7 +370,7 @@ start_recording() {
         refresh_bar
 
         cur_lang=$(get_lang)
-        text=$(transcribe_wav "$WAV_FILE" "$cur_lang" "")
+        text=$(transcribe_wav "$WAV_FILE" "$cur_lang" "-" "$cur_mode")
         rm -f "$WAV_FILE"
         restore_idle_state
 
@@ -376,6 +405,7 @@ cancel_recording() {
 jarvis_loop() {
     printf '%s\n' "$$" > "$JARVIS_PID_FILE"
     ensure_whisper_server
+    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
     printf 'jarvis\n' > "$STATE_FILE"
     refresh_bar
 
@@ -383,7 +413,7 @@ jarvis_loop() {
 
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
         if is_recording; then
-            sleep 0.3
+            sleep 0.25
             continue
         fi
 
@@ -394,7 +424,8 @@ jarvis_loop() {
         wake_word=$(get_wake_word)
 
         rm -f "$JARVIS_WAV"
-        dwm-vad -t "$thresh_db" -s 520 -w 0 -m 220 -M 4500 "$JARVIS_WAV" &
+        # Fast 340ms silence endpointing for wake word / one-shot command
+        dwm-vad -t "$thresh_db" -s 340 -w 0 -m 180 -M 4000 "$JARVIS_WAV" &
         jvad_pid=$!
         printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
         wait "$jvad_pid"
@@ -403,19 +434,19 @@ jarvis_loop() {
 
         if [ "$rc" -ne 0 ] || [ ! -s "$JARVIS_WAV" ] || is_recording; then
             rm -f "$JARVIS_WAV"
-            sleep 0.1
+            sleep 0.05
             continue
         fi
 
         lang=$(get_lang)
-        heard=$(transcribe_wav "$JARVIS_WAV" "$lang" "Jarvis")
-        rm -f "$JARVIS_WAV"
-        [ -z "$heard" ] && continue
+        # Check wake word using ultra-fast tiny-q5_1 model (~60-110 ms)
+        heard=$(transcribe_wav "$JARVIS_WAV" "$lang" "Jarvis" "wake")
+        [ -z "$heard" ] && { rm -f "$JARVIS_WAV"; continue; }
 
         parsed=$(python3 - "$heard" "$wake_word" << 'PYEOF2'
 import sys, re
 txt, wake = sys.argv[1].strip(), sys.argv[2].strip()
-pat = r'^[\s,.!?;:-]*(?:hey\s+|oi\s+|ol[áa]\s+|ok\s+)?(?:' + re.escape(wake) + r'|jarvis|charvis|jarves|j[áa]rvis|travis|jervis)\b[\s,:;.!?-]*(.*)$'
+pat = r'^[\s,.!?;:-]*(?:hey\s+|oi\s+|ol[áa]\s+|ok\s+)?(?:' + re.escape(wake) + r'|jarvis|charvis|jarves|j[áa]rvis|travis|jervis|service|jorge|chaves)\b[\s,:;.!?-]*(.*)$'
 m = re.match(pat, txt, flags=re.I)
 if not m:
     print("NONE")
@@ -434,18 +465,32 @@ PYEOF2
 
         if [ "$kind" = "ONESHOT" ] && [ -n "$inline_cmd" ]; then
             play_chime
+            # Re-transcribe with main base-q5_1 model for high accuracy if needed
+            full_heard=$(transcribe_wav "$JARVIS_WAV" "$lang" "Jarvis" "cmd")
+            rm -f "$JARVIS_WAV"
+            if [ -n "$full_heard" ]; then
+                refined=$(python3 - "$full_heard" "$wake_word" << 'PYEOF2'
+import sys, re
+txt, wake = sys.argv[1].strip(), sys.argv[2].strip()
+pat = r'^[\s,.!?;:-]*(?:hey\s+|oi\s+|ol[áa]\s+|ok\s+)?(?:' + re.escape(wake) + r'|jarvis|charvis|jarves|j[áa]rvis|travis|jervis|service|jorge|chaves)\b[\s,:;.!?-]*(.*)$'
+m = re.match(pat, txt, flags=re.I)
+print(m.group(1).strip() if m and len(m.group(1).strip()) >= 3 else txt)
+PYEOF2
+                )
+                [ -n "$refined" ] && inline_cmd="$refined"
+            fi
             printf '%s' "$inline_cmd" > "$LAST_TXT"
             /home/quirinpa/.local/bin/dwm-auren query "$inline_cmd" &
         elif [ "$kind" = "WAKE" ]; then
+            rm -f "$JARVIS_WAV"
             play_chime
             printf 'jarvis-cmd\n' > "$STATE_FILE"
             refresh_bar
             cmd_lang=$(get_lang)
-            cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "750")
-            notify_voice "voice-rec" 8000 "  Jarvis Listening..." "Speak your command (${cmd_lang})..."
+            cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "480")
+            notify_voice "voice-rec" 6000 "  Jarvis Listening..." "Speak your command (${cmd_lang})..."
 
-            rm -f "$JARVIS_WAV"
-            dwm-vad -t "$thresh_db" -s "$cmd_sil" -w 6000 -m 220 -M 15000 "$JARVIS_WAV" &
+            dwm-vad -t "$thresh_db" -s "$cmd_sil" -w 5000 -m 180 -M 12000 "$JARVIS_WAV" &
             jvad_pid=$!
             printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
             wait "$jvad_pid"
@@ -455,7 +500,7 @@ PYEOF2
             if [ "$cmd_rc" -eq 0 ] && [ -s "$JARVIS_WAV" ]; then
                 printf 'transcribing\n' > "$STATE_FILE"
                 refresh_bar
-                cmd_text=$(transcribe_wav "$JARVIS_WAV" "$cmd_lang" "")
+                cmd_text=$(transcribe_wav "$JARVIS_WAV" "$cmd_lang" "-" "cmd")
                 rm -f "$JARVIS_WAV"
                 printf 'jarvis\n' > "$STATE_FILE"
                 refresh_bar
@@ -463,14 +508,16 @@ PYEOF2
                     printf '%s' "$cmd_text" > "$LAST_TXT"
                     /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" &
                 else
-                    notify_voice "voice" 2200 "  Jarvis" "Didn't catch a command."
+                    notify_voice "voice" 2000 "  Jarvis" "Didn't catch a command."
                 fi
             else
                 rm -f "$JARVIS_WAV"
                 printf 'jarvis\n' > "$STATE_FILE"
                 refresh_bar
-                notify_voice "voice" 2000 "  Jarvis Standby" "No command spoken."
+                notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
             fi
+        else
+            rm -f "$JARVIS_WAV"
         fi
     done
 }
@@ -482,7 +529,7 @@ jarvis_start() {
     fi
     ensure_whisper_server
     "$0" jarvis-daemon >/dev/null 2>&1 &
-    sleep 0.15
+    sleep 0.12
     refresh_bar
     wake=$(get_wake_word)
     notify_voice "voice" 3500 "  Jarvis Wake-Word Active" "Say “${wake}” at any time to issue a voice command."
@@ -592,8 +639,8 @@ voice_menu() {
             fi
             ;;
         *"Model"*)
-            mchoice=$(printf "ggml-base.bin   (142 MB - Fast & Accurate, Default)\nggml-tiny.bin   (75 MB  - Ultra-Fast)\nggml-small.bin  (466 MB - Higher Accuracy)\n" | \
-                dmenu_voice "Whisper Model:" 3 "#f5e0dc")
+            mchoice=$(printf "ggml-base-q5_1.bin (57 MB  - Quantized Fast & Accurate, Default)\nggml-tiny-q5_1.bin (31 MB  - Quantized Ultra-Fast)\nggml-base.bin      (142 MB - Full FP16 Base)\nggml-small.bin     (466 MB - Higher Accuracy)\n" | \
+                dmenu_voice "Whisper Model:" 4 "#f5e0dc")
             if [ -n "$mchoice" ]; then
                 mfile=$(printf '%s\n' "$mchoice" | awk '{print $1}')
                 mpath="$MODEL_DIR/$mfile"
@@ -608,6 +655,7 @@ voice_menu() {
                     fi
                 fi
                 printf '%s' "$mpath" > "$CONF_DIR/model"
+                pkill -x "dwm-whisperd" 2>/dev/null || true
                 pkill -f "whisper-server" 2>/dev/null || true
                 rm -f "$SRV_PID_FILE"
                 ensure_whisper_server

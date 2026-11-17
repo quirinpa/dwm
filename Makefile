@@ -6,7 +6,7 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm dwm-msg dwm-bar dwm-vad
+all: dwm dwm-msg dwm-bar dwm-vad dwm-whisperd
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
@@ -28,8 +28,11 @@ dwm-bar: dwm-bar.c
 dwm-vad: dwm-vad.c
 	${CC} ${CFLAGS} -o $@ dwm-vad.c -lm
 
+dwm-whisperd: dwm-whisperd.c whisper.h
+	${CC} ${CFLAGS} -o $@ dwm-whisperd.c $(HOME)/.local/lib/libwhisper.so.1 $(HOME)/.local/lib/libggml.so.0 -Wl,-rpath,$(HOME)/.local/lib
+
 clean:
-	rm -f dwm dwm-msg dwm-bar dwm-vad ${OBJ} dwm-${VERSION}.tar.gz
+	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${OBJ} dwm-${VERSION}.tar.gz
 
 dist: clean
 	mkdir -p dwm-${VERSION}
@@ -41,7 +44,7 @@ dist: clean
 
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
-	install -m 755 dwm dwm-msg dwm-bar dwm-vad ${DESTDIR}${PREFIX}/bin/
+	install -m 755 dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${DESTDIR}${PREFIX}/bin/
 	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
