@@ -21,6 +21,8 @@ QUERIES = [
     # Category 2: Parameterized / target-specific intents
     ("open whatsapp for web", "Target / Web app"),
     ("put up some lofi dragonball jazz", "Open-ended media"),
+    ("let's listen to some dragonball lofi", "Semantic frame"),
+    ("put up some miles davis jazz", "New media autoplay"),
     ("switch to the tmux terminal", "Window title"),
     ("go to the duna cowork manager tab", "Browser tab"),
     ("click on Mariana", "UI element"),
@@ -70,11 +72,11 @@ def main():
         total_ms += dt
         _, score, intent, cmd = parse_dry_run(out)
         extra = ""
-        for pfx in ('open "', 'focus "'):
+        for pfx, res_op in (('open "', "resolve"), ('focus "', "resolve"), ('play "', "resolve-play")):
             if cmd.startswith(pfx) and cmd.endswith('"'):
                 targ = cmd[len(pfx) : -1]
                 try:
-                    r_json = subprocess.check_output(["dwm-act", "resolve", targ], text=True, timeout=2.0).strip()
+                    r_json = subprocess.check_output(["dwm-act", res_op, targ], text=True, timeout=4.0).strip()
                     import json as _json
                     rj = _json.loads(r_json) if r_json else {}
                     if rj.get("label"):

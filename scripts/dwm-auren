@@ -147,6 +147,14 @@ chat_url = base_url + "/v1/chat/completions"
 commands = {}
 static_exemplars = []
 param_exemplars = []
+param_frames = []
+
+PARTICLES = {
+    "to", "on", "up", "in", "at", "for", "of", "from", "with", "into",
+    "some", "the", "a", "an",
+    "de", "do", "da", "no", "na", "em", "para", "por", "o", "os", "as", "um", "uma",
+}
+LEADING_ARTICLES = {"the", "some", "a", "an", "o", "a", "os", "as", "um", "uma"}
 
 with open(conf_path, "r", encoding="utf-8") as f:
     conf_raw = f.read()
@@ -165,7 +173,11 @@ for line in conf_raw.splitlines():
         for ex in exemplars:
             if "{arg}" in cmd and "{arg}" in ex:
                 pre, suf = ex.split("{arg}", 1)
-                param_exemplars.append((iid, ex, pre.strip().lower(), suf.strip().lower()))
+                pre_c = pre.strip().lower()
+                suf_c = suf.strip().lower()
+                param_exemplars.append((iid, ex, pre_c, suf_c))
+                if pre_c and not suf_c:
+                    param_frames.append((iid, f"{pre_c} something"))
             else:
                 static_exemplars.append((iid, ex))
 
@@ -212,6 +224,29 @@ def cmd_to_dsl(cmd_str):
         return cmd_str[len("dwm-act "):].strip()
     return f"sh {cmd_str}"
 
+def clean_extracted_arg(iid, arg_val):
+    arg_val = arg_val.strip().strip("\"'")
+    if iid not in ("type_text", "type_enter"):
+        words = arg_val.split()
+        while len(words) > 1 and words[0].lower() in LEADING_ARTICLES:
+            words = words[1:]
+        arg_val = " ".join(words)
+    return arg_val
+
+def candidate_frame_splits(clause):
+    c_clean = clause.strip().strip(",.!?;:")
+    words = c_clean.split()
+    splits = []
+    if len(words) < 2:
+        return splits
+    for k in range(1, min(6, len(words))):
+        if words[k].lower() in PARTICLES and (k + 1) < len(words):
+            continue
+        frame_str = " ".join(words[:k]).lower() + " something"
+        arg_str = " ".join(words[k:])
+        splits.append((k, frame_str, arg_str))
+    return splits
+
 def match_param_template(clause):
     """Match a clause against configurable {arg} templates in intents.conf."""
     c_clean = clause.strip().strip(",.!?;:")
@@ -225,11 +260,40 @@ def match_param_template(clause):
         end = len(c_clean) - len(suf) if suf else len(c_clean)
         if end <= start:
             continue
-        arg_val = c_clean[start:end].strip().strip("\"'")
+        arg_val = clean_extracted_arg(iid, c_clean[start:end])
         if not arg_val:
             continue
         cmd_filled = commands[iid].replace("{arg}", arg_val)
         return iid, 0.98, cmd_to_dsl(cmd_filled)
+    return None
+
+def match_semantic_frame(clause):
+    """Match a clause's verb prefix against {arg} frame exemplars by embedding similarity."""
+    splits = candidate_frame_splits(clause)
+    if not splits or not param_frames:
+        return None
+    ensure_embedded([fs for _, fs, _ in splits])
+    best_adj = -1.0
+    best_hit = None
+    for k, frame_str, arg_raw in splits:
+        f_vec = vec_map.get(frame_str)
+        if not f_vec:
+            continue
+        for iid, tmpl_str in param_frames:
+            t_vec = vec_map.get(tmpl_str)
+            if not t_vec:
+                continue
+            sim = sum(a * b for a, b in zip(f_vec, t_vec))
+            adj = sim + 0.008 * k
+            if adj > best_adj:
+                best_adj = adj
+                best_hit = (iid, sim, arg_raw)
+    if best_hit and best_hit[1] >= 0.82:
+        iid, sim, arg_raw = best_hit
+        arg_val = clean_extracted_arg(iid, arg_raw)
+        if arg_val:
+            cmd_filled = commands[iid].replace("{arg}", arg_val)
+            return iid, min(sim, 0.99), cmd_to_dsl(cmd_filled)
     return None
 
 def match_static_embedding(clause):
@@ -278,11 +342,15 @@ def match_single_clause(clause):
     st = match_static_embedding(c_clean)
     if st:
         return st
-    # 3. General parametric template match from intents.conf
+    # 3. Exact parametric prefix template match from intents.conf
     pm = match_param_template(c_clean)
     if pm:
         return pm
-    # 4. Direct semantic target match against live windows, open tabs, places.sqlite, and .desktop apps
+    # 4. Semantic frame match against {arg} templates in intents.conf
+    sf = match_semantic_frame(c_clean)
+    if sf:
+        return sf
+    # 5. Direct semantic target match against live windows, open tabs, places.sqlite, and .desktop apps
     try:
         res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=3.0).strip()
         if res_raw:
@@ -302,9 +370,14 @@ for semi in raw_query.split(";"):
         if p:
             sub_parts.append(p)
 
-texts_to_embed = [ex for _, ex in static_exemplars] + [raw_query.strip().strip(",.!?;:")]
+texts_to_embed = (
+    [ex for _, ex in static_exemplars]
+    + [tf for _, tf in param_frames]
+    + [raw_query.strip().strip(",.!?;:")]
+)
 if len(sub_parts) > 1:
-    texts_to_embed.extend(p.strip().strip(",.!?;:") for p in sub_parts)
+    for p in sub_parts:
+        texts_to_embed.append(p.strip().strip(",.!?;:"))
 ensure_embedded(texts_to_embed)
 
 # First check if the entire utterance matches a single intent (e.g. "type X and press enter" or static intent)
@@ -393,7 +466,7 @@ key Return"""
 
 VALID_OPS = {
     "view", "workspace", "desktop", "tag", "move_to", "send_to", "focus", "switch",
-    "open", "launch", "spawn", "key", "press", "shortcut", "hotkey", "type", "write",
+    "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "type", "write",
     "input", "dictate", "type_enter", "submit", "click", "left_click", "click_pos",
     "right_click", "middle_click", "double_click", "move_mouse", "hover", "point",
     "scroll", "wm", "sys", "sh", "pi", "wait"

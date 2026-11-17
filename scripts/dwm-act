@@ -797,17 +797,97 @@ def resolve_semantic_target(target: str):
     return best_cand
 
 
-def _focus_firefox_tab(idx: int, label: str) -> str:
+def _focus_firefox_window():
     for c in get_clients():
         if "firefox" in c["class"].lower():
             run_cmd(["dwm-msg", "focus-win", c["id"]])
             time.sleep(0.14)
-            break
+            return True
+    return False
+
+
+def _focus_firefox_tab(idx: int, label: str) -> str:
+    _focus_firefox_window()
     if 1 <= idx <= 8:
         run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
         run_cmd(["xdotool", "key", "--clearmodifiers", f"alt+{idx}"])
         time.sleep(0.15)
     return f"focus:{label}"
+
+
+def resolve_youtube_url(query: str) -> str:
+    """Resolve a media search query to a direct YouTube watch?v=<id> autoplay URL (cached)."""
+    import urllib.parse, urllib.request
+    q_norm = norm_text(query)
+    cache_p = f"/tmp/dwm-yt-cache-{os.environ.get('USER', 'user')}.json"
+    cache_map = {}
+    if os.path.exists(cache_p):
+        try:
+            with open(cache_p, "r", encoding="utf-8") as f:
+                cache_map = json.load(f)
+        except Exception:
+            cache_map = {}
+    if q_norm in cache_map:
+        return cache_map[q_norm]
+
+    search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
+    watch_url = search_url
+    try:
+        req = urllib.request.Request(
+            search_url,
+            headers={
+                "User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        marker = '"videoId":"'
+        idx = html.find(marker)
+        if idx != -1:
+            start = idx + len(marker)
+            end = html.find('"', start)
+            if end != -1 and 8 <= (end - start) <= 16:
+                vid = html[start:end]
+                watch_url = f"https://www.youtube.com/watch?v={vid}"
+                cache_map[q_norm] = watch_url
+                with open(cache_p, "w", encoding="utf-8") as f:
+                    json.dump(cache_map, f)
+    except Exception:
+        pass
+    return watch_url
+
+
+def do_play(target: str) -> str:
+    """Play media: switch to an existing open tab/window if it matches (>= 0.78), else autoplay top YouTube video."""
+    t = target.strip().strip("\"'")
+    if not t:
+        return "play:noop"
+
+    best = resolve_semantic_target(t)
+    if best and best["score"] >= 0.78:
+        kind = best["kind"]
+        if kind == "tab":
+            return _focus_firefox_tab(int(best["ref"]), best["label"])
+        if kind == "win":
+            run_cmd(["dwm-msg", "focus-win", best["ref"]])
+            time.sleep(0.12)
+            return f"focus:{best['label']}"
+        if kind == "place":
+            subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.25)
+            _focus_firefox_window()
+            return f"open:{best['label']}->{best['ref']}"
+        if kind == "app":
+            subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            time.sleep(0.35)
+            return f"open:{best['label']}"
+
+    watch_url = resolve_youtube_url(t)
+    subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(0.25)
+    _focus_firefox_window()
+    return f"play:{watch_url}"
 
 
 def do_focus(target: str, allow_open: bool = False) -> str:
@@ -816,7 +896,7 @@ def do_focus(target: str, allow_open: bool = False) -> str:
         return "focus:noop"
 
     best = resolve_semantic_target(t)
-    if best and best["score"] >= 0.68:
+    if best and best["score"] >= 0.72:
         kind = best["kind"]
         if kind == "win":
             run_cmd(["dwm-msg", "focus-win", best["ref"]])
@@ -827,10 +907,7 @@ def do_focus(target: str, allow_open: bool = False) -> str:
         if kind == "place" and allow_open:
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.25)
-            for c in get_clients():
-                if "firefox" in c["class"].lower():
-                    run_cmd(["dwm-msg", "focus-win", c["id"]])
-                    break
+            _focus_firefox_window()
             return f"open:{best['label']}->{best['ref']}"
         if kind == "app" and allow_open:
             subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -839,10 +916,11 @@ def do_focus(target: str, allow_open: bool = False) -> str:
 
     if allow_open:
         from urllib.parse import quote_plus
-        url = f"https://www.youtube.com/results?search_query={quote_plus(t)}"
+        url = f"https://duckduckgo.com/?q=!ducky+{quote_plus(t)}"
         subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(0.25)
-        return f"open:search({t})"
+        _focus_firefox_window()
+        return f"open:web({t})"
 
     run_cmd(["dwm-msg", "focus-class", t])
     time.sleep(0.10)
@@ -876,7 +954,7 @@ def execute_step(line: str) -> str:
     arg = parts[1].strip() if len(parts) > 1 else ""
 
     res = _execute_step_inner(op, arg)
-    if op in ("view", "workspace", "desktop", "focus", "switch", "open", "launch", "spawn", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
+    if op in ("view", "workspace", "desktop", "focus", "switch", "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
         invalidate_ocr_cache()
     return res
 
@@ -906,6 +984,9 @@ def _execute_step_inner(op: str, arg: str) -> str:
 
     if op in ("open", "launch", "spawn"):
         return do_focus(arg, allow_open=True)
+
+    if op == "play":
+        return do_play(arg)
 
     if op in ("key", "press", "shortcut", "hotkey"):
         combo = normalize_key_combo(arg)
@@ -1059,9 +1140,12 @@ def main():
         print(out_str)
         return
 
-    if cmd == "resolve":
+    if cmd in ("resolve", "resolve-play"):
         target = " ".join(sys.argv[2:])
         best = resolve_semantic_target(target)
+        if cmd == "resolve-play" and (not best or best.get("score", 0.0) < 0.78):
+            yt_url = resolve_youtube_url(target)
+            best = {"kind": "youtube", "ref": yt_url, "label": f"youtube({yt_url.split('v=')[-1]})", "score": 1.0, "sem_sim": 1.0}
         print(json.dumps(best or {}, ensure_ascii=False))
         return
 
