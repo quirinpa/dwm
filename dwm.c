@@ -35,6 +35,7 @@
 #include <X11/Xatom.h>
 #include <X11/Xlib.h>
 #include <X11/Xproto.h>
+#include <X11/Xresource.h>
 #include <X11/Xutil.h>
 #ifdef XINERAMA
 #include <X11/extensions/Xinerama.h>
@@ -161,6 +162,19 @@ typedef struct {
 	int monitor;
 } Rule;
 
+/* Xresources preferences */
+enum resource_type {
+	XRM_STRING = 0,
+	XRM_INTEGER = 1,
+	XRM_FLOAT = 2
+};
+
+typedef struct {
+	char *name;
+	enum resource_type type;
+	void *dst;
+} ResourcePref;
+
 /* function declarations */
 static void applyrules(Client *c);
 static int applysizehints(Client *c, int *x, int *y, int *w, int *h, int interact);
@@ -198,6 +212,9 @@ static void grabkeys(void);
 static void incnmaster(const Arg *arg);
 static void keypress(XEvent *e);
 static void killclient(const Arg *arg);
+static void loadxrdb(void);
+static void reloadxrdb(const Arg *arg);
+static void resource_load(XrmDatabase db, char *name, enum resource_type rtype, void *dst);
 static void manage(Window w, XWindowAttributes *wa);
 static void mappingnotify(XEvent *e);
 static void maprequest(XEvent *e);
@@ -286,7 +303,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[PropertyNotify] = propertynotify,
 	[UnmapNotify] = unmapnotify
 };
-static Atom wmatom[WMLast], netatom[NetLast];
+static Atom wmatom[WMLast], netatom[NetLast], dwmcmdatom;
 static int restart = 0;
 static int running = 1;
 static Cur *cursor[CurLast];
@@ -565,6 +582,69 @@ clientmessage(XEvent *e)
 {
 	XClientMessageEvent *cme = &e->xclient;
 	Client *c = wintoclient(cme->window);
+	Arg a = {0};
+
+	if (cme->window == root && cme->message_type == dwmcmdatom) {
+		switch (cme->data.l[0]) {
+		case 1: /* reload xrdb */
+			reloadxrdb(NULL);
+			break;
+		case 2: /* view tag bitmask */
+			a.ui = (unsigned int)cme->data.l[1];
+			view(&a);
+			break;
+		case 3: /* tag focused client */
+			a.ui = (unsigned int)cme->data.l[1];
+			tag(&a);
+			break;
+		case 4: /* togglefloating */
+			togglefloating(NULL);
+			break;
+		case 5: /* togglefullscreen */
+			togglefullscreen(NULL);
+			break;
+		case 6: /* zoom */
+			zoom(NULL);
+			break;
+		case 7: /* focusstack (+1 / -1) */
+			a.i = (int)cme->data.l[1];
+			focusstack(&a);
+			break;
+		case 8: /* killclient */
+			killclient(NULL);
+			break;
+		case 9: /* setlayout index (0=tile, 1=float, 2=monocle) */
+			if (cme->data.l[1] >= 0 && (size_t)cme->data.l[1] < LENGTH(layouts)) {
+				a.v = &layouts[cme->data.l[1]];
+				setlayout(&a);
+			} else {
+				setlayout(NULL);
+			}
+			break;
+		case 10: /* setgaps delta */
+			a.i = (int)cme->data.l[1];
+			setgaps(&a);
+			break;
+		case 11: /* togglebar */
+			togglebar(NULL);
+			break;
+		case 12: /* focus client by window id */
+			if ((c = wintoclient((Window)cme->data.l[1]))) {
+				if (c->mon != selmon) {
+					unfocus(selmon->sel, 1);
+					selmon = c->mon;
+				}
+				if (!ISVISIBLE(c)) {
+					a.ui = c->tags;
+					view(&a);
+				}
+				focus(c);
+				restack(selmon);
+			}
+			break;
+		}
+		return;
+	}
 
 	if (!c)
 		return;
@@ -1151,6 +1231,80 @@ killclient(const Arg *arg)
 }
 
 void
+resource_load(XrmDatabase db, char *name, enum resource_type rtype, void *dst)
+{
+	char *sdst = dst;
+	int *idst = dst;
+	float *fdst = dst;
+	char fullname[256];
+	char *type;
+	XrmValue ret;
+
+	snprintf(fullname, sizeof(fullname), "%s.%s", "dwm", name);
+	fullname[sizeof(fullname) - 1] = '\0';
+
+	XrmGetResource(db, fullname, "*", &type, &ret);
+	if (!(ret.addr == NULL || strncmp("String", type, 64))) {
+		switch (rtype) {
+		case XRM_STRING:
+			snprintf(sdst, strcmp(name, "dmenufont") == 0 ? 128 : 16, "%s", ret.addr);
+			break;
+		case XRM_INTEGER:
+			*idst = strtoul(ret.addr, NULL, 10);
+			break;
+		case XRM_FLOAT:
+			*fdst = strtof(ret.addr, NULL);
+			break;
+		}
+	}
+}
+
+void
+loadxrdb(void)
+{
+	Display *xdpy;
+	char *resm;
+	XrmDatabase xrdb;
+	unsigned int i;
+
+	if (!(xdpy = XOpenDisplay(NULL)))
+		return;
+	resm = XResourceManagerString(xdpy);
+	if (resm) {
+		xrdb = XrmGetStringDatabase(resm);
+		for (i = 0; i < LENGTH(resources); i++)
+			resource_load(xrdb, resources[i].name, resources[i].type, resources[i].dst);
+		XrmDestroyDatabase(xrdb);
+	}
+	XCloseDisplay(xdpy);
+}
+
+void
+reloadxrdb(const Arg *arg)
+{
+	Monitor *m;
+	Client *c;
+	size_t i;
+
+	loadxrdb();
+	for (i = 0; i < LENGTH(colors); i++) {
+		drw_scm_free(drw, scheme[i], 3);
+		scheme[i] = drw_scm_create(drw, colors[i], 3);
+	}
+	for (m = mons; m; m = m->next) {
+		m->gappx = gappx;
+		m->mfact = mfact;
+		m->nmaster = nmaster;
+		for (c = m->clients; c; c = c->next) {
+			c->bw = c->isfullscreen ? 0 : borderpx;
+			XSetWindowBorder(dpy, c->win, scheme[c == selmon->sel ? SchemeSel : SchemeNorm][ColBorder].pixel);
+		}
+	}
+	focus(NULL);
+	arrange(NULL);
+}
+
+void
 manage(Window w, XWindowAttributes *wa)
 {
 	Client *c, *t = NULL;
@@ -1725,6 +1879,7 @@ setup(void)
 	netatom[NetWMWindowType] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE", False);
 	netatom[NetWMWindowTypeDialog] = XInternAtom(dpy, "_NET_WM_WINDOW_TYPE_DIALOG", False);
 	netatom[NetClientList] = XInternAtom(dpy, "_NET_CLIENT_LIST", False);
+	dwmcmdatom = XInternAtom(dpy, "_DWM_CMD", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -2382,6 +2537,8 @@ main(int argc, char *argv[])
 	if (!(dpy = XOpenDisplay(NULL)))
 		die("dwm: cannot open display");
 	checkotherwm();
+	XrmInitialize();
+	loadxrdb();
 	setup();
 #ifdef __OpenBSD__
 	if (pledge("stdio rpath proc exec", NULL) == -1)

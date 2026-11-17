@@ -2,11 +2,11 @@
 #include <X11/XF86keysym.h>
 
 /* appearance */
-static const unsigned int gappx     = 8;        /* gaps between windows */
-static const unsigned int borderpx  = 2;        /* border pixel of windows */
-static const unsigned int snap      = 32;       /* snap pixel */
-static const int showbar            = 1;        /* 0 means no bar */
-static const int topbar             = 1;        /* 0 means bottom bar */
+static unsigned int gappx           = 8;        /* gaps between windows */
+static unsigned int borderpx        = 2;        /* border pixel of windows */
+static unsigned int snap            = 32;       /* snap pixel */
+static int showbar                  = 1;        /* 0 means no bar */
+static int topbar                   = 1;        /* 0 means bottom bar */
 static const char *fonts[]          = {
 	"Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true",
 	"FontAwesome:size=12:antialias=true:autohint=true",
@@ -14,26 +14,25 @@ static const char *fonts[]          = {
 	"DejaVu Sans Mono:size=12:antialias=true:autohint=true",
 	"monospace:size=12"
 };
-static const char dmenufont[]       = "Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true";
-static const char col_gray1[]       = "#11111b";
-static const char col_gray2[]       = "#313244";
-static const char col_gray3[]       = "#a6adc8";
-static const char col_gray4[]       = "#ffffff";
-static const char col_cyan[]        = "#232336";
-static const char col_border[]      = "#a07eff";
-static const char col_title[]       = "#a07eff";
-static const char col_icon[]        = "#7c6ff2";
-static const char col_dim[]         = "#585b70";
-static const char col_gear[]        = "#a07eff";
-static const char col_sky[]         = "#89dceb";
-static const char col_peach[]       = "#fab387";
-static const char col_yellow[]      = "#f9e2af";
-static const char col_teal[]        = "#94e2d5";
-static const char col_green[]       = "#a6e3a1";
-static const char col_red[]         = "#f38ba8";
-static const char col_lavender[]    = "#b4befe";
-static const char col_rosewater[]   = "#f5e0dc";
-static const char col_mauve[]       = "#7c6ff2";
+static char dmenufont[128]          = "Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true";
+static char col_gray1[16]           = "#11111b";
+static char col_gray2[16]           = "#313244";
+static char col_gray3[16]           = "#a6adc8";
+static char col_gray4[16]           = "#ffffff";
+static char col_cyan[16]            = "#232336";
+static char col_border[16]          = "#a07eff";
+static char col_title[16]           = "#a07eff";
+static char col_dim[16]             = "#585b70";
+static char col_gear[16]            = "#a07eff";
+static char col_sky[16]             = "#89dceb";
+static char col_peach[16]           = "#fab387";
+static char col_yellow[16]          = "#f9e2af";
+static char col_teal[16]            = "#94e2d5";
+static char col_green[16]           = "#a6e3a1";
+static char col_red[16]             = "#f38ba8";
+static char col_lavender[16]        = "#b4befe";
+static char col_rosewater[16]       = "#f5e0dc";
+static char col_mauve[16]           = "#7c6ff2";
 static const char *colors[][3]      = {
 	/*                   fg             bg         border   */
 	[SchemeNorm]     = { col_gray3,     col_gray1, col_gray2  },
@@ -83,11 +82,42 @@ static const Rule rules[] = {
 };
 
 /* layout(s) */
-static const float mfact     = 0.55; /* factor of master area size [0.05..0.95] */
-static const int nmaster     = 1;    /* number of clients in master area */
-static const int resizehints = 0;    /* 1 means respect size hints in tiled resizals */
+static float mfact           = 0.55; /* factor of master area size [0.05..0.95] */
+static int nmaster           = 1;    /* number of clients in master area */
+static int resizehints       = 0;    /* 1 means respect size hints in tiled resizals */
 static const int lockfullscreen = 1; /* 1 will force focus on the fullscreen window */
 static const int refreshrate = 120;  /* refresh rate (per second) for client move/resize */
+
+/* Xresources preferences (dwm.<name>) */
+static const ResourcePref resources[] = {
+	{ "normbgcolor",     XRM_STRING,  col_gray1 },
+	{ "normbordercolor", XRM_STRING,  col_gray2 },
+	{ "normfgcolor",     XRM_STRING,  col_gray3 },
+	{ "selfgcolor",      XRM_STRING,  col_gray4 },
+	{ "selbgcolor",      XRM_STRING,  col_cyan },
+	{ "selbordercolor",  XRM_STRING,  col_border },
+	{ "titlefgcolor",    XRM_STRING,  col_title },
+	{ "gearfgcolor",     XRM_STRING,  col_gear },
+	{ "skycolor",        XRM_STRING,  col_sky },
+	{ "peachcolor",      XRM_STRING,  col_peach },
+	{ "yellowcolor",     XRM_STRING,  col_yellow },
+	{ "tealcolor",       XRM_STRING,  col_teal },
+	{ "greencolor",      XRM_STRING,  col_green },
+	{ "redcolor",        XRM_STRING,  col_red },
+	{ "lavendercolor",   XRM_STRING,  col_lavender },
+	{ "rosewatercolor",  XRM_STRING,  col_rosewater },
+	{ "mauvecolor",      XRM_STRING,  col_mauve },
+	{ "dimcolor",        XRM_STRING,  col_dim },
+	{ "dmenufont",       XRM_STRING,  dmenufont },
+	{ "borderpx",        XRM_INTEGER, &borderpx },
+	{ "snap",            XRM_INTEGER, &snap },
+	{ "showbar",         XRM_INTEGER, &showbar },
+	{ "topbar",          XRM_INTEGER, &topbar },
+	{ "nmaster",         XRM_INTEGER, &nmaster },
+	{ "resizehints",     XRM_INTEGER, &resizehints },
+	{ "gappx",           XRM_INTEGER, &gappx },
+	{ "mfact",           XRM_FLOAT,   &mfact },
+};
 
 static const Layout layouts[] = {
 	/* symbol     arrange function */

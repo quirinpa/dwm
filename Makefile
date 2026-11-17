@@ -6,7 +6,7 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm
+all: dwm dwm-msg
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
@@ -19,8 +19,11 @@ config.h:
 dwm: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
+dwm-msg: dwm-msg.c
+	${CC} ${CFLAGS} -o $@ dwm-msg.c -L${X11LIB} -lX11
+
 clean:
-	rm -f dwm ${OBJ} dwm-${VERSION}.tar.gz
+	rm -f dwm dwm-msg ${OBJ} dwm-${VERSION}.tar.gz
 
 dist: clean
 	mkdir -p dwm-${VERSION}
@@ -32,7 +35,7 @@ dist: clean
 
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
-	install -m 755 dwm ${DESTDIR}${PREFIX}/bin/dwm
+	install -m 755 dwm dwm-msg ${DESTDIR}${PREFIX}/bin/
 	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh

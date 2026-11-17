@@ -126,8 +126,8 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Calendar & Google Sync (ikhal)\n  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 12 "#7c6ff2" "#cdd6f4")
+        choice=$(printf "  Calendar & Google Sync (ikhal)\n  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu_themed "System:" 13 "#7c6ff2" "#cdd6f4")
         case "$choice" in
             *"Calendar"*)           exec /home/quirinpa/.local/bin/dwm-cal menu ;;
             *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
@@ -135,6 +135,7 @@ case "$1" in
             *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
             *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
+            *"Reload Xresources"*)  exec "$0" reload-xrdb ;;
             *Lock*)                 exec slock ;;
             *Hot-Restart*)          kill -HUP "$(pgrep -x dwm | head -n 1)" ;;
             *Logout*)               kill -TERM "$(pgrep -x dwm | head -n 1)" ;;
@@ -142,6 +143,14 @@ case "$1" in
             *Reboot*)               systemctl reboot ;;
             *Poweroff*)             systemctl poweroff ;;
         esac
+        ;;
+    reload-xrdb)
+        [ -f "$HOME/.Xresources" ] && xrdb -merge "$HOME/.Xresources" 2>/dev/null
+        /home/quirinpa/.local/bin/dwm-msg reload 2>/dev/null || true
+        refresh_bar
+        if command -v notify-send >/dev/null 2>&1; then
+            notify-send -t 2000 -h string:x-dunst-stack-tag:xrdb "🎨  Xresources Reloaded" "Applied ~/.Xresources to dwm & status bar" 2>/dev/null || true
+        fi
         ;;
     battery-info)
         for b in /sys/class/power_supply/BAT*; do
