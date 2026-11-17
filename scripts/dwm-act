@@ -1005,21 +1005,25 @@ def get_desktop_apps():
     return apps
 
 
-def embed_with_cache(texts):
-    """Embed a list of strings via axil-auren /v1/embeddings using persistent text->vec cache."""
-    import math, urllib.request
-    cache_path = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "dwm-auren-embeddings.json")
-    vec_map = {}
-    if os.path.exists(cache_path):
-        try:
-            with open(cache_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                if isinstance(data.get("vec_map"), dict):
-                    vec_map = data["vec_map"]
-        except Exception:
-            vec_map = {}
+_MEM_VEC_MAP = None
 
-    missing = [t for t in dict.fromkeys(texts) if t and t not in vec_map]
+def embed_with_cache(texts):
+    """Embed a list of strings via axil-auren /v1/embeddings (bge-base) using persistent + in-memory cache."""
+    import math, urllib.request
+    global _MEM_VEC_MAP
+    cache_path = os.path.join(os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "dwm-auren-embeddings.json")
+    if _MEM_VEC_MAP is None:
+        _MEM_VEC_MAP = {}
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if data.get("engine") == "bge-base" and isinstance(data.get("vec_map"), dict):
+                        _MEM_VEC_MAP = data["vec_map"]
+            except Exception:
+                _MEM_VEC_MAP = {}
+
+    missing = [t for t in dict.fromkeys(texts) if t and t not in _MEM_VEC_MAP]
     if missing:
         try:
             req = urllib.request.Request(
@@ -1028,22 +1032,50 @@ def embed_with_cache(texts):
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=8.0) as resp:
+            with urllib.request.urlopen(req, timeout=4.0) as resp:
                 edata = json.loads(resp.read().decode("utf-8"))["data"]
             for t_str, item in zip(missing, edata):
                 v = item["embedding"]
                 n = math.sqrt(sum(x * x for x in v))
-                vec_map[t_str] = [round(x / n, 6) for x in v] if n > 1e-9 else v
+                _MEM_VEC_MAP[t_str] = [round(x / n, 6) for x in v] if n > 1e-9 else v
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as f:
-                json.dump({"vec_map": vec_map}, f)
+                json.dump({"engine": "bge-base", "vec_map": _MEM_VEC_MAP}, f)
         except Exception:
             pass
-    return {t: vec_map.get(t) for t in texts}
+    return {t: _MEM_VEC_MAP.get(t) for t in texts}
 
 
-def resolve_semantic_target(target: str):
-    """Rank live X11 windows, open Firefox tabs, Firefox places.sqlite, and .desktop apps by semantic similarity."""
+def _target_lexical_score(q_norm: str, q_words: set, c: dict) -> float:
+    title_norm = norm_text(c.get("title", ""))
+    desc_norm = norm_text(c.get("desc", ""))
+    if not q_norm or not desc_norm:
+        return 0.0
+    title_words = {w for w in title_norm.split() if len(w) >= 2}
+    desc_words = {w for w in desc_norm.split() if len(w) >= 2}
+    live_bonus = 0.04 if c["kind"] in ("win", "tab") else 0.0
+
+    if q_norm == title_norm:
+        return min(0.96 + live_bonus, 0.99)
+    if q_words and q_words <= title_words:
+        return min(0.90 + live_bonus, 0.99)
+    if q_words and q_words <= desc_words:
+        return min(0.84 + live_bonus, 0.98)
+    if len(q_norm) >= 3 and q_norm in title_norm:
+        return min(0.86 + live_bonus, 0.98)
+    if len(q_norm) >= 4 and q_norm in desc_norm:
+        return min(0.80 + live_bonus, 0.96)
+
+    overlap = len(q_words & desc_words) / len(q_words) if q_words else 0.0
+    title_hit = 0.08 if (q_words and title_words and (q_words & title_words)) else 0.0
+    seq = difflib.SequenceMatcher(None, q_norm, title_norm or desc_norm).ratio()
+    return 0.55 * overlap + 0.35 * seq + title_hit + live_bonus
+
+
+def resolve_semantic_target(target: str, use_inference: bool = None):
+    """Rank live X11 windows, open Firefox tabs, Firefox places.sqlite, and .desktop apps (zero-inference lexical first)."""
+    if use_inference is None:
+        use_inference = os.environ.get("DWM_AUREN_INFERENCE", "").strip().lower() in ("1", "true", "yes", "on")
     t_clean = " ".join(unicodedata.normalize("NFKC", target.strip().strip("\"'")).split())
     if not t_clean:
         return None
@@ -1061,7 +1093,7 @@ def resolve_semantic_target(target: str):
         title_clean = " ".join(unicodedata.normalize("NFKC", c["title"]).split())
         extra_app = app_desc_by_bin.get(cls_short, "terminal shell" if "ghostty" in cls_short else "")
         desc = f"window {cls_short} {extra_app} {title_clean}".strip()
-        candidates.append({"kind": "win", "ref": c["id"], "title": title_clean, "desc": desc, "label": f"{cls_short}:{title_clean[:28]}"})
+        candidates.append({"kind": "win", "ref": c["id"], "title": f"{cls_short} {title_clean}".strip(), "desc": desc, "label": f"{cls_short}:{title_clean[:28]}"})
 
     open_tabs = get_firefox_open_tabs()
     for tab in open_tabs:
@@ -1072,7 +1104,7 @@ def resolve_semantic_target(target: str):
     for place in get_firefox_places():
         url_words = _readable_url_words(place["url"])
         desc = f"website {place['title']} {url_words}".strip()
-        candidates.append({"kind": "place", "ref": place["url"], "title": place["title"], "desc": desc, "label": f"site({place['title'][:28]})"})
+        candidates.append({"kind": "place", "ref": place["url"], "title": f"{place['title']} {url_words}".strip(), "desc": desc, "label": f"site({place['title'][:28]})"})
 
     for app in desktop_apps:
         desc = f"application {app['desc']}"
@@ -1081,25 +1113,38 @@ def resolve_semantic_target(target: str):
     if not candidates:
         return None
 
-    all_texts = [t_clean] + [c["desc"] for c in candidates]
-    vecs = embed_with_cache(all_texts)
-    q_vec = vecs.get(t_clean)
-    q_words = {w for w in norm_text(t_clean).split() if len(w) >= 3}
+    target_stop = {"the", "a", "an", "for", "web", "app", "window", "tab", "browser", "site", "website", "on", "in", "to", "my"}
+    q_norm_raw = norm_text(t_clean)
+    q_words = {w for w in q_norm_raw.split() if len(w) >= 2 and w not in target_stop}
+    if not q_words:
+        q_words = {w for w in q_norm_raw.split() if len(w) >= 2}
+    q_norm = " ".join(w for w in q_norm_raw.split() if w not in target_stop) or q_norm_raw
 
     best_cand = None
     best_score = -1.0
     for c in candidates:
-        c_vec = vecs.get(c["desc"])
-        sem_sim = sum(a * b for a, b in zip(q_vec, c_vec)) if (q_vec and c_vec) else 0.0
-        c_words = set(norm_text(c["desc"]).split())
-        title_words = {w for w in norm_text(c.get("title", "")).split() if len(w) >= 3}
-        overlap = len(q_words & c_words) / len(q_words) if q_words else 0.0
-        title_hit = 0.06 if (q_words and title_words and (q_words & title_words)) else 0.0
-        live_bonus = 0.04 if c["kind"] in ("win", "tab") else 0.0
-        score = sem_sim + 0.12 * overlap + title_hit + live_bonus
-        if score > best_score:
-            best_score = score
-            best_cand = dict(c, score=score, sem_sim=sem_sim)
+        lscore = _target_lexical_score(q_norm, q_words, c)
+        if lscore > best_score:
+            best_score = lscore
+            best_cand = dict(c, score=lscore, sem_sim=lscore)
+
+    if use_inference and best_score < 0.78:
+        all_texts = [t_clean] + [c["desc"] for c in candidates]
+        vecs = embed_with_cache(all_texts)
+        q_vec = vecs.get(t_clean)
+        if q_vec:
+            for c in candidates:
+                c_vec = vecs.get(c["desc"])
+                sem_sim = sum(a * b for a, b in zip(q_vec, c_vec)) if c_vec else 0.0
+                c_words = set(norm_text(c["desc"]).split())
+                title_words = {w for w in norm_text(c.get("title", "")).split() if len(w) >= 3}
+                overlap = len(q_words & c_words) / len(q_words) if q_words else 0.0
+                title_hit = 0.06 if (q_words and title_words and (q_words & title_words)) else 0.0
+                live_bonus = 0.04 if c["kind"] in ("win", "tab") else 0.0
+                score = sem_sim + 0.12 * overlap + title_hit + live_bonus
+                if score > best_score:
+                    best_score = score
+                    best_cand = dict(c, score=score, sem_sim=sem_sim)
 
     # If the winner is a places.sqlite URL that is ALREADY open in a Firefox tab, upgrade to that open tab
     if best_cand and best_cand["kind"] == "place":
@@ -1319,14 +1364,18 @@ MEDIA_PROTO = "music song audio video lofi soundtrack playlist stream band singe
 WEB_PROTO = "website webpage documentation software repository dashboard portal service tool account"
 
 
-def is_media_query(target: str) -> bool:
+def is_media_query(target: str, use_inference: bool = None) -> bool:
     """Layer 3 Classifier: Determine whether an unmatched external target is a media playback request."""
+    if use_inference is None:
+        use_inference = os.environ.get("DWM_AUREN_INFERENCE", "").strip().lower() in ("1", "true", "yes", "on")
     t_norm = norm_text(normalize_media_query(target))
     if not t_norm:
         return False
     words = set(t_norm.split())
     if words & MEDIA_KEYWORDS or "hip hop" in t_norm or "bossa nova" in t_norm or "heavy metal" in t_norm:
         return True
+    if not use_inference:
+        return False
     vecs = embed_with_cache([t_norm, MEDIA_PROTO, WEB_PROTO])
     q_v = vecs.get(t_norm)
     m_v = vecs.get(MEDIA_PROTO)

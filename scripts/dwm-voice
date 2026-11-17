@@ -22,27 +22,19 @@ DONE_CHIME_WAV="/tmp/dwm-voice-done-$USER.wav"
 CONF_DIR="$HOME/.config/dwm-voice"
 MODEL_DIR="$HOME/.local/share/whisper"
 
-if [ -f "$MODEL_DIR/ggml-small-q8_0.bin" ]; then
-    DEFAULT_MODEL="$MODEL_DIR/ggml-small-q8_0.bin"
-elif [ -f "$MODEL_DIR/ggml-small-q5_1.bin" ]; then
-    DEFAULT_MODEL="$MODEL_DIR/ggml-small-q5_1.bin"
-elif [ -f "$MODEL_DIR/ggml-base-q8_0.bin" ]; then
+if [ -f "$MODEL_DIR/ggml-base-q8_0.bin" ]; then
     DEFAULT_MODEL="$MODEL_DIR/ggml-base-q8_0.bin"
 elif [ -f "$MODEL_DIR/ggml-base-q5_1.bin" ]; then
     DEFAULT_MODEL="$MODEL_DIR/ggml-base-q5_1.bin"
+elif [ -f "$MODEL_DIR/ggml-tiny-q5_1.bin" ]; then
+    DEFAULT_MODEL="$MODEL_DIR/ggml-tiny-q5_1.bin"
+elif [ -f "$MODEL_DIR/ggml-small-q5_1.bin" ]; then
+    DEFAULT_MODEL="$MODEL_DIR/ggml-small-q5_1.bin"
 else
     DEFAULT_MODEL="$MODEL_DIR/ggml-base.bin"
 fi
 
-if [ -f "$MODEL_DIR/ggml-base-q8_0.bin" ]; then
-    WAKE_MODEL="$MODEL_DIR/ggml-base-q8_0.bin"
-elif [ -f "$MODEL_DIR/ggml-base-q5_1.bin" ]; then
-    WAKE_MODEL="$MODEL_DIR/ggml-base-q5_1.bin"
-elif [ -f "$MODEL_DIR/ggml-tiny-q5_1.bin" ]; then
-    WAKE_MODEL="$MODEL_DIR/ggml-tiny-q5_1.bin"
-else
-    WAKE_MODEL="$DEFAULT_MODEL"
-fi
+WAKE_MODEL="$DEFAULT_MODEL"
 
 FONT="Ubuntu Mono:size=13:antialias=true:autohint=true"
 NB="#1e1e2e"
@@ -90,7 +82,7 @@ get_lang_mode() {
             return
         fi
     fi
-    auto_kbd=$(get_xres "dwm.voice.auto_kbd_lang" "true")
+    auto_kbd=$(get_xres "dwm.voice.auto_kbd_lang" "false")
     if [ "$auto_kbd" = "true" ] || [ "$auto_kbd" = "1" ]; then
         printf 'kbd'
         return
@@ -418,7 +410,7 @@ voice_menu() {
             fi
             ;;
         *"Whisper Model"*)
-            mchoice=$(printf "ggml-small-q8_0.bin          (253 MB - 244M Q8 AVX-VNNI High Accuracy, Default)\nggml-small-q5_1.bin          (182 MB - 244M Q5 Balanced)\nggml-base-q8_0.bin           (78 MB  - 74M Q8 Ultra-Fast)\nggml-large-v3-turbo-q5_0.bin (547 MB - 809M Turbo Max Accuracy)\n" | \
+            mchoice=$(printf "ggml-base-q8_0.bin           (78 MB  - 74M Q8 Ultra-Fast Single-Model Default)\nggml-base-q5_1.bin           (57 MB  - 74M Q5 Lightweight)\nggml-small-q5_1.bin          (182 MB - 244M Q5 Balanced)\nggml-small-q8_0.bin          (253 MB - 244M Q8 High Accuracy)\n" | \
                 dmenu_voice "Whisper Model:" 4 "#f9e2af")
             if [ -n "$mchoice" ]; then
                 mfile=$(printf '%s\n' "$mchoice" | awk '{print $1}')

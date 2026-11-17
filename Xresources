@@ -112,10 +112,12 @@ dwm.bar.bat_crit:               15
 dwm.auren.url:                  http://localhost:4242/v1/systemone
 dwm.auren.model:                bge-base
 dwm.auren.threshold:            0.68
-dwm.voice.auto_kbd_lang:        true
+dwm.auren.inference:            false
+dwm.auren.llm_fallback:         false
+dwm.voice.auto_kbd_lang:        false
 dwm.voice.auto_stop:            true
 dwm.voice.silence_ms:           520
-dwm.voice.cmd_silence_ms: 650
+dwm.voice.cmd_silence_ms:       650
 dwm.voice.threshold_db:         -36
 dwm.voice.wake_word:            jarvis
 dwm.voice.jarvis_autostart:     true

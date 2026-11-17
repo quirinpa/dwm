@@ -14,8 +14,8 @@ QUERIES = [
     ("turn up the volume", "Paraphrased static"),
     ("make this window full screen", "Paraphrased static"),
     ("open a new browser tab", "Paraphrased static"),
-    ("mudar para o ecrã 3", "PT static"),
-    ("aumentar o som", "PT static"),
+    ("go to workspace 3", "Static exemplar"),
+    ("lower volume", "Paraphrased static"),
     ("show me my agenda for today", "Paraphrased static"),
 
     # Category 2: Parameterized / target-specific intents

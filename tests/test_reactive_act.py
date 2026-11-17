@@ -189,7 +189,7 @@ class TestLayer4AurenRouter(unittest.TestCase):
 
         r6 = self._dry_run("switch to workspace 2 and toggle fullscreen")
         self.assertIn("status=ACT", r6)
-        self.assertIn("dwm-msg view 2 ; sh dwm-msg togglefullscreen", r6)
+        self.assertIn("view 2 ; wm fullscreen", r6)
 
     def test_recording_and_demo_chains(self):
         r7 = self._dry_run("start recording my screen and audio")
@@ -202,7 +202,7 @@ class TestLayer4AurenRouter(unittest.TestCase):
 
         r9 = self._dry_run("record my screen and audio, switch to workspace 2, play some low fee Dragon Ball music, wait 5 seconds, and stop recording")
         self.assertIn("status=ACT", r9)
-        self.assertIn('record start ; sh dwm-msg view 2 ; play "lofi Dragon Ball music" ; wait_sec "5" ; record stop', r9)
+        self.assertIn('record start ; view 2 ; play "lofi Dragon Ball music" ; wait_sec "5" ; record stop', r9)
 
     def test_live_record_start_and_stop_lifecycle(self):
         start_res = dwm_act.do_record("start both", in_chain=False)

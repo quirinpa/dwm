@@ -1,9 +1,8 @@
 #!/bin/sh
-# dwm-auren: Semantic Desktop Router & Action Planner powered by axil-auren + dwm-act
+# dwm-auren: Fast Zero-Inference Declarative Desktop Router + Opt-In bge-base Embeddings
 # Uses:
-#   1. Cached exemplar embeddings (/v1/embeddings) against ~/.config/dwm/intents.conf
-#   2. Local Qwen2.5-1.5B-Instruct GGUF planner (/v1/chat/completions on axil-auren) with live X11
-#      window + browser tab context (dwm-act)
+#   1. Zero-inference declarative constituent & template/trigram router (<1ms) against ~/.config/dwm/intents.conf
+#   2. Opt-in bge-base-en-v1.5.gguf embeddings (/v1/embeddings on axil-auren, shared with pi-mm) when dwm.auren.inference is enabled
 export PATH="$HOME/.local/bin:$PATH"
 
 CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
@@ -50,8 +49,8 @@ case "$AUREN_URL" in
 esac
 AUREN_BASE="${AUREN_URL%%/v1/*}"
 AUREN_MODEL="${XRES_auren_model:-bge-base}"
-AUREN_CHAT_MODEL="${XRES_auren_chat_model:-qwen}"
 AUREN_THRESHOLD="${XRES_auren_threshold:-0.68}"
+AUREN_INFERENCE="${DWM_AUREN_INFERENCE:-${XRES_auren_inference:-false}}"
 NB="${XRES_normbgcolor:-#11111b}"
 NF="${XRES_normfgcolor:-#a6adc8}"
 SB="${XRES_mauvecolor:-#7c6ff2}"
@@ -73,27 +72,13 @@ refresh_bar() {
 }
 
 ensure_auren_server() {
-    embed_gguf="$HOME/.models/embeddinggemma-300M-Q8_0.gguf"
-    if [ ! -f "$embed_gguf" ] && [ -f "$HOME/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf" ]; then
-        ln -sf "$HOME/.cache/qmd/models/hf_ggml-org_embeddinggemma-300M-Q8_0.gguf" "$embed_gguf"
-    fi
-    if [ ! -f "$embed_gguf" ]; then
-        embed_gguf="$HOME/.models/bge-base-en-v1.5.gguf"
-    fi
-    if [ -f "$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf" ]; then
+    embed_gguf="$HOME/.models/bge-base-en-v1.5.gguf"
+    if [ -f "$embed_gguf" ]; then
         mkdir -p "$(dirname "$AUREN_CFG")" "$HOME/.cache/auren"
-        if [ ! -f "$AUREN_CFG" ] || ! grep -q 'embeddinggemma' "$AUREN_CFG" 2>/dev/null; then
+        if [ ! -f "$AUREN_CFG" ] || grep -q 'embeddinggemma\|qwen' "$AUREN_CFG" 2>/dev/null; then
             cat > "$AUREN_CFG" << EOF
 {
   "models": [
-    {
-      "id": "qwen",
-      "path": "$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf",
-      "capabilities": ["chat", "judge"],
-      "n_ctx": 4096,
-      "n_gpu_layers": 0,
-      "temperature": 0.1
-    },
     {
       "id": "bge-base",
       "path": "$embed_gguf",
@@ -104,21 +89,19 @@ ensure_auren_server() {
     }
   ],
   "defaults": {
-    "chat": "qwen",
-    "judge": "qwen",
     "embed": "bge-base"
   },
-  "max_resident": 2
+  "max_resident": 1
 }
 EOF
             fuser -k 4242/tcp >/dev/null 2>&1 || true
             sleep 0.2
         fi
     fi
-    if curl -s --max-time 0.3 "${AUREN_BASE}/v1/models" 2>/dev/null | grep -q '"qwen"'; then
+    if curl -s --max-time 0.3 "${AUREN_BASE}/v1/models" 2>/dev/null | grep -q '"bge-base"'; then
         return 0
     fi
-    if [ -f "$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf" ]; then
+    if [ -f "$embed_gguf" ]; then
         fuser -k 4242/tcp >/dev/null 2>&1 || true
         sleep 0.2
         setsid env \
@@ -149,14 +132,14 @@ play_done_earcon() {
 
 run_auren_python() {
     mode_or_query="$1"
-    python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_CHAT_MODEL" "$AUREN_THRESHOLD" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
+    python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$AUREN_INFERENCE" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
 import sys, os, json, math, socket, subprocess, urllib.request, importlib.util, importlib.machinery
 
-conf_path, cache_path, sys1_url, embed_model, chat_model, thresh_s, raw_query, sock_path = sys.argv[1:9]
+conf_path, cache_path, sys1_url, embed_model, thresh_s, infer_s, raw_query, sock_path = sys.argv[1:9]
 thresh = float(thresh_s)
+infer_default = infer_s.strip().lower() in ("1", "true", "yes", "on")
 base_url = sys1_url.split("/v1/")[0] if "/v1/" in sys1_url else sys1_url.rstrip("/")
 embed_url = base_url + "/v1/embeddings"
-chat_url = base_url + "/v1/chat/completions"
 
 dwm_act = None
 try:
@@ -171,15 +154,83 @@ try:
 except Exception:
     dwm_act = None
 
+FILLER_WORDS = {
+    "please", "jarvis", "hey", "ok", "okay", "can", "could", "would", "you",
+    "the", "a", "an", "my", "some", "me", "for", "now", "right",
+}
+
+def clean_phrase(s):
+    out = []
+    for ch in s.lower():
+        if ch.isalnum() or ch.isspace():
+            out.append(ch)
+        else:
+            out.append(" ")
+    return " ".join("".join(out).split())
+
+def core_tokens(s):
+    toks = clean_phrase(s).split()
+    filtered = [t for t in toks if t not in FILLER_WORDS]
+    return filtered if filtered else toks
+
+def char_trigrams(s):
+    c = f"  {clean_phrase(s)}  "
+    if len(c) < 3:
+        return {}
+    counts = {}
+    for i in range(len(c) - 2):
+        tg = c[i:i + 3]
+        counts[tg] = counts.get(tg, 0) + 1
+    norm = math.sqrt(sum(v * v for v in counts.values()))
+    if norm > 1e-9:
+        return {k: v / norm for k, v in counts.items()}
+    return counts
+
+def trigram_cos(tg_a, tg_b):
+    if not tg_a or not tg_b:
+        return 0.0
+    if len(tg_a) > len(tg_b):
+        tg_a, tg_b = tg_b, tg_a
+    return sum(v * tg_b.get(k, 0.0) for k, v in tg_a.items())
+
+def lexical_similarity(q_str, ex_str):
+    q_clean = clean_phrase(q_str)
+    ex_clean = clean_phrase(ex_str)
+    if not q_clean or not ex_clean:
+        return 0.0
+    if q_clean == ex_clean:
+        return 1.0
+    q_core = core_tokens(q_clean)
+    ex_core = core_tokens(ex_clean)
+    if q_core == ex_core:
+        return 0.98
+    q_set = set(q_core)
+    ex_set = set(ex_core)
+    inter = len(q_set & ex_set)
+    union = len(q_set | ex_set)
+    jacc = inter / union if union else 0.0
+    cov = inter / max(1, len(ex_set))
+    q_cov = inter / max(1, len(q_set))
+    tg = trigram_cos(char_trigrams(q_clean), char_trigrams(ex_clean))
+    core_tg = trigram_cos(char_trigrams(" ".join(q_core)), char_trigrams(" ".join(ex_core)))
+    score = 0.40 * max(jacc, 0.5 * (cov + q_cov)) + 0.35 * core_tg + 0.25 * tg
+    if q_set and ex_set and (q_set <= ex_set or ex_set <= q_set) and inter >= 2:
+        score = max(score, 0.88)
+    return min(score, 0.99)
+
 commands = {}
 static_exemplars = []
+static_exact_map = {}
+static_core_map = {}
 param_exemplars = []
 param_frames = []
 span_roles = {}
+span_role_lookup = {}
 conf_mtime = 0.0
 
 def reload_conf_if_needed():
-    global conf_mtime, commands, static_exemplars, param_exemplars, param_frames, span_roles
+    global conf_mtime, commands, static_exemplars, static_exact_map, static_core_map
+    global param_exemplars, param_frames, span_roles, span_role_lookup
     try:
         mt = os.path.getmtime(conf_path)
     except Exception:
@@ -189,9 +240,12 @@ def reload_conf_if_needed():
     conf_mtime = mt
     commands = {}
     static_exemplars = []
+    static_exact_map = {}
+    static_core_map = {}
     param_exemplars = []
     param_frames = []
     span_roles = {}
+    span_role_lookup = {}
     with open(conf_path, "r", encoding="utf-8") as f:
         conf_raw = f.read()
     for line in conf_raw.splitlines():
@@ -207,6 +261,12 @@ def reload_conf_if_needed():
             continue
         if iid.startswith("@"):
             span_roles[cmd] = exemplars
+            role_set = set()
+            for rex in exemplars:
+                rc = clean_phrase(rex)
+                if rc:
+                    role_set.add(rc)
+            span_role_lookup[cmd] = role_set
             continue
         commands[iid] = cmd
         for ex in exemplars:
@@ -216,20 +276,25 @@ def reload_conf_if_needed():
                 suf_c = suf.strip().lower()
                 param_exemplars.append((iid, ex, pre_c, suf_c))
                 if pre_c and not suf_c:
-                    param_frames.append((iid, f"{pre_c} {{arg}}"))
+                    param_frames.append((iid, pre_c))
             else:
                 static_exemplars.append((iid, ex))
+                ec = clean_phrase(ex)
+                if ec and ec not in static_exact_map:
+                    static_exact_map[ec] = iid
+                cc = " ".join(core_tokens(ec))
+                if cc and cc not in static_core_map:
+                    static_core_map[cc] = iid
     param_exemplars.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
 
 reload_conf_if_needed()
 
 vec_map = {}
-cached_model_tag = ""
 if os.path.exists(cache_path):
     try:
         with open(cache_path, "r", encoding="utf-8") as cf:
             loaded = json.load(cf)
-            if loaded.get("engine") == "embeddinggemma-300m" and isinstance(loaded.get("vec_map"), dict):
+            if loaded.get("engine") == "bge-base" and isinstance(loaded.get("vec_map"), dict):
                 vec_map = loaded["vec_map"]
     except Exception:
         vec_map = {}
@@ -252,21 +317,15 @@ def ensure_embedded(texts):
             headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=8.0) as resp:
+        with urllib.request.urlopen(req, timeout=4.0) as resp:
             edata = json.loads(resp.read().decode("utf-8"))["data"]
         for t_str, item in zip(missing, edata):
             vec_map[t_str] = normalize_vec(item["embedding"])
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w", encoding="utf-8") as cf:
-            json.dump({"engine": "embeddinggemma-300m", "vec_map": vec_map}, cf)
+            json.dump({"engine": "bge-base", "vec_map": vec_map}, cf)
     except Exception:
         pass
-
-def all_role_phrases():
-    out = []
-    for exs in span_roles.values():
-        out.extend(exs)
-    return out
 
 def cmd_to_dsl(cmd_str):
     if cmd_str.startswith("dwm-act "):
@@ -294,10 +353,9 @@ def cmd_to_dsl(cmd_str):
 
 def resolve_payload_and_target(iid, raw_arg):
     """
-    Factored Constituent Span Scorer (zero-regex, language-agnostic):
-    Splits a payload phrase w[0..m-1] into Payload w[0..m-L-1] + Optional Trailing Constituent w[m-L..m-1]
-    by scoring candidate trailing spans L in 1..4 against declarative @target_self, @target_other,
-    and @submit_tail exemplars from intents.conf in multilingual embedding space.
+    Zero-Inference Declarative Constituent Span Stripper:
+    Matches trailing spans w[m-L:] against @target_self, @target_other, and @submit_tail
+    from intents.conf without calling the neural embedding server.
     """
     cleaned = raw_arg.strip().strip("\"'")
     if not cleaned:
@@ -310,44 +368,21 @@ def resolve_payload_and_target(iid, raw_arg):
     if m < 2:
         return iid, cleaned
 
-    # Generate candidate trailing spans w[m-L:] of length L in 1..min(5, m-1)
-    # Requiring m - L >= 1 guarantees the remaining payload w[:m-L] is never empty.
-    tail_cands = []
-    for L in range(min(5, m - 1), 0, -1):
-        tail_str = " ".join(words[m - L:]).strip(",.!?;:")
-        if tail_str:
-            tail_cands.append((L, tail_str))
-
-    if not tail_cands:
-        return iid, cleaned
-
-    ensure_embedded([tc[1] for tc in tail_cands] + all_role_phrases())
+    allowed_roles = ("SELF", "OTHER", "SUBMIT") if iid in ("type_text", "type_enter", "type_other", "type_enter_other") else ("SELF",)
 
     best_role = None
     best_L = 0
-    best_sim = -1.0
-    best_adj = -1.0
-
-    allowed_roles = ("SELF", "OTHER", "SUBMIT") if iid in ("type_text", "type_enter", "type_other", "type_enter_other") else ("SELF",)
-
-    for L, tail_str in tail_cands:
-        tv = vec_map.get(tail_str)
-        if not tv:
+    for L in range(min(5, m - 1), 0, -1):
+        tail_clean = clean_phrase(" ".join(words[m - L:]))
+        if not tail_clean:
             continue
         for role in allowed_roles:
-            for rex in span_roles.get(role, ()):
-                rv = vec_map.get(rex)
-                if not rv:
-                    continue
-                sim = dot_vec(tv, rv)
-                # Length specificity bonus so multi-word constituents ("right here", "in this window")
-                # outrank single-word sub-constituents ("here", "window")
-                adj = sim + 0.025 * L
-                if sim >= 0.78 and adj > best_adj:
-                    best_adj = adj
-                    best_sim = sim
-                    best_role = role
-                    best_L = L
+            if tail_clean in span_role_lookup.get(role, set()):
+                best_role = role
+                best_L = L
+                break
+        if best_role:
+            break
 
     if not best_role or best_L <= 0:
         return iid, cleaned
@@ -361,107 +396,143 @@ def resolve_payload_and_target(iid, raw_arg):
         return new_iid, payload
     if best_role == "SUBMIT":
         new_iid = "type_enter_other" if iid in ("type_other", "type_enter_other") else "type_enter"
-        # Recursively check if the remaining payload BEFORE "and press enter" has a target tail ("in the other window")
         return resolve_payload_and_target(new_iid, payload)
-    # best_role == "SELF": target is already the active window/workspace; strip the locative tail
     return iid, payload
 
 def promote_intent(iid, arg_val):
     if iid == "open_target":
-        # Check semantic similarity of "open <arg>" against record_start / record_silent / play_target exemplars
-        full_open = f"open {arg_val}"
-        ensure_embedded([full_open])
-        ov = vec_map.get(full_open)
-        if ov:
-            best_rec_iid = None
-            best_rec_sim = 0.0
-            for cand_iid in ("record_silent", "record_start"):
-                for st_iid, st_ex in static_exemplars:
-                    if st_iid == cand_iid and st_ex in vec_map:
-                        s = dot_vec(ov, vec_map[st_ex])
-                        if s > best_rec_sim:
-                            best_rec_sim = s
-                            best_rec_iid = cand_iid
-            if best_rec_iid and best_rec_sim >= 0.80:
-                return best_rec_iid
+        arg_low = clean_phrase(arg_val)
+        if "record" in arg_low and "screen" in arg_low:
+            if "without audio" in arg_low or "silent" in arg_low or "only" in arg_low:
+                return "record_silent"
+            return "record_start"
+        if dwm_act is not None and dwm_act.is_media_query(arg_val, use_inference=False):
+            return "play_target"
     return iid
 
-def candidate_frame_splits(clause):
-    c_clean = clause.strip().strip(",.!?;:")
-    words = c_clean.split()
-    splits = []
-    if len(words) < 2:
-        return splits
-    for k in range(1, min(6, len(words))):
-        frame_str = " ".join(words[:k]).lower() + " {arg}"
-        arg_str = " ".join(words[k:])
-        splits.append((k, frame_str, arg_str))
-    return splits
+def normalize_intent_arg(iid, arg_val):
+    if iid == "play_target" and dwm_act is not None:
+        return dwm_act.normalize_media_query(arg_val)
+    return arg_val
+
+def strip_leading_fillers(s):
+    words = s.strip().strip(",.!?;:").split()
+    while words and words[0].lower().strip(",.!?;:") in ("please", "jarvis", "hey", "ok", "okay", "can", "could", "would", "you"):
+        words.pop(0)
+    return " ".join(words)
+
+def strip_arg_determiner(iid, arg_val):
+    if iid in ("play_target", "open_target", "focus_target", "pull_target"):
+        words = arg_val.split()
+        if len(words) >= 2 and words[0].lower() in ("some", "the", "a", "an", "my"):
+            return " ".join(words[1:])
+    return arg_val
 
 def match_param_template(clause):
-    """Match a clause against configurable {arg} templates in intents.conf."""
-    c_clean = clause.strip().strip(",.!?;:")
-    c_low = c_clean.lower()
-    for iid, ex, pre, suf in param_exemplars:
-        if pre and not (c_low.startswith(pre + " ") or c_low == pre):
+    """Zero-inference match of a clause against configurable {arg} templates in intents.conf."""
+    for cand in (clause.strip().strip(",.!?;:"), strip_leading_fillers(clause)):
+        if not cand:
             continue
-        if suf and not (c_low.endswith(" " + suf) or c_low == suf):
-            continue
-        start = len(pre)
-        end = len(c_clean) - len(suf) if suf else len(c_clean)
-        if end <= start:
-            continue
-        raw_arg = c_clean[start:end].strip()
-        if not raw_arg:
-            continue
-        iid_resolved, arg_val = resolve_payload_and_target(iid, raw_arg)
-        if not arg_val:
-            continue
-        iid_resolved = promote_intent(iid_resolved, arg_val)
-        cmd_tmpl = commands.get(iid_resolved, commands[iid])
-        cmd_filled = cmd_tmpl.replace("{arg}", arg_val)
-        return iid_resolved, 0.99, cmd_to_dsl(cmd_filled)
+        c_low = cand.lower()
+        for iid, ex, pre, suf in param_exemplars:
+            if pre and not (c_low.startswith(pre + " ") or c_low == pre):
+                continue
+            if suf and not (c_low.endswith(" " + suf) or c_low == suf):
+                continue
+            start = len(pre)
+            end = len(cand) - len(suf) if suf else len(cand)
+            if end <= start:
+                continue
+            raw_arg = cand[start:end].strip()
+            if not raw_arg:
+                continue
+            iid_resolved, arg_val = resolve_payload_and_target(iid, raw_arg)
+            if not arg_val:
+                continue
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            iid_resolved = promote_intent(iid_resolved, arg_val)
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            arg_val = normalize_intent_arg(iid_resolved, arg_val)
+            cmd_tmpl = commands.get(iid_resolved, commands[iid])
+            cmd_filled = cmd_tmpl.replace("{arg}", arg_val)
+            return iid_resolved, 0.99, cmd_to_dsl(cmd_filled)
     return None
 
-def match_semantic_frame(clause):
-    """Match a clause's verb prefix against {arg} frame exemplars in multilingual embedding space."""
-    splits = candidate_frame_splits(clause)
-    if not splits or not param_frames:
+def match_static_fast(clause):
+    """Zero-inference exact + lexical/trigram scorer against static exemplars in intents.conf."""
+    c_clean = clean_phrase(clause)
+    if not c_clean:
         return None
-    ensure_embedded([fs for _, fs, _ in splits] + [tf for _, tf in param_frames])
+    if c_clean in static_exact_map:
+        iid = static_exact_map[c_clean]
+        return iid, 1.00, cmd_to_dsl(commands[iid])
+
+    q_words = c_clean.split()
+    q_digits = {w for w in q_words if w.isdigit()}
+    c_core = " ".join(core_tokens(c_clean))
+    if c_core in static_core_map:
+        iid = static_core_map[c_core]
+        ex_digits = {w for w in c_core.split() if w.isdigit()}
+        if q_digits == ex_digits:
+            return iid, 0.98, cmd_to_dsl(commands[iid])
+
+    best_iid = ""
+    best_sim = -1.0
+    for iid, ex in static_exemplars:
+        ex_clean = clean_phrase(ex)
+        ex_words = ex_clean.split()
+        if len(q_words) > len(ex_words) + 3:
+            continue
+        ex_digits = {w for w in ex_words if w.isdigit()}
+        if q_digits != ex_digits:
+            continue
+        sim = lexical_similarity(c_clean, ex_clean)
+        if sim > best_sim:
+            best_sim = sim
+            best_iid = iid
+
+    if best_iid and best_sim >= 0.78:
+        return best_iid, best_sim, cmd_to_dsl(commands[best_iid])
+    return None
+
+def match_lexical_frame(clause):
+    """Zero-inference verb-prefix matcher against {arg} templates in intents.conf."""
+    cand = strip_leading_fillers(clause)
+    words = cand.split()
+    if len(words) < 2 or not param_frames:
+        return None
     best_adj = -1.0
     best_hit = None
-    for k, frame_str, arg_raw in splits:
-        f_vec = vec_map.get(frame_str)
-        if not f_vec:
-            continue
-        for iid, tmpl_str in param_frames:
-            t_vec = vec_map.get(tmpl_str)
-            if not t_vec:
-                continue
-            sim = dot_vec(f_vec, t_vec)
-            adj = sim + 0.012 * k
-            if adj > best_adj:
+    for k in range(1, min(5, len(words))):
+        prefix_str = " ".join(words[:k]).lower()
+        arg_raw = " ".join(words[k:])
+        for iid, tmpl_pre in param_frames:
+            sim = lexical_similarity(prefix_str, tmpl_pre)
+            adj = sim + 0.015 * k
+            if sim >= 0.84 and adj > best_adj:
                 best_adj = adj
                 best_hit = (iid, sim, arg_raw)
-    if best_hit and best_hit[1] >= 0.80:
+    if best_hit:
         iid, sim, arg_raw = best_hit
         iid_resolved, arg_val = resolve_payload_and_target(iid, arg_raw)
         if arg_val:
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
             iid_resolved = promote_intent(iid_resolved, arg_val)
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            arg_val = normalize_intent_arg(iid_resolved, arg_val)
             cmd_tmpl = commands.get(iid_resolved, commands[iid])
             cmd_filled = cmd_tmpl.replace("{arg}", arg_val)
-            return iid_resolved, min(sim, 0.99), cmd_to_dsl(cmd_filled)
+            return iid_resolved, min(sim, 0.96), cmd_to_dsl(cmd_filled)
     return None
 
 def match_static_embedding(clause):
-    """Match a clause against static exemplars in intents.conf via multilingual cosine similarity."""
+    """Opt-in bge-base embedding match against static exemplars in intents.conf."""
     c_clean = clause.strip().strip(",.!?;:")
     if not c_clean:
         return None
     q_words = c_clean.lower().split()
     q_digits = {w for w in q_words if w.isdigit()}
-    ensure_embedded([c_clean])
+    ensure_embedded([ex for _, ex in static_exemplars] + [c_clean])
     q_vec = vec_map.get(c_clean)
     if not q_vec:
         return None
@@ -487,39 +558,95 @@ def match_static_embedding(clause):
         return best_iid, best_sim, cmd_to_dsl(commands[best_iid])
     return None
 
-def match_single_clause(clause):
-    """Resolve a single clause via intents.conf using embeddings and factored constituent spans."""
+def match_semantic_frame_embedding(clause):
+    """Opt-in bge-base embedding match for verb frames."""
+    c_clean = strip_leading_fillers(clause)
+    words = c_clean.split()
+    if len(words) < 2 or not param_frames:
+        return None
+    splits = []
+    for k in range(1, min(5, len(words))):
+        splits.append((k, " ".join(words[:k]).lower() + " {arg}", " ".join(words[k:])))
+    frame_tmpls = [(iid, f"{pre} {{arg}}") for iid, pre in param_frames]
+    ensure_embedded([fs for _, fs, _ in splits] + [tf for _, tf in frame_tmpls])
+    best_adj = -1.0
+    best_hit = None
+    for k, frame_str, arg_raw in splits:
+        f_vec = vec_map.get(frame_str)
+        if not f_vec:
+            continue
+        for iid, tmpl_str in frame_tmpls:
+            t_vec = vec_map.get(tmpl_str)
+            if not t_vec:
+                continue
+            sim = dot_vec(f_vec, t_vec)
+            adj = sim + 0.012 * k
+            if sim >= 0.80 and adj > best_adj:
+                best_adj = adj
+                best_hit = (iid, sim, arg_raw)
+    if best_hit:
+        iid, sim, arg_raw = best_hit
+        iid_resolved, arg_val = resolve_payload_and_target(iid, arg_raw)
+        if arg_val:
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            iid_resolved = promote_intent(iid_resolved, arg_val)
+            arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            arg_val = normalize_intent_arg(iid_resolved, arg_val)
+            cmd_tmpl = commands.get(iid_resolved, commands[iid])
+            cmd_filled = cmd_tmpl.replace("{arg}", arg_val)
+            return iid_resolved, min(sim, 0.95), cmd_to_dsl(cmd_filled)
+    return None
+
+def match_single_clause(clause, use_inference=False):
+    """Resolve a single clause via zero-inference tiers first, then opt-in bge-base embeddings."""
     c_clean = clause.strip().strip(",.!?;:")
     if not c_clean:
         return None
-    # 1. Parametric templates that have BOTH prefix and suffix
+    # 1. Parametric templates that have BOTH prefix and suffix (0 inference)
     for iid, ex, pre, suf in param_exemplars:
         if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
             raw_arg = c_clean[len(pre):len(c_clean) - len(suf)].strip()
             iid_res, arg_val = resolve_payload_and_target(iid, raw_arg)
             if arg_val:
+                arg_val = strip_arg_determiner(iid_res, arg_val)
+                iid_res = promote_intent(iid_res, arg_val)
+                arg_val = normalize_intent_arg(iid_res, arg_val)
                 cmd_tmpl = commands.get(iid_res, commands[iid])
                 return iid_res, 0.99, cmd_to_dsl(cmd_tmpl.replace("{arg}", arg_val))
-    # 2. Static semantic embedding match
-    st = match_static_embedding(c_clean)
-    # 3. Exact parametric prefix template match from intents.conf
+
+    # 2. Zero-inference static exact/core match & parametric prefix template match
+    st_fast = match_static_fast(c_clean)
+    if st_fast and st_fast[1] >= 0.98:
+        return st_fast
+
     pm = match_param_template(c_clean)
-    if st and pm:
-        return st if st[1] >= pm[1] else pm
-    if st:
-        return st
+    if st_fast and pm:
+        return st_fast if st_fast[1] >= pm[1] else pm
     if pm:
         return pm
-    # 4. Multilingual semantic frame match against {arg} templates in intents.conf
-    sf = match_semantic_frame(c_clean)
-    if sf:
-        return sf
-    # 5. Direct semantic target match against live windows, open tabs, places.sqlite, and .desktop apps
+    if st_fast:
+        return st_fast
+
+    # 3. Zero-inference lexical verb frame match
+    lf = match_lexical_frame(c_clean)
+    if lf:
+        return lf
+
+    # 4. Opt-in neural embedding fallback (bge-base)
+    if use_inference:
+        st_emb = match_static_embedding(c_clean)
+        if st_emb:
+            return st_emb
+        sf_emb = match_semantic_frame_embedding(c_clean)
+        if sf_emb:
+            return sf_emb
+
+    # 5. Direct desktop target match (lexical by default; embedding only if use_inference=True)
     try:
         if dwm_act is not None:
-            best_t = dwm_act.resolve_semantic_target(c_clean) or {}
+            best_t = dwm_act.resolve_semantic_target(c_clean, use_inference=use_inference) or {}
         else:
-            res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=3.0).strip()
+            res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=2.0).strip()
             best_t = json.loads(res_raw) if res_raw else {}
         t_score = float(best_t.get("score", 0.0))
         if t_score >= 0.78:
@@ -535,85 +662,66 @@ def split_clauses_semantic(raw_q):
         s_clean = semi_part.strip()
         if not s_clean:
             continue
-        sep_phrases = sorted(span_roles.get("SEP", []), key=len, reverse=True)
-        # Split on explicit comma or connector exemplars declared in @clause_sep
-        words = s_clean.split()
-        cur = []
-        i = 0
-        n = len(words)
-        while i < n:
-            w_clean = words[i].rstrip(",")
-            had_comma = words[i].endswith(",")
-            matched_sep = 0
-            rest_low = " ".join(w.strip(",.!?;:").lower() for w in words[i:min(n, i + 3)])
-            for sp in sep_phrases:
-                sp_low = sp.lower()
-                if rest_low == sp_low or rest_low.startswith(sp_low + " "):
-                    matched_sep = len(sp_low.split())
-                    break
-            if matched_sep > 0 and cur:
-                clause_str = " ".join(cur).strip().strip(",")
-                if clause_str:
-                    chunks.append(clause_str)
-                cur = []
-                i += matched_sep
+        for comma_part in s_clean.split(","):
+            c_part = comma_part.strip()
+            if not c_part:
                 continue
-            cur.append(w_clean)
-            if had_comma and cur:
-                clause_str = " ".join(cur).strip().strip(",")
+            # If the comma-separated part already matches a static intent (not a greedy {arg} template),
+            # do not split internal "and" (e.g. "record my screen and audio")
+            c_hit = match_static_fast(c_part)
+            if c_hit and c_hit[1] >= 0.96:
+                chunks.append(c_part)
+                continue
+            sep_phrases = sorted(span_roles.get("SEP", []), key=len, reverse=True)
+            words = c_part.split()
+            cur = []
+            i = 0
+            n = len(words)
+            while i < n:
+                w_clean = words[i]
+                matched_sep = 0
+                rest_low = " ".join(w.strip(",.!?;:").lower() for w in words[i:min(n, i + 3)])
+                for sp in sep_phrases:
+                    sp_low = sp.lower()
+                    if rest_low == sp_low or rest_low.startswith(sp_low + " "):
+                        matched_sep = len(sp_low.split())
+                        break
+                if matched_sep > 0 and cur:
+                    clause_str = " ".join(cur).strip()
+                    if clause_str:
+                        chunks.append(clause_str)
+                    cur = []
+                    i += matched_sep
+                    continue
+                cur.append(w_clean)
+                i += 1
+            if cur:
+                clause_str = " ".join(cur).strip()
                 if clause_str:
                     chunks.append(clause_str)
-                cur = []
-            i += 1
-        if cur:
-            clause_str = " ".join(cur).strip().strip(",")
-            if clause_str:
-                chunks.append(clause_str)
     return chunks if chunks else [raw_q.strip()]
 
-VALID_OPS = {
-    "view", "tag", "tag_other", "close_other", "focus_other", "pull", "search",
-    "focus", "open", "play", "key", "type", "type_other", "type_enter", "type_enter_other",
-    "click", "right_click", "double_click", "scroll", "wm", "sys", "help", "pi", "wait", "undo",
-}
-SYS_PROMPT = (
-    "You are Jarvis desktop action planner. Output ONLY valid DSL commands (one per line):\n"
-    "view <1..9> | tag <1..9> | tag_other <1..9> | close_other | focus_other | pull \"<app>\" | "
-    "focus \"<app>\" | open \"<app_or_url>\" | play \"<query>\" | search \"<query>\" | "
-    "type \"<text>\" | type_other \"<text>\" | type_enter \"<text>\" | type_enter_other \"<text>\" | "
-    "click \"<target>\" | key <combo> | scroll <up|down> | wm <fullscreen|float|zoom|close|next|prev> | "
-    "sys <lockdown|vol_up|vol_down|vol_mute|bri_up|bri_down> | undo"
-)
-
-def evaluate_query(raw_query):
+def evaluate_query(raw_query, use_inference=None):
+    if use_inference is None:
+        use_inference = infer_default
     reload_conf_if_needed()
     q_trimmed = raw_query.strip().strip(",.!?;:")
     if not q_trimmed:
         return "LOW\t0.00\tnone\t"
 
-    ensure_embedded(
-        [ex for _, ex in static_exemplars]
-        + [tf for _, tf in param_frames]
-        + all_role_phrases()
-        + [q_trimmed]
-    )
-
-    # First check if the entire utterance resolves as a single clause (including type_text / type_enter with target tails)
-    whole_hit = match_single_clause(q_trimmed)
-    # If whole_hit is a payload-carrying typing intent (type_text, type_other, type_enter, type_enter_other)
-    # and resolved cleanly with >=0.98 confidence, prefer it before splitting on "and" inside the dictated payload!
-    if whole_hit and whole_hit[0] in ("type_text", "type_other", "type_enter", "type_enter_other") and whole_hit[1] >= 0.98:
+    # 1. Check if the entire utterance resolves as a single clause first (0 inference by default)
+    whole_hit = match_single_clause(q_trimmed, use_inference=False)
+    if whole_hit and whole_hit[0] in ("type_text", "type_other", "type_enter", "type_enter_other", "record_start", "record_silent") and whole_hit[1] >= 0.90:
         iid, sim, dsl = whole_hit
         return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
+    # 2. Check multi-clause sequence
     sub_parts = split_clauses_semantic(q_trimmed)
-
     if len(sub_parts) > 1:
-        ensure_embedded([p.strip().strip(",.!?;:") for p in sub_parts])
         matched_steps = []
         min_sim = 1.0
         for p in sub_parts:
-            m = match_single_clause(p)
+            m = match_single_clause(p, use_inference=use_inference)
             if not m:
                 matched_steps = []
                 break
@@ -627,48 +735,15 @@ def evaluate_query(raw_query):
         iid, sim, dsl = whole_hit
         return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
-    try:
-        ctx_out = subprocess.check_output(["dwm-act", "context"], text=True, timeout=1.5).strip()
-    except Exception:
-        ctx_out = ""
-
-    user_msg = f"{ctx_out}\nUser: {raw_query}" if ctx_out else f"User: {raw_query}"
-    try:
-        req = urllib.request.Request(
-            chat_url,
-            data=json.dumps({
-                "model": chat_model,
-                "session_id": "jarvis-dsl",
-                "temperature": 0.0,
-                "max_tokens": 72,
-                "messages": [
-                    {"role": "system", "content": SYS_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-            }).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=12.0) as resp:
-            cdata = json.loads(resp.read().decode("utf-8"))
-        raw_plan = cdata["choices"][0]["message"]["content"].strip()
-        llm_steps = []
-        for line in raw_plan.splitlines():
-            line = line.strip().lstrip("-*•0123456789.) ").strip("`").strip()
-            if not line:
-                continue
-            op = line.split()[0].lower()
-            if op in VALID_OPS:
-                llm_steps.append(line)
-        if llm_steps:
-            return f"ACT\t0.95\tqwen-planner\t{' ; '.join(llm_steps)}"
-    except Exception:
-        pass
+    if use_inference:
+        whole_emb = match_single_clause(q_trimmed, use_inference=True)
+        if whole_emb:
+            iid, sim, dsl = whole_emb
+            return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
     return "LOW\t0.00\tnone\t"
 
 if raw_query == "--daemon":
-    ensure_embedded([ex for _, ex in static_exemplars] + [tf for _, tf in param_frames] + all_role_phrases())
     try:
         if os.path.exists(sock_path):
             os.unlink(sock_path)
@@ -694,7 +769,11 @@ if raw_query == "--daemon":
                 conn.sendall(b"PONG\n")
             elif line.startswith("EVAL\t"):
                 q = line[5:].strip()
-                res = evaluate_query(q)
+                res = evaluate_query(q, use_inference=infer_default)
+                conn.sendall((res + "\n").encode("utf-8"))
+            elif line.startswith("EVAL_INFER\t"):
+                q = line[11:].strip()
+                res = evaluate_query(q, use_inference=True)
                 conn.sendall((res + "\n").encode("utf-8"))
             elif line.startswith("ACT_EXEC\t"):
                 dsl = line[9:].strip()
@@ -713,7 +792,7 @@ if raw_query == "--daemon":
                 pass
     sys.exit(0)
 
-print(evaluate_query(raw_query))
+print(evaluate_query(raw_query, use_inference=infer_default))
 PYEOF
 }
 
@@ -746,15 +825,20 @@ run_query() {
         exit 1
     fi
 
+    eval_cmd="EVAL"
+    if [ "$AUREN_INFERENCE" = "true" ] || [ "$AUREN_INFERENCE" = "1" ]; then
+        ensure_auren_server
+        eval_cmd="EVAL_INFER"
+    fi
+
     eval_out=""
     if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
-        eval_out=$(printf 'EVAL\t%s\n' "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
+        eval_out=$(printf '%s\t%s\n' "$eval_cmd" "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
     fi
     if [ -z "$eval_out" ]; then
-        ensure_auren_server
         ensure_jarvisd
         if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
-            eval_out=$(printf 'EVAL\t%s\n' "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
+            eval_out=$(printf '%s\t%s\n' "$eval_cmd" "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
         fi
     fi
     if [ -z "$eval_out" ]; then
@@ -812,10 +896,15 @@ EOF
     esac
 }
 
+if [ "${1:-}" = "--infer" ]; then
+    AUREN_INFERENCE="true"
+    shift
+fi
+
 case "${1:-dmenu}" in
     dmenu|omni)
         selection=$(awk -F'|' '
-            !/^[[:space:]]*#/ && NF >= 3 {
+            !/^[[:space:]]*#/ && !/^[[:space:]]*@/ && NF >= 3 {
                 id=$1; cmd=$2; ex=$3;
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", id);
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd);
@@ -847,10 +936,11 @@ case "${1:-dmenu}" in
         ensure_auren_server
         ensure_jarvisd
         run_query "switch to workspace 1" "--dry-run" >/dev/null 2>&1 || true
-        run_query "Put this window on workspace 2 and go there and make it fullscreen" "--dry-run" >/dev/null 2>&1 || true
         ;;
     daemon)
-        ensure_auren_server
+        if [ "$AUREN_INFERENCE" = "true" ] || [ "$AUREN_INFERENCE" = "1" ]; then
+            ensure_auren_server
+        fi
         run_auren_python "--daemon"
         ;;
     query|exec)
