@@ -45,11 +45,11 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${DESTDIR}${PREFIX}/bin/
-	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
 	mkdir -p $(HOME)/.config/dwm
-	[ -f $(HOME)/.config/dwm/intents.conf ] || install -m 644 intents.conf $(HOME)/.config/dwm/intents.conf
+	install -m 644 intents.conf $(HOME)/.config/dwm/intents.conf
 	mkdir -p $(HOME)/.config/dunst
 	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1

@@ -191,6 +191,39 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("status=ACT", r6)
         self.assertIn("dwm-msg view 2 ; sh dwm-msg togglefullscreen", r6)
 
+    def test_recording_and_demo_chains(self):
+        r7 = self._dry_run("start recording my screen and audio")
+        self.assertIn("intent=record_start", r7)
+        self.assertIn("cmd=record start", r7)
+
+        r8 = self._dry_run("stop recording")
+        self.assertIn("intent=record_stop", r8)
+        self.assertIn("cmd=record stop", r8)
+
+        r9 = self._dry_run("record my screen and audio, switch to workspace 2, play some low fee Dragon Ball music, wait 5 seconds, and stop recording")
+        self.assertIn("status=ACT", r9)
+        self.assertIn('record start ; sh dwm-msg view 2 ; play "lofi Dragon Ball music" ; wait_sec "5" ; record stop', r9)
+
+    def test_live_record_start_and_stop_lifecycle(self):
+        start_res = dwm_act.do_record("start both", in_chain=False)
+        self.assertIn("record:start(both)", start_res)
+        self.assertIn("[recording]", start_res)
+        st = dwm_act.get_recording_state()
+        self.assertTrue(st["recording"])
+        rec_path = st["path"]
+        self.assertTrue(rec_path.endswith(".mp4"))
+        time.sleep(0.8)
+        stop_res = dwm_act.do_record("stop", in_chain=False)
+        self.assertIn("record:stop", stop_res)
+        st_after = dwm_act.get_recording_state()
+        self.assertFalse(st_after["recording"])
+        self.assertTrue(os.path.exists(rec_path))
+        self.assertGreater(os.path.getsize(rec_path), 1024)
+        try:
+            os.unlink(rec_path)
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

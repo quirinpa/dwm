@@ -276,8 +276,8 @@ static void
 seg_voice(char *out, size_t len, const char *user)
 {
 	char path[256], buf[160], jpid_path[256], jpid_buf[32];
-	char pi_path[256], pi_buf[64];
-	int pi_working = 0;
+	char pi_path[256], pi_buf[64], rpid_path[256], rpid_buf[32], extra_tags[64];
+	int pi_working = 0, scr_rec = 0;
 
 	out[0] = '\0';
 	snprintf(pi_path, sizeof(pi_path), "/tmp/dwm-pi-%s.state", user);
@@ -285,7 +285,16 @@ seg_voice(char *out, size_t len, const char *user)
 	    !strncmp(pi_buf, "working", 7)) {
 		pi_working = 1;
 	}
-	const char *pi_tag = pi_working ? "  Pi" : "";
+	snprintf(rpid_path, sizeof(rpid_path), "/tmp/dwm-rec-%s.pid", user);
+	if (read_small_file(rpid_path, rpid_buf, sizeof(rpid_buf)) > 0) {
+		int rpid = atoi(rpid_buf);
+		if (rpid > 1 && kill((pid_t)rpid, 0) == 0)
+			scr_rec = 1;
+	}
+	snprintf(extra_tags, sizeof(extra_tags), "%s%s",
+		scr_rec ? "  REC" : "",
+		pi_working ? "  Pi" : "");
+	const char *pi_tag = extra_tags;
 
 	snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
 	if (read_small_file(path, buf, sizeof(buf)) > 0) {

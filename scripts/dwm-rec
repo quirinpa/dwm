@@ -1,0 +1,253 @@
+#!/bin/sh
+# dwm-rec: Screen & Audio recorder for dwm / Jarvis (X11grab + PipeWire/PulseAudio)
+# Supports simultaneous desktop audio (sink monitor) + microphone mixing via ffmpeg.
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+USER_NAME="${USER:-$(id -un)}"
+PID_FILE="/tmp/dwm-rec-${USER_NAME}.pid"
+STATE_FILE="/tmp/dwm-rec-${USER_NAME}.state"
+PATH_FILE="/tmp/dwm-rec-${USER_NAME}.path"
+START_FILE="/tmp/dwm-rec-${USER_NAME}.start"
+LOG_FILE="/tmp/dwm-rec-${USER_NAME}.log"
+OUT_DIR="${DWM_REC_DIR:-$HOME/Videos/Recordings}"
+
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-${USER_NAME}.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-${USER_NAME}.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+notify_rec() {
+    timeout="${1:-3500}"
+    title="$2"
+    body="$3"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t "$timeout" -h string:x-dunst-stack-tag:recorder "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+is_recording() {
+    if [ -f "$PID_FILE" ]; then
+        rpid=$(cat "$PID_FILE" 2>/dev/null)
+        if [ -n "$rpid" ] && kill -0 "$rpid" 2>/dev/null; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
+get_resolution() {
+    res=""
+    if command -v xdpyinfo >/dev/null 2>&1; then
+        res=$(DISPLAY="${DISPLAY:-:0}" xdpyinfo 2>/dev/null | awk '/dimensions:/ {print $2; exit}')
+    fi
+    [ -n "$res" ] && printf '%s' "$res" || printf '1600x900'
+}
+
+cmd_start() {
+    mode="${1:-both}"
+    custom_out="$2"
+
+    if is_recording; then
+        cur_path=$(cat "$PATH_FILE" 2>/dev/null)
+        printf '%s\n' "${cur_path:-recording}"
+        return 0
+    fi
+
+    mkdir -p "$OUT_DIR"
+    if [ -n "$custom_out" ]; then
+        out_file="$custom_out"
+    else
+        ts=$(date +%Y%m%d-%H%M%S)
+        out_file="${OUT_DIR}/rec-${ts}.mp4"
+    fi
+
+    res=$(get_resolution)
+    disp="${DISPLAY:-:0}"
+    def_sink=$(pactl get-default-sink 2>/dev/null || true)
+    def_src=$(pactl get-default-source 2>/dev/null || true)
+    mon_src=""
+    [ -n "$def_sink" ] && mon_src="${def_sink}.monitor"
+
+    case "$mode" in
+        screen|silent|video|noaudio|mute)
+            audio_label="video-only"
+            setsid ffmpeg -y -hide_banner -loglevel error \
+                -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+            fpid=$!
+            ;;
+        desktop|system|speaker)
+            if [ -n "$mon_src" ]; then
+                audio_label="desktop-audio"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -thread_queue_size 1024 -f pulse -i "$mon_src" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    -c:a aac -b:a 128k \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            else
+                audio_label="video-only"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            fi
+            ;;
+        mic|microphone|voice)
+            if [ -n "$def_src" ]; then
+                audio_label="mic-audio"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -thread_queue_size 1024 -f pulse -i "$def_src" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    -c:a aac -b:a 128k \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            else
+                audio_label="video-only"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            fi
+            ;;
+        *)
+            if [ -n "$mon_src" ] && [ -n "$def_src" ] && [ "$mon_src" != "$def_src" ]; then
+                audio_label="desktop+mic"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -thread_queue_size 1024 -f pulse -i "$mon_src" \
+                    -thread_queue_size 1024 -f pulse -i "$def_src" \
+                    -filter_complex "[1:a][2:a]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]" \
+                    -map 0:v -map "[aout]" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    -c:a aac -b:a 128k \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            elif [ -n "$mon_src" ]; then
+                audio_label="desktop-audio"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -thread_queue_size 1024 -f pulse -i "$mon_src" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    -c:a aac -b:a 128k \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            elif [ -n "$def_src" ]; then
+                audio_label="mic-audio"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -thread_queue_size 1024 -f pulse -i "$def_src" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    -c:a aac -b:a 128k \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            else
+                audio_label="video-only"
+                setsid ffmpeg -y -hide_banner -loglevel error \
+                    -thread_queue_size 1024 -f x11grab -framerate 30 -video_size "$res" -i "$disp" \
+                    -c:v libx264 -preset ultrafast -crf 23 -pix_fmt yuv420p \
+                    "$out_file" </dev/null >"$LOG_FILE" 2>&1 &
+                fpid=$!
+            fi
+            ;;
+    esac
+
+    printf '%s\n' "$fpid" > "$PID_FILE"
+    printf '%s\n' "$out_file" > "$PATH_FILE"
+    date +%s > "$START_FILE"
+    printf 'rec\n' > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+    ln -sf "$out_file" "${OUT_DIR}/latest.mp4" 2>/dev/null || true
+    refresh_bar
+
+    notify_rec 3000 "  Recording Started (${audio_label})" "$(basename "$out_file")\nSay “Jarvis, stop recording” when done."
+    printf '%s\n' "$out_file"
+}
+
+cmd_stop() {
+    if ! is_recording; then
+        rm -f "$PID_FILE" "$STATE_FILE"
+        refresh_bar
+        last_path=$(cat "$PATH_FILE" 2>/dev/null)
+        printf '%s\n' "${last_path:-stopped}"
+        return 0
+    fi
+
+    rpid=$(cat "$PID_FILE" 2>/dev/null)
+    out_file=$(cat "$PATH_FILE" 2>/dev/null)
+
+    kill -INT "$rpid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 45 ]; do
+        if ! kill -0 "$rpid" 2>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        i=$(( i + 1 ))
+    done
+    if kill -0 "$rpid" 2>/dev/null; then
+        kill -TERM "$rpid" 2>/dev/null || true
+        sleep 0.2
+    fi
+
+    rm -f "$PID_FILE" "$STATE_FILE"
+    refresh_bar
+
+    if [ -n "$out_file" ] && [ -f "$out_file" ]; then
+        fsize=$(du -h "$out_file" 2>/dev/null | awk '{print $1}')
+        dur=$(ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "$out_file" 2>/dev/null | awk '{printf "%.1fs", $1}')
+        if command -v xclip >/dev/null 2>&1; then
+            printf '%s' "$out_file" | xclip -selection clipboard 2>/dev/null || true
+        fi
+        notify_rec 4500 "🎬  Recording Saved (${dur:-0s}, ${fsize:-0B})" "$out_file"
+        printf '%s\n' "$out_file"
+    else
+        notify_rec 3000 "🎬  Recording Stopped" "Stopped screen recording."
+        printf 'stopped\n'
+    fi
+}
+
+cmd_status() {
+    if is_recording; then
+        rpid=$(cat "$PID_FILE" 2>/dev/null)
+        out_file=$(cat "$PATH_FILE" 2>/dev/null)
+        st=$(cat "$START_FILE" 2>/dev/null || echo 0)
+        now=$(date +%s)
+        el=$(( now - st ))
+        [ "$el" -lt 0 ] && el=0
+        printf '{"recording":true,"pid":%s,"path":"%s","elapsed_sec":%d}\n' "${rpid:-0}" "${out_file}" "$el"
+    else
+        out_file=$(cat "$PATH_FILE" 2>/dev/null)
+        printf '{"recording":false,"pid":0,"path":"%s","elapsed_sec":0}\n' "${out_file}"
+    fi
+}
+
+case "${1:-toggle}" in
+    start|rec|record)
+        shift
+        cmd_start "${1:-both}" "$2"
+        ;;
+    stop|end|finish|save)
+        cmd_stop
+        ;;
+    toggle)
+        if is_recording; then
+            cmd_stop
+        else
+            shift 2>/dev/null || true
+            cmd_start "${1:-both}" "$2"
+        fi
+        ;;
+    status)
+        cmd_status
+        ;;
+    *)
+        echo "Usage: dwm-rec {start [both|desktop|mic|screen] [path]|stop|toggle|status}" >&2
+        exit 1
+        ;;
+esac

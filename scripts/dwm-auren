@@ -245,10 +245,17 @@ def clean_extracted_arg(iid, arg_val):
     return arg_val
 
 def promote_intent(iid, arg_val):
-    if iid == "open_target" and "play_target" in commands:
-        wset = {w.strip(",.!?;:").lower() for w in arg_val.split()}
-        if wset & MEDIA_WORDS or "hip hop" in arg_val.lower():
-            return "play_target"
+    low = arg_val.lower().strip()
+    if iid == "open_target":
+        if low.startswith(("recording", "screen recording", "gravação", "gravacao")):
+            if ("without audio" in low or "silent" in low or "sem som" in low) and "record_silent" in commands:
+                return "record_silent"
+            if "record_start" in commands:
+                return "record_start"
+        if "play_target" in commands:
+            wset = {w.strip(",.!?;:").lower() for w in arg_val.split()}
+            if wset & MEDIA_WORDS or "hip hop" in low:
+                return "play_target"
     return iid
 
 def candidate_frame_splits(clause):
@@ -382,13 +389,24 @@ def match_single_clause(clause):
         pass
     return None
 
-# Prepare candidate clauses if ' and ' or ';' is present
+# Normalize compound recording noun-phrases so 'screen and audio' is not split on ' and '
+import re
+norm_query = raw_query
+for pat, rep in (
+    (r"(?i)\b(screen|desktop|video)\s+and\s+(audio|sound|mic|microphone|voice)\b", r"\1 with \2"),
+    (r"(?i)\b(audio|sound|mic|microphone|voice)\s+and\s+(screen|desktop|video)\b", r"\2 with \1"),
+    (r"(?i)\b(ecrã|ecra|tela)\s+e\s+(áudio|audio|som|voz|microfone)\b", r"\1 com \2"),
+):
+    norm_query = re.sub(pat, rep, norm_query)
+
+raw_query = norm_query
+
+# Prepare candidate clauses if ';', ', then ', ' and then ', ' then ', or ' and ' is present
 sub_parts = []
-for semi in raw_query.split(";"):
-    for part in semi.split(" and "):
-        p = part.strip()
-        if p:
-            sub_parts.append(p)
+for chunk in re.split(r"(?i);|,\s+and\s+then\s+|,\s+then\s+|,\s+and\s+|\s+and\s+then\s+|\s+then\s+|\s+and\s+|,\s+", raw_query):
+    p = chunk.strip().strip(",")
+    if p:
+        sub_parts.append(p)
 
 texts_to_embed = (
     [ex for _, ex in static_exemplars]
@@ -461,7 +479,9 @@ double_click <visible_text_or_current>
 scroll <up|down> <1..10>
 wm <fullscreen|float|zoom|close|next|prev|tile|monocle|bar|kbd>
 sys <vol_up|vol_down|vol_mute|bri_up|bri_down|calendar|screenshot|lock>
-wait_for <page|window|audio|element> [target]
+record <start|stop|toggle|screen>
+wait_for <page|window|audio|element|recording> [target]
+wait_sec <1..60>
 wait <ms>
 
 Examples:
@@ -486,14 +506,21 @@ User: Focus my terminal, press control c, then type make test and hit enter
 focus ghostty
 key ctrl+c
 type make test
-key Return"""
+key Return
+
+User: Start recording my screen and audio, switch to workspace 2, open firefox, and stop recording
+record start
+view 2
+open firefox
+record stop"""
 
 VALID_OPS = {
     "view", "workspace", "desktop", "tag", "move_to", "send_to", "focus", "switch",
     "open", "launch", "spawn", "play", "media", "player", "mpris", "key", "press",
     "shortcut", "hotkey", "type", "write", "input", "dictate", "type_enter", "submit",
     "click", "left_click", "click_pos", "right_click", "middle_click", "double_click",
-    "move_mouse", "hover", "point", "scroll", "wm", "sys", "sh", "pi", "wait_for", "wait"
+    "move_mouse", "hover", "point", "scroll", "wm", "sys", "sh", "pi", "record", "rec",
+    "screenrec", "wait_for", "wait_sec", "sleep_sec", "wait", "sleep"
 }
 
 try:

@@ -144,6 +144,42 @@ def get_audio_state():
     }
 
 
+def get_recording_state() -> dict:
+    """Layer 1 Sensor: Inspect active screen/audio recording state from dwm-rec."""
+    user = os.environ.get("USER", "quirinpa")
+    pid_p = f"/tmp/dwm-rec-{user}.pid"
+    path_p = f"/tmp/dwm-rec-{user}.path"
+    start_p = f"/tmp/dwm-rec-{user}.start"
+    pid = 0
+    recording = False
+    if os.path.exists(pid_p):
+        try:
+            with open(pid_p, "r", encoding="utf-8") as f:
+                pid = int(f.read().strip() or "0")
+            if pid > 1:
+                os.kill(pid, 0)
+                recording = True
+        except Exception:
+            recording = False
+    rec_path = ""
+    if os.path.exists(path_p):
+        try:
+            with open(path_p, "r", encoding="utf-8") as f:
+                rec_path = f.read().strip()
+        except Exception:
+            pass
+    elapsed = 0
+    if recording and os.path.exists(start_p):
+        try:
+            with open(start_p, "r", encoding="utf-8") as f:
+                st = int(f.read().strip() or "0")
+            if st > 0:
+                elapsed = max(0, int(time.time()) - st)
+        except Exception:
+            pass
+    return {"recording": recording, "pid": pid if recording else 0, "path": rec_path, "elapsed_sec": elapsed}
+
+
 def mpris_control(action: str = "Play", target_bus: str = None) -> bool:
     """Layer 1 Actuator: Send Play / Pause / PlayPause / Next / Previous to D-Bus MPRIS players."""
     state = get_audio_state()
@@ -1024,6 +1060,22 @@ def wait_audio_playing(timeout: float = 2.2) -> bool:
     return bool(wait_until(lambda: get_audio_state().get("playing"), timeout=timeout, interval=0.15, initial_delay=0.08))
 
 
+def wait_recording(active: bool = True, timeout: float = 3.5) -> bool:
+    """Wait until screen/audio recording is confirmed active (with file created) or stopped (and finalized)."""
+    def _check():
+        st = get_recording_state()
+        if active:
+            if st["recording"] and st["path"] and os.path.exists(st["path"]):
+                return True
+            return None
+        else:
+            if not st["recording"]:
+                if not st["path"] or (os.path.exists(st["path"]) and os.path.getsize(st["path"]) > 0):
+                    return True
+            return None
+    return bool(wait_until(_check, timeout=timeout, interval=0.12, initial_delay=0.08))
+
+
 def wait_element(target: str, timeout: float = 2.8):
     """Wait until a target label appears in AT-SPI2 or OCR."""
     t_raw = (target or "").strip().strip("\"'")
@@ -1396,18 +1448,58 @@ def do_click(target: str, button: int = 1, repeat: int = 1) -> str:
     return f"{btn_name}({x},{y} {label})"
 
 
+def do_record(arg: str = "start", in_chain: bool = False) -> str:
+    """Layer 3 Closed-Loop Screen & Audio Recorder: Start/stop dwm-rec with verification."""
+    raw = (arg or "start").strip().strip("\"'").lower()
+    tokens = set(raw.replace(",", " ").replace("+", " ").split())
+
+    if not tokens or tokens & {"start", "begin", "on", "rec", "record", "recording"} and not (tokens & {"stop", "end", "finish", "save", "off"}):
+        mode = "both"
+        if tokens & {"silent", "mute", "noaudio", "video"} or ("screen" in tokens and "only" in tokens):
+            mode = "screen"
+        elif tokens & {"mic", "microphone", "voice"} and not (tokens & {"desktop", "system", "speaker"}):
+            mode = "mic"
+        elif tokens & {"desktop", "system", "speaker"} and not (tokens & {"mic", "microphone", "voice"}):
+            mode = "desktop"
+        out_path = run_cmd(["dwm-rec", "start", mode], timeout=4.0).strip()
+        ok = wait_recording(active=True, timeout=3.0)
+        return f"record:start({mode})[{out_path}][{'recording' if ok else 'started'}]"
+
+    if tokens & {"stop", "end", "finish", "save", "off"}:
+        st = get_recording_state()
+        if in_chain and st.get("recording") and st.get("elapsed_sec", 0) < 3:
+            # Ensure the final state of a chained demo is visibly & audibly captured before finalizing MP4
+            time.sleep(1.8)
+        out_path = run_cmd(["dwm-rec", "stop"], timeout=6.0).strip()
+        wait_recording(active=False, timeout=4.0)
+        return f"record:stop[{out_path}]"
+
+    if "toggle" in tokens:
+        if get_recording_state().get("recording"):
+            return do_record("stop", in_chain=in_chain)
+        return do_record("start", in_chain=in_chain)
+
+    if "status" in tokens:
+        st = get_recording_state()
+        return f"record:status[{'recording' if st.get('recording') else 'idle'}]"
+
+    return do_record("start " + raw, in_chain=in_chain)
+
+
 def observe(include_ocr: bool = False) -> dict:
     """Layer 1 Unified Desktop Observation Snapshot."""
     foc = get_focused()
     clients = get_clients()
     tabs = get_firefox_open_tabs()
     audio = get_audio_state()
+    rec = get_recording_state()
     ui = query_atspi_snapshot()
     out = {
         "focused": foc,
         "clients": clients,
         "tabs": tabs,
         "audio": audio,
+        "recording": rec,
         "ui": {
             "busy": ui["busy"],
             "focused_role": ui["focused_role"],
@@ -1421,7 +1513,7 @@ def observe(include_ocr: bool = False) -> dict:
     return out
 
 
-def execute_step(line: str) -> str:
+def execute_step(line: str, in_chain: bool = False) -> str:
     line = line.strip()
     if not line or line.startswith("#"):
         return ""
@@ -1433,7 +1525,7 @@ def execute_step(line: str) -> str:
     op = parts[0].lower()
     arg = parts[1].strip() if len(parts) > 1 else ""
 
-    res = _execute_step_inner(op, arg)
+    res = _execute_step_inner(op, arg, in_chain=in_chain)
     if op in ("view", "workspace", "desktop", "focus", "switch", "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "scroll", "wm", "click", "left_click", "right_click", "double_click", "type_enter", "submit"):
         invalidate_ocr_cache()
     return res
@@ -1446,7 +1538,10 @@ def _first_int(s: str, default: int = 1) -> int:
     return default
 
 
-def _execute_step_inner(op: str, arg: str) -> str:
+def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
+    if op in ("record", "rec", "screenrec"):
+        return do_record(arg, in_chain=in_chain)
+
     if op in ("view", "workspace", "desktop"):
         tag = str(_first_int(arg, 1))
         run_cmd(["dwm-msg", "view", tag])
@@ -1524,6 +1619,9 @@ def _execute_step_inner(op: str, arg: str) -> str:
         if kind in ("audio", "playing", "music", "media"):
             ok = wait_audio_playing(timeout=3.0)
             return f"wait_for:audio={'ok' if ok else 'timeout'}"
+        if kind in ("recording", "rec", "record"):
+            ok = wait_recording(active=(sub != "stop"), timeout=3.5)
+            return f"wait_for:recording={'ok' if ok else 'timeout'}"
         if kind in ("element", "text", "ui"):
             _, _, lbl, ok = wait_element(sub, timeout=3.0)
             return f"wait_for:element({sub})->{lbl}"
@@ -1630,9 +1728,21 @@ def _execute_step_inner(op: str, arg: str) -> str:
             subprocess.Popen(["dwm-jarvis-pi", "send", arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             return f"pi:{arg}"
 
-    if op == "wait":
+    if op in ("wait_sec", "sleep_sec"):
+        sec = _first_int(arg, 2)
+        sec = max(1, min(sec, 60))
+        time.sleep(float(sec))
+        return f"wait {sec}s"
+
+    if op in ("wait", "sleep"):
+        a_low = arg.lower().strip()
+        if ("sec" in a_low or (a_low.endswith("s") and not a_low.endswith("ms"))):
+            sec = _first_int(a_low.rstrip("s"), 2)
+            sec = max(1, min(sec, 60))
+            time.sleep(float(sec))
+            return f"wait {sec}s"
         ms = _first_int(arg, 200)
-        time.sleep(min(ms, 5000) / 1000.0)
+        time.sleep(min(ms, 60000) / 1000.0)
         return f"wait {ms}ms"
 
     return ""
@@ -1660,7 +1770,10 @@ def main():
         out_str = f"Focused: {foc_str}\nOpen windows: [{win_list}]"
         if tabs_str:
             out_str += f"\nBrowser tabs: [{tabs_str}]"
+        rec = get_recording_state()
         out_str += f"\nAudio playing: {'yes' if audio.get('playing') else 'no'}"
+        if rec.get("recording"):
+            out_str += f"\nScreen recording: active ({rec.get('path', '')})"
         print(out_str)
         return
 
@@ -1687,9 +1800,11 @@ def main():
 
     if cmd == "exec":
         script = " ".join(sys.argv[2:]) if len(sys.argv) > 2 else sys.stdin.read()
+        lines = [ln.strip() for ln in script.replace(";", "\n").splitlines() if ln.strip()]
+        in_chain = len(lines) > 1
         executed = []
-        for raw_line in script.replace(";", "\n").splitlines():
-            res = execute_step(raw_line)
+        for raw_line in lines:
+            res = execute_step(raw_line, in_chain=in_chain)
             if res:
                 executed.append(res)
         print(" → ".join(executed))
