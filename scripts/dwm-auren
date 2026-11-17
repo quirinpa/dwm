@@ -224,14 +224,32 @@ def cmd_to_dsl(cmd_str):
         return cmd_str[len("dwm-act "):].strip()
     return f"sh {cmd_str}"
 
+MEDIA_WORDS = {
+    "music", "musica", "song", "songs", "lofi", "jazz", "rock", "metal", "hiphop",
+    "beats", "playlist", "radio", "soundtrack", "ost", "album", "podcast", "chill",
+    "ambient", "classical", "piano", "guitar", "synthwave", "vaporwave", "acoustic",
+}
+
 def clean_extracted_arg(iid, arg_val):
     arg_val = arg_val.strip().strip("\"'")
     if iid not in ("type_text", "type_enter"):
         words = arg_val.split()
-        while len(words) > 1 and words[0].lower() in LEADING_ARTICLES:
+        while len(words) > 1 and words[0].lower() in PARTICLES:
             words = words[1:]
         arg_val = " ".join(words)
+        for src, dst in (("low fee", "lofi"), ("lo fee", "lofi"), ("low fi", "lofi"), ("lo-fi", "lofi")):
+            low = arg_val.lower()
+            if src in low:
+                idx = low.find(src)
+                arg_val = arg_val[:idx] + dst + arg_val[idx + len(src):]
     return arg_val
+
+def promote_intent(iid, arg_val):
+    if iid == "open_target" and "play_target" in commands:
+        wset = {w.strip(",.!?;:").lower() for w in arg_val.split()}
+        if wset & MEDIA_WORDS or "hip hop" in arg_val.lower():
+            return "play_target"
+    return iid
 
 def candidate_frame_splits(clause):
     c_clean = clause.strip().strip(",.!?;:")
@@ -263,6 +281,7 @@ def match_param_template(clause):
         arg_val = clean_extracted_arg(iid, c_clean[start:end])
         if not arg_val:
             continue
+        iid = promote_intent(iid, arg_val)
         cmd_filled = commands[iid].replace("{arg}", arg_val)
         return iid, 0.98, cmd_to_dsl(cmd_filled)
     return None
@@ -292,6 +311,7 @@ def match_semantic_frame(clause):
         iid, sim, arg_raw = best_hit
         arg_val = clean_extracted_arg(iid, arg_raw)
         if arg_val:
+            iid = promote_intent(iid, arg_val)
             cmd_filled = commands[iid].replace("{arg}", arg_val)
             return iid, min(sim, 0.99), cmd_to_dsl(cmd_filled)
     return None
@@ -429,8 +449,11 @@ view <1..9>
 tag <1..9>
 focus <app_or_tab_or_title>
 open <ghostty|firefox|whatsapp|youtube|github|gmail|url>
+play <song_or_genre_or_video>
+media <play|pause|toggle|next|prev>
 key <Return|Escape|Tab|space|BackSpace|Up|Down|Left|Right|Page_Down|Page_Up|ctrl+t|ctrl+w|ctrl+Tab|ctrl+shift+Tab|ctrl+r|ctrl+f|ctrl+c|ctrl+v|ctrl+z|ctrl+s|ctrl+a|ctrl+l>
 type <text>
+type_enter <text>
 click <visible_text_on_screen>
 click_pos <center|top-left|top-right|bottom-left|bottom-right|current>
 right_click <visible_text_or_current>
@@ -438,6 +461,7 @@ double_click <visible_text_or_current>
 scroll <up|down> <1..10>
 wm <fullscreen|float|zoom|close|next|prev|tile|monocle|bar|kbd>
 sys <vol_up|vol_down|vol_mute|bri_up|bri_down|calendar|screenshot|lock>
+wait_for <page|window|audio|element> [target]
 wait <ms>
 
 Examples:
@@ -466,10 +490,10 @@ key Return"""
 
 VALID_OPS = {
     "view", "workspace", "desktop", "tag", "move_to", "send_to", "focus", "switch",
-    "open", "launch", "spawn", "play", "key", "press", "shortcut", "hotkey", "type", "write",
-    "input", "dictate", "type_enter", "submit", "click", "left_click", "click_pos",
-    "right_click", "middle_click", "double_click", "move_mouse", "hover", "point",
-    "scroll", "wm", "sys", "sh", "pi", "wait"
+    "open", "launch", "spawn", "play", "media", "player", "mpris", "key", "press",
+    "shortcut", "hotkey", "type", "write", "input", "dictate", "type_enter", "submit",
+    "click", "left_click", "click_pos", "right_click", "middle_click", "double_click",
+    "move_mouse", "hover", "point", "scroll", "wm", "sys", "sh", "pi", "wait_for", "wait"
 }
 
 try:

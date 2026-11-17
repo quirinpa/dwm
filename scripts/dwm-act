@@ -103,54 +103,158 @@ def get_mouse_location():
     return 800, 450
 
 
-def query_atspi_elements(target_norm: str):
-    """Search AT-SPI2 accessibility tree (bounded to 120ms, skipping ibus/portal)."""
+def get_audio_state():
+    """Layer 1 Sensor: Inspect PipeWire/PulseAudio sink-inputs and D-Bus MPRIS media players."""
+    sink_out = run_cmd(["pactl", "list", "sink-inputs"], timeout=1.5)
+    uncorked_streams = 0
+    for block in sink_out.split("Sink Input #"):
+        if not block.strip():
+            continue
+        if "Corked: no" in block:
+            uncorked_streams += 1
+
+    mpris_players = []
+    names_out = run_cmd([
+        "gdbus", "call", "--session",
+        "--dest", "org.freedesktop.DBus",
+        "--object-path", "/org/freedesktop/DBus",
+        "--method", "org.freedesktop.DBus.ListNames",
+    ], timeout=1.2)
+    for token in names_out.replace("'", " ").replace(",", " ").replace("[", " ").replace("]", " ").split():
+        if token.startswith("org.mpris.MediaPlayer2."):
+            st_out = run_cmd([
+                "gdbus", "call", "--session",
+                "--dest", token,
+                "--object-path", "/org/mpris/MediaPlayer2",
+                "--method", "org.freedesktop.DBus.Properties.Get",
+                "org.mpris.MediaPlayer2.Player", "PlaybackStatus",
+            ], timeout=1.0)
+            status = "Unknown"
+            for s_cand in ("Playing", "Paused", "Stopped"):
+                if s_cand in st_out:
+                    status = s_cand
+                    break
+            mpris_players.append({"bus": token, "status": status})
+
+    mpris_playing = any(p["status"] == "Playing" for p in mpris_players)
+    return {
+        "playing": (uncorked_streams > 0) or mpris_playing,
+        "sink_inputs": uncorked_streams,
+        "mpris_players": mpris_players,
+    }
+
+
+def mpris_control(action: str = "Play", target_bus: str = None) -> bool:
+    """Layer 1 Actuator: Send Play / Pause / PlayPause / Next / Previous to D-Bus MPRIS players."""
+    state = get_audio_state()
+    players = state.get("mpris_players", [])
+    if not players:
+        return False
+    ok = False
+    for p in players:
+        bus = p["bus"]
+        if target_bus and target_bus.lower() not in bus.lower():
+            continue
+        out = run_cmd([
+            "gdbus", "call", "--session",
+            "--dest", bus,
+            "--object-path", "/org/mpris/MediaPlayer2",
+            "--method", f"org.mpris.MediaPlayer2.Player.{action}",
+        ], timeout=1.2)
+        if out != "":
+            ok = True
+    return ok
+
+
+def query_atspi_snapshot(target_norm: str = None):
+    """Layer 1 Sensor: Structured AT-SPI2 snapshot (busy state, focused role, inputs, actionables, target match)."""
     import signal
 
     def _timeout_handler(signum, frame):
         raise TimeoutError()
+
+    snapshot = {
+        "busy": False,
+        "focused_role": "",
+        "focused_editable": False,
+        "inputs": [],
+        "actionables": [],
+        "best_match": None,
+    }
 
     try:
         import gi
         gi.require_version("Atspi", "2.0")
         from gi.repository import Atspi
     except Exception:
-        return None
+        return snapshot
 
     best_match = None
     best_score = 0.0
     foc = get_focused()
     foc_cls = (foc["class"].lower() if foc else "")
 
+    INPUT_ROLES = {"entry", "text", "password text", "search box", "editbar", "terminal"}
+    ACTION_ROLES = {"push button", "link", "menu item", "toggle button", "radio button", "check box", "video", "heading"}
+
     def walk(node, depth=0):
         nonlocal best_match, best_score
         if not node or depth > 6:
             return
-        name = node.get_name() or ""
-        if name:
-            n_norm = norm_text(name)
-            if n_norm:
-                score = 0.0
-                if n_norm == target_norm:
-                    score = 1.0
-                elif len(target_norm) >= 3 and len(n_norm) >= 3 and (target_norm in n_norm or n_norm in target_norm):
-                    ratio = min(len(target_norm), len(n_norm)) / max(len(target_norm), len(n_norm))
-                    score = 0.75 + 0.20 * ratio if ratio >= 0.4 else 0.0
-                else:
-                    score = difflib.SequenceMatcher(None, target_norm, n_norm).ratio()
-                if score > best_score and score >= 0.72:
-                    comp = node.get_component_iface()
-                    if comp:
-                        rect = comp.get_extents(Atspi.CoordType.SCREEN)
-                        if rect.width > 4 and rect.height > 4 and rect.x >= 0 and rect.y >= 0:
-                            best_score = score
-                            best_match = (rect.x + rect.width // 2, rect.y + rect.height // 2, name, score)
+        try:
+            role = (node.get_role_name() or "").lower()
+            name = (node.get_name() or "").strip()
+            st_set = node.get_state_set()
+            states = st_set.get_states() if st_set else []
+        except Exception:
+            return
+
+        if Atspi.StateType.BUSY in states and role in ("document web", "document frame", "frame"):
+            snapshot["busy"] = True
+
+        if Atspi.StateType.FOCUSED in states:
+            snapshot["focused_role"] = role
+            if role in INPUT_ROLES or Atspi.StateType.EDITABLE in states:
+                snapshot["focused_editable"] = True
+
+        comp = node.get_component_iface()
+        rect = comp.get_extents(Atspi.CoordType.SCREEN) if comp else None
+        valid_rect = bool(rect and rect.width > 4 and rect.height > 4 and rect.x >= 0 and rect.y >= 0)
+
+        if valid_rect:
+            cx, cy = rect.x + rect.width // 2, rect.y + rect.height // 2
+            if role in INPUT_ROLES or Atspi.StateType.EDITABLE in states:
+                snapshot["inputs"].append({
+                    "x": cx, "y": cy, "w": rect.width, "h": rect.height,
+                    "name": name, "role": role,
+                })
+            elif role in ACTION_ROLES and name:
+                snapshot["actionables"].append({
+                    "x": cx, "y": cy, "w": rect.width, "h": rect.height,
+                    "name": name, "role": role,
+                })
+
+            if target_norm and name:
+                n_norm = norm_text(name)
+                if n_norm:
+                    score = 0.0
+                    if n_norm == target_norm:
+                        score = 1.0
+                    elif len(target_norm) >= 3 and len(n_norm) >= 3 and (target_norm in n_norm or n_norm in target_norm):
+                        ratio = min(len(target_norm), len(n_norm)) / max(len(target_norm), len(n_norm))
+                        score = 0.75 + 0.20 * ratio if ratio >= 0.4 else 0.0
+                    else:
+                        score = difflib.SequenceMatcher(None, target_norm, n_norm).ratio()
+                    if score > best_score and score >= 0.72:
+                        best_score = score
+                        best_match = (cx, cy, name, score)
+
         cnt = node.get_child_count()
         for i in range(min(cnt, 40)):
             walk(node.get_child_at_index(i), depth + 1)
 
     old_handler = signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.setitimer(signal.ITIMER_REAL, 0.12)
+    signal.setitimer(signal.ITIMER_REAL, 0.14)
     try:
         desktop = Atspi.get_desktop(0)
         for i in range(desktop.get_child_count()):
@@ -167,7 +271,34 @@ def query_atspi_elements(target_norm: str):
     finally:
         signal.setitimer(signal.ITIMER_REAL, 0.0)
         signal.signal(signal.SIGALRM, old_handler)
-    return best_match
+
+    snapshot["best_match"] = best_match
+    return snapshot
+
+
+def query_atspi_elements(target_norm: str):
+    """Search AT-SPI2 accessibility tree for a matching element."""
+    return query_atspi_snapshot(target_norm).get("best_match")
+
+
+def wait_until(predicate, timeout: float = 3.0, interval: float = 0.12, initial_delay: float = 0.04):
+    """Layer 2 Reactive Wait Engine: Poll predicate() until truthy or timeout expires."""
+    if initial_delay > 0:
+        time.sleep(initial_delay)
+    deadline = time.time() + max(0.05, timeout)
+    last_val = None
+    while True:
+        try:
+            last_val = predicate()
+            if last_val:
+                return last_val
+        except Exception:
+            pass
+        now = time.time()
+        if now >= deadline:
+            break
+        time.sleep(min(interval, max(0.01, deadline - now)))
+    return last_val
 
 
 def invalidate_ocr_cache():
@@ -797,28 +928,260 @@ def resolve_semantic_target(target: str):
     return best_cand
 
 
+def _get_firefox_title() -> str:
+    for c in get_clients():
+        if "firefox" in c["class"].lower():
+            return c["title"].strip()
+    return ""
+
+
 def _focus_firefox_window():
     for c in get_clients():
         if "firefox" in c["class"].lower():
             run_cmd(["dwm-msg", "focus-win", c["id"]])
-            time.sleep(0.14)
+            wait_window_focused("firefox", timeout=1.2)
             return True
     return False
 
 
 def _focus_firefox_tab(idx: int, label: str) -> str:
+    prev_title = _get_firefox_title()
     _focus_firefox_window()
     if 1 <= idx <= 8:
         run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
         run_cmd(["xdotool", "key", "--clearmodifiers", f"alt+{idx}"])
-        time.sleep(0.15)
+        wait_until(
+            lambda: _get_firefox_title() != prev_title,
+            timeout=0.8,
+            interval=0.08,
+            initial_delay=0.08,
+        )
     return f"focus:{label}"
+
+
+def wait_window_focused(target_id_or_class: str, timeout: float = 2.0) -> bool:
+    """Wait until focused window matches ID or class substring."""
+    t_low = (target_id_or_class or "").lower().strip()
+    if not t_low:
+        return False
+
+    def _check():
+        foc = get_focused()
+        if not foc:
+            return False
+        return foc["id"].lower() == t_low or t_low in foc["class"].lower() or t_low in foc["title"].lower()
+
+    return bool(wait_until(_check, timeout=timeout, interval=0.08, initial_delay=0.03))
+
+
+def wait_page_ready(prev_title: str = "", target_hint: str = "", timeout: float = 5.5) -> dict:
+    """Wait until browser/window title transitions away from placeholder/prev_title and settles."""
+    hint_words = {w for w in norm_text(target_hint).split() if len(w) >= 3}
+    placeholders = {
+        "", "mozilla firefox", "new tab — mozilla firefox", "new tab",
+        "about:blank", "youtube — mozilla firefox", "youtube",
+    }
+    prev_norm = (prev_title or "").strip().lower()
+    stable_title = [None]
+    t_start = time.time()
+
+    def _check():
+        foc = get_focused()
+        cur_title = (foc or {}).get("title", "").strip()
+        if not cur_title or "firefox" not in (foc or {}).get("class", "").lower():
+            cur_title = _get_firefox_title() or cur_title
+        cur_low = cur_title.lower()
+        audio = get_audio_state()
+        if audio.get("playing") and cur_low not in placeholders and (cur_low != prev_norm or (time.time() - t_start) > 1.0):
+            return {"ready": True, "title": cur_title, "audio": audio}
+        if cur_low in placeholders:
+            return None
+        title_changed = bool(cur_low and cur_low != prev_norm)
+        hint_matched = bool(
+            hint_words
+            and (hint_words & set(norm_text(cur_title).split()))
+            and (title_changed or (time.time() - t_start) >= 1.2)
+        )
+        if title_changed or hint_matched:
+            ui = query_atspi_snapshot()
+            if ui.get("busy"):
+                return None
+            # Require two consecutive polls with the same non-placeholder title so JS player mounts
+            if stable_title[0] == cur_title:
+                return {"ready": True, "title": cur_title, "audio": audio}
+            stable_title[0] = cur_title
+        return None
+
+    res = wait_until(_check, timeout=timeout, interval=0.20, initial_delay=0.20)
+    if res:
+        return res
+    foc = get_focused()
+    return {"ready": False, "title": (foc or {}).get("title", ""), "audio": get_audio_state()}
+
+
+def wait_audio_playing(timeout: float = 2.2) -> bool:
+    """Wait until PipeWire or D-Bus MPRIS reports active audio playback."""
+    return bool(wait_until(lambda: get_audio_state().get("playing"), timeout=timeout, interval=0.15, initial_delay=0.08))
+
+
+def wait_element(target: str, timeout: float = 2.8):
+    """Wait until a target label appears in AT-SPI2 or OCR."""
+    t_raw = (target or "").strip().strip("\"'")
+    t_norm = norm_text(t_raw)
+    if not t_norm:
+        wx, wy, ww, wh = get_win_geometry()
+        return wx + ww // 2, wy + wh // 2, "window-center", True
+
+    attempt = [0]
+
+    def _check():
+        attempt[0] += 1
+        atspi_hit = query_atspi_elements(t_norm)
+        if atspi_hit and atspi_hit[3] >= 0.75:
+            return (atspi_hit[0], atspi_hit[1], f"atspi:{atspi_hit[2]}", True)
+        items = capture_screen_ocr(force=(attempt[0] > 1))
+        wx, wy, ww, wh = get_win_geometry()
+        t_tokens = set(t_norm.split())
+        best_item = None
+        best_score = 0.0
+        for it in items:
+            inorm = it.get("norm", "")
+            if not inorm:
+                continue
+            if inorm == t_norm:
+                score = 1.0
+            elif len(t_norm) >= 3 and len(inorm) >= 3 and (t_norm in inorm or inorm in t_norm):
+                ratio = min(len(t_norm), len(inorm)) / max(len(t_norm), len(inorm))
+                score = (0.80 + 0.16 * ratio) if ratio >= 0.35 else 0.0
+            else:
+                i_tokens = set(inorm.split())
+                inter = len(t_tokens & i_tokens)
+                tok_score = inter / max(len(t_tokens), len(i_tokens)) if (t_tokens and i_tokens) else 0.0
+                seq_score = difflib.SequenceMatcher(None, t_norm, inorm).ratio()
+                score = max(tok_score * 0.9, seq_score)
+            ix, iy = it["x"], it["y"]
+            if wx <= ix <= wx + ww and wy <= iy <= wy + wh:
+                score += 0.04
+            if score > best_score:
+                best_score = score
+                best_item = it
+        if best_item and best_score >= 0.64:
+            return (best_item["x"], best_item["y"], f"ocr:{best_item['text']}", True)
+        return None
+
+    hit = wait_until(_check, timeout=timeout, interval=0.35, initial_delay=0.0)
+    if hit:
+        return hit
+    x, y, label = resolve_target_coords(target)
+    return x, y, label, (label != "window-center")
+
+
+def normalize_media_query(query: str) -> str:
+    """Normalize common speech-to-text homophones in media queries (e.g. 'low fee' -> 'lofi')."""
+    q = " ".join((query or "").strip().split())
+    homophones = [
+        ("low fee", "lofi"),
+        ("lo fee", "lofi"),
+        ("low fi", "lofi"),
+        ("lo-fi", "lofi"),
+        ("low-fi", "lofi"),
+        ("low fly", "lofi"),
+        ("sci fi", "scifi"),
+    ]
+    q_low = q.lower()
+    for src, dst in homophones:
+        if src in q_low:
+            idx = q_low.find(src)
+            q = q[:idx] + dst + q[idx + len(src):]
+            q_low = q.lower()
+    return q
+
+
+MEDIA_KEYWORDS = {
+    "music", "musica", "song", "songs", "lofi", "jazz", "rock", "metal", "hiphop",
+    "beats", "playlist", "radio", "soundtrack", "ost", "album", "video", "stream",
+    "podcast", "chill", "ambient", "classical", "piano", "guitar", "synthwave",
+    "vaporwave", "acoustic", "concert", "live", "mix", "phonk", "techno", "house",
+    "blues", "soul", "funk", "reggae", "indie", "pop", "rap", "orchestra", "karaoke",
+}
+
+MEDIA_PROTO = "music song audio video lofi soundtrack playlist stream band singer album listen watch"
+WEB_PROTO = "website webpage documentation software repository dashboard portal service tool account"
+
+
+def is_media_query(target: str) -> bool:
+    """Layer 3 Classifier: Determine whether an unmatched external target is a media playback request."""
+    t_norm = norm_text(normalize_media_query(target))
+    if not t_norm:
+        return False
+    words = set(t_norm.split())
+    if words & MEDIA_KEYWORDS or "hip hop" in t_norm or "bossa nova" in t_norm or "heavy metal" in t_norm:
+        return True
+    vecs = embed_with_cache([t_norm, MEDIA_PROTO, WEB_PROTO])
+    q_v = vecs.get(t_norm)
+    m_v = vecs.get(MEDIA_PROTO)
+    w_v = vecs.get(WEB_PROTO)
+    if q_v and m_v and w_v:
+        sim_m = sum(a * b for a, b in zip(q_v, m_v))
+        sim_w = sum(a * b for a, b in zip(q_v, w_v))
+        if sim_m >= 0.56 and sim_m > sim_w + 0.04:
+            return True
+    return False
+
+
+def resolve_web_url(query: str) -> str:
+    """Resolve a general web query to its top destination URL (cached)."""
+    import urllib.parse, urllib.request
+    q_clean = (query or "").strip()
+    if "." in q_clean and " " not in q_clean:
+        return q_clean if q_clean.startswith(("http://", "https://")) else f"https://{q_clean}"
+
+    q_norm = norm_text(q_clean)
+    cache_p = f"/tmp/dwm-web-cache-{os.environ.get('USER', 'user')}.json"
+    cache_map = {}
+    if os.path.exists(cache_p):
+        try:
+            with open(cache_p, "r", encoding="utf-8") as f:
+                cache_map = json.load(f)
+        except Exception:
+            cache_map = {}
+    if q_norm in cache_map:
+        return cache_map[q_norm]
+
+    ddg_html = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote_plus(q_clean)}"
+    fallback = f"https://duckduckgo.com/?q={urllib.parse.quote_plus(q_clean)}"
+    try:
+        req = urllib.request.Request(
+            ddg_html,
+            headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"},
+        )
+        with urllib.request.urlopen(req, timeout=3.5) as resp:
+            html = resp.read().decode("utf-8", errors="ignore")
+        marker = "uddg="
+        idx = html.find(marker)
+        if idx != -1:
+            start = idx + len(marker)
+            end = len(html)
+            for sep in ('"', "&amp;", "&", "'"):
+                pos = html.find(sep, start)
+                if pos != -1 and pos < end:
+                    end = pos
+            dest = urllib.parse.unquote(html[start:end])
+            if dest.startswith(("http://", "https://")):
+                cache_map[q_norm] = dest
+                with open(cache_p, "w", encoding="utf-8") as f:
+                    json.dump(cache_map, f)
+                return dest
+    except Exception:
+        pass
+    return fallback
 
 
 def resolve_youtube_url(query: str) -> str:
     """Resolve a media search query to a direct YouTube watch?v=<id> autoplay URL (cached)."""
     import urllib.parse, urllib.request
-    q_norm = norm_text(query)
+    q_clean = normalize_media_query(query)
+    q_norm = norm_text(q_clean)
     cache_p = f"/tmp/dwm-yt-cache-{os.environ.get('USER', 'user')}.json"
     cache_map = {}
     if os.path.exists(cache_p):
@@ -830,7 +1193,7 @@ def resolve_youtube_url(query: str) -> str:
     if q_norm in cache_map:
         return cache_map[q_norm]
 
-    search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}"
+    search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(q_clean)}"
     watch_url = search_url
     try:
         req = urllib.request.Request(
@@ -858,39 +1221,97 @@ def resolve_youtube_url(query: str) -> str:
     return watch_url
 
 
-def do_play(target: str) -> str:
-    """Play media: switch to an existing open tab/window if it matches (>= 0.78), else autoplay top YouTube video."""
-    t = target.strip().strip("\"'")
-    if not t:
-        return "play:noop"
+def ensure_playback_started(is_youtube: bool = True) -> bool:
+    """Layer 3 Post-Condition Enforcer: Verify audio is playing; escalate through MPRIS -> key -> viewport click."""
+    # 1. Check if browser already started playing automatically once the page loaded
+    if wait_audio_playing(timeout=1.6):
+        return True
 
+    # 2. Escalation A: If an MPRIS player exists in Paused/Stopped state, send D-Bus Play (idempotent)
+    audio = get_audio_state()
+    if any(p["status"] != "Playing" for p in audio.get("mpris_players", [])):
+        if mpris_control("Play") and wait_audio_playing(timeout=1.4):
+            return True
+
+    # 3. Escalation B: Ensure browser has focus and send player play key ('k' for YouTube, 'space' otherwise)
+    _focus_firefox_window()
+    time.sleep(0.35)
+    if get_audio_state().get("playing"):
+        return True
+    run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+    play_key = "k" if is_youtube else "space"
+    run_cmd(["xdotool", "key", "--clearmodifiers", play_key])
+    if wait_audio_playing(timeout=1.8):
+        return True
+
+    # 4. Escalation C: Click the primary video player viewport (or visible Play button) to satisfy Firefox autoplay gesture
+    wx, wy, ww, wh = get_win_geometry()
+    atspi_play = query_atspi_elements("play")
+    if atspi_play and atspi_play[3] >= 0.80:
+        px, py = atspi_play[0], atspi_play[1]
+    else:
+        px, py = wx + int(ww * 0.38), wy + int(wh * 0.45)
+    run_cmd(["xdotool", "mousemove", "--sync", str(px), str(py), "click", "1"])
+    if wait_audio_playing(timeout=1.8):
+        return True
+
+    # Final attempt: try MPRIS Play once more after the viewport click registered the media element
+    if mpris_control("Play") and wait_audio_playing(timeout=1.0):
+        return True
+
+    return get_audio_state().get("playing", False)
+
+
+def do_play(target: str) -> str:
+    """Layer 3 Closed-Loop Play: Navigate/focus media and verify/enforce active audio playback."""
+    t = normalize_media_query(target.strip().strip("\"'"))
+    if not t or t.lower() in {"resume", "music", "video", "media", "play"}:
+        if mpris_control("Play") and wait_audio_playing(timeout=1.0):
+            return "play:mpris[playing]"
+        if not t:
+            return "play:noop"
+
+    if t.lower() in {"pause", "stop"}:
+        mpris_control("Pause")
+        return "play:paused"
+
+    prev_title = _get_firefox_title()
     best = resolve_semantic_target(t)
     if best and best["score"] >= 0.78:
         kind = best["kind"]
         if kind == "tab":
-            return _focus_firefox_tab(int(best["ref"]), best["label"])
+            res = _focus_firefox_tab(int(best["ref"]), best["label"])
+            is_yt = "youtube.com" in best.get("url", "").lower()
+            playing = ensure_playback_started(is_youtube=is_yt)
+            return f"{res}[{'playing' if playing else 'focused'}]"
         if kind == "win":
             run_cmd(["dwm-msg", "focus-win", best["ref"]])
-            time.sleep(0.12)
-            return f"focus:{best['label']}"
+            wait_window_focused(best["ref"], timeout=1.2)
+            playing = ensure_playback_started(is_youtube=False)
+            return f"focus:{best['label']}[{'playing' if playing else 'focused'}]"
         if kind == "place":
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.25)
             _focus_firefox_window()
-            return f"open:{best['label']}->{best['ref']}"
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=5.5)
+            is_yt = "youtube.com" in best["ref"].lower()
+            playing = ensure_playback_started(is_youtube=is_yt)
+            return f"play:{best['label']}[{'playing' if playing else 'opened'}]"
         if kind == "app":
             subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.35)
+            wait_window_focused(best["title"], timeout=2.5)
             return f"open:{best['label']}"
 
     watch_url = resolve_youtube_url(t)
     subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    time.sleep(0.25)
     _focus_firefox_window()
-    return f"play:{watch_url}"
+    wait_page_ready(prev_title=prev_title, target_hint=t, timeout=5.5)
+    playing = ensure_playback_started(is_youtube=("youtube.com" in watch_url))
+    state_tag = "playing" if playing else "loaded"
+    return f"play:{watch_url}[{state_tag}]"
 
 
 def do_focus(target: str, allow_open: bool = False) -> str:
+    """Layer 3 Closed-Loop Focus/Open: Resolve window/tab/site/app or delegate media/web queries."""
     t = target.strip().strip("\"'")
     if not t:
         return "focus:noop"
@@ -900,35 +1321,69 @@ def do_focus(target: str, allow_open: bool = False) -> str:
         kind = best["kind"]
         if kind == "win":
             run_cmd(["dwm-msg", "focus-win", best["ref"]])
-            time.sleep(0.12)
+            wait_window_focused(best["ref"], timeout=1.2)
             return f"focus:{best['label']}"
         if kind == "tab":
             return _focus_firefox_tab(int(best["ref"]), best["label"])
         if kind == "place" and allow_open:
+            prev_title = _get_firefox_title()
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.25)
             _focus_firefox_window()
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=4.5)
             return f"open:{best['label']}->{best['ref']}"
         if kind == "app" and allow_open:
             subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.35)
+            wait_window_focused(best["title"], timeout=2.5)
             return f"open:{best['label']}"
 
     if allow_open:
-        from urllib.parse import quote_plus
-        url = f"https://duckduckgo.com/?q=!ducky+{quote_plus(t)}"
+        if is_media_query(t):
+            return do_play(t)
+        prev_title = _get_firefox_title()
+        url = resolve_web_url(t)
         subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        time.sleep(0.25)
         _focus_firefox_window()
-        return f"open:web({t})"
+        wait_page_ready(prev_title=prev_title, target_hint=t, timeout=4.5)
+        return f"open:web({t})->{url}"
 
     run_cmd(["dwm-msg", "focus-class", t])
-    time.sleep(0.10)
+    wait_window_focused(t, timeout=1.0)
     return f"focus:{t}"
 
 
+def ensure_input_focused() -> bool:
+    """Layer 3 Pre-Condition: Ensure an editable input is focused before typing into a GUI window."""
+    foc = get_focused()
+    if not foc:
+        return False
+    cls_low = foc["class"].lower()
+    if any(term in cls_low for term in ("ghostty", "xterm", "st", "alacritty", "kitty", "urxvt")):
+        return True
+    snap = query_atspi_snapshot()
+    if snap.get("focused_editable"):
+        return True
+    inputs = snap.get("inputs", [])
+    if inputs:
+        inp = inputs[0]
+        run_cmd(["xdotool", "mousemove", "--sync", str(inp["x"]), str(inp["y"]), "click", "1"])
+        time.sleep(0.08)
+        return True
+    return False
+
+
 def do_click(target: str, button: int = 1, repeat: int = 1) -> str:
-    x, y, label = resolve_target_coords(target)
+    """Layer 3 Closed-Loop Click: Wait for target element to appear before clicking."""
+    t_norm = norm_text(target)
+    pos_keywords = {
+        "", "current", "cursor", "here", "mouse", "aqui", "center", "middle", "centro",
+        "top left", "topleft", "top right", "topright", "bottom left", "bottomleft",
+        "bottom right", "bottomright", "bottom center", "bottom", "top center",
+        "address bar", "url bar",
+    }
+    if t_norm in pos_keywords or (len(t_norm.split()) == 2 and all(p.isdigit() for p in t_norm.split())):
+        x, y, label = resolve_target_coords(target)
+    else:
+        x, y, label, _ = wait_element(target, timeout=2.5)
     cmd = ["xdotool", "mousemove", "--sync", str(x), str(y), "click"]
     if repeat > 1:
         cmd.extend(["--repeat", str(repeat), "--delay", "65"])
@@ -939,6 +1394,31 @@ def do_click(target: str, button: int = 1, repeat: int = 1) -> str:
     if repeat == 2 and button == 1:
         btn_name = "double_click"
     return f"{btn_name}({x},{y} {label})"
+
+
+def observe(include_ocr: bool = False) -> dict:
+    """Layer 1 Unified Desktop Observation Snapshot."""
+    foc = get_focused()
+    clients = get_clients()
+    tabs = get_firefox_open_tabs()
+    audio = get_audio_state()
+    ui = query_atspi_snapshot()
+    out = {
+        "focused": foc,
+        "clients": clients,
+        "tabs": tabs,
+        "audio": audio,
+        "ui": {
+            "busy": ui["busy"],
+            "focused_role": ui["focused_role"],
+            "focused_editable": ui["focused_editable"],
+            "inputs": ui["inputs"][:6],
+            "actionables": ui["actionables"][:12],
+        },
+    }
+    if include_ocr:
+        out["ocr"] = capture_screen_ocr(force=False)[:25]
+    return out
 
 
 def execute_step(line: str) -> str:
@@ -998,6 +1478,7 @@ def _execute_step_inner(op: str, arg: str) -> str:
     if op in ("type", "write", "input", "dictate"):
         text = arg.strip("\"'")
         if text:
+            ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
             run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
             time.sleep(0.06)
@@ -1006,12 +1487,48 @@ def _execute_step_inner(op: str, arg: str) -> str:
     if op in ("type_enter", "submit"):
         text = arg.strip("\"'")
         if text:
+            ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
             run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
             time.sleep(0.05)
         run_cmd(["xdotool", "key", "--clearmodifiers", "Return"])
         time.sleep(0.07)
         return f"type+Enter “{text}”"
+
+    if op in ("media", "player", "mpris"):
+        act_low = arg.strip().lower()
+        act_map = {
+            "play": "Play",
+            "pause": "Pause",
+            "toggle": "PlayPause",
+            "play_pause": "PlayPause",
+            "playpause": "PlayPause",
+            "stop": "Stop",
+            "next": "Next",
+            "prev": "Previous",
+            "previous": "Previous",
+        }
+        m_act = act_map.get(act_low, "PlayPause")
+        ok = mpris_control(m_act)
+        if not ok and m_act in ("Play", "Pause", "PlayPause"):
+            run_cmd(["xdotool", "key", "--clearmodifiers", "XF86AudioPlay"])
+        return f"media:{m_act.lower()}"
+
+    if op == "wait_for":
+        parts = arg.split(None, 1)
+        kind = parts[0].lower() if parts else "page"
+        sub = parts[1].strip().strip("\"'") if len(parts) > 1 else ""
+        if kind in ("window", "win", "focus"):
+            ok = wait_window_focused(sub, timeout=3.0)
+            return f"wait_for:window({sub})={'ok' if ok else 'timeout'}"
+        if kind in ("audio", "playing", "music", "media"):
+            ok = wait_audio_playing(timeout=3.0)
+            return f"wait_for:audio={'ok' if ok else 'timeout'}"
+        if kind in ("element", "text", "ui"):
+            _, _, lbl, ok = wait_element(sub, timeout=3.0)
+            return f"wait_for:element({sub})->{lbl}"
+        res = wait_page_ready(target_hint=sub, timeout=4.0)
+        return f"wait_for:page({'ok' if res.get('ready') else 'timeout'})"
 
     if op in ("click", "left_click"):
         return do_click(arg, button=1, repeat=1)
@@ -1127,6 +1644,11 @@ def main():
         sys.exit(1)
 
     cmd = sys.argv[1]
+    if cmd == "observe":
+        inc_ocr = "--ocr" in sys.argv[2:]
+        print(json.dumps(observe(include_ocr=inc_ocr), ensure_ascii=False))
+        return
+
     if cmd == "context":
         foc = get_focused()
         clients = get_clients()
@@ -1134,9 +1656,11 @@ def main():
         foc_str = f"{foc['class']} '{foc['title'][:45]}'" if foc else "none"
         open_tabs = get_firefox_open_tabs()
         tabs_str = ", ".join(f"#{t['index']} '{t['title'][:30]}'" for t in open_tabs[:8])
+        audio = get_audio_state()
         out_str = f"Focused: {foc_str}\nOpen windows: [{win_list}]"
         if tabs_str:
             out_str += f"\nBrowser tabs: [{tabs_str}]"
+        out_str += f"\nAudio playing: {'yes' if audio.get('playing') else 'no'}"
         print(out_str)
         return
 
