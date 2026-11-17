@@ -225,10 +225,11 @@ def answer_query(raw_query: str):
                 ["jarvis", "lockdown", "lock down", "voice", "microphone", "listen", "listening", "turn off", "lock screen", "slock", "bloquear"],
                 [""],
             ),
-            "  Robot Icon:  Yellow = On,  Red = Acting,  Silver = Off (Lockdown)\n"
-            "⌨  Toggle On ⇄ Lockdown:  Mod + v  (or Left-Click )\n"
-            "⌨  Jarvis Settings Menu:  Mod + Shift + v  (or Right-Click )\n"
-            "  Voice Lockdown:        “Jarvis, lockdown” (stops mic + locks screen)",
+            "  Robot Icon:  Yellow = On,  Red = Acting,  Silver = Off\n"
+            "⌨  Toggle Listener On ⇄ Off:  Mod + v  (or Left-Click )\n"
+            "⌨  Lock Screen (slock):       Mod + s  (or Mod + Shift + l)\n"
+            "⌨  Jarvis Settings Menu:      Mod + Shift + v  (or Right-Click )\n"
+            "  Voice Lockdown:            “Jarvis, lockdown” (stops mic + locks screen)",
         ),
         (
             "Jarvis Pi Coding Session (tmux)",
@@ -268,7 +269,7 @@ def answer_query(raw_query: str):
         "• Mod+Shift+Enter: Terminal  |  Mod+p: App Launcher\n"
         "• Mod+1..9: Switch Workspace |  Mod+Shift+1..9: Move Window\n"
         "• Mod+j / k: Focus Window    |  Mod+Shift+c: Close Window\n"
-        "• Mod+v: Toggle Jarvis       |  “Jarvis, lockdown”: Off + Lock"
+        "• Mod+v: Toggle Jarvis Mic   |  Mod+s: Lock Screen (slock)"
     )
     notify_help("  dwm Window Manager Instructions", summary, timeout=8000)
     spawn_window_nonblocking()
@@ -324,14 +325,14 @@ def run_gui():
             ("Mod + Shift + Enter", "Terminal (ghostty)"),
             ("Mod + p",             "App Launcher (dmenu)"),
             ("Mod + a",             "Jarvis Semantic Command Bar"),
-            ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Lockdown (Silver)"),
+            ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Off (Silver)"),
             ("Mod + Shift + v",     "Jarvis Menu (Pi, Lang, Model, Lockdown)"),
             ("“Jarvis, <cmd>”",     "Speak any desktop, browser, or Pi action"),
             ("“Jarvis, lockdown”",  "Turn Jarvis Off + Lock Screen (slock)"),
             ("“Jarvis, how do I…”", "Ask for Window Manager Instructions"),
             ("Mod + Space",         "Toggle Keyboard Layout (US ⇄ PT)"),
-            ("Mod + n / Mod + s",   "Wi-Fi Menu / System Settings"),
-            ("Mod + Shift + l",     "Lock Screen (slock)"),
+            ("Mod + s / Shift + l", "Lock Screen (slock)"),
+            ("Mod + n / Ctrl + s",  "Wi-Fi Menu / System Settings"),
             ("Mod + Escape",        "Power / Session Dropdown"),
             ("Mod + F1  /  Mod + /","Toggle This Shortcuts Window"),
         ]),

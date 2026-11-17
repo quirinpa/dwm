@@ -3,7 +3,7 @@
 # Lifecycle:
 #   - On (Default): Yellow robot icon () in dwm-bar; listens for "Jarvis" wake word
 #   - Acting:       Red robot icon () while hearing or executing a command
-#   - Off/Lockdown: Silver robot icon (); microphone listener stopped (+ screen locked via slock)
+#   - Off:          Silver robot icon (); microphone listener stopped (Mod+v toggles On/Off; voice "lockdown" turns Off + locks screen via slock)
 export PATH="$HOME/.local/bin:$PATH"
 
 STATE_FILE="/tmp/dwm-voice-$USER.state"
@@ -337,14 +337,14 @@ jarvis_start() {
 
 jarvis_stop() {
     jarvis_stop_quiet
-    notify_voice "voice" 2500 "  Jarvis Off (Lockdown)" "Microphone listener stopped. Press Mod+v to turn back on."
+    notify_voice "voice" 2500 "  Jarvis Off" "Microphone listener disabled. Press Mod+v to turn back on."
 }
 
 jarvis_lockdown() {
     jarvis_stop_quiet
     notify_voice "voice" 2500 "  Jarvis Lockdown" "Jarvis listener turned OFF and locking screen..."
     if command -v xdotool >/dev/null 2>&1; then
-        xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V 2>/dev/null || true
+        xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V s S l L 2>/dev/null || true
     fi
     if command -v slock >/dev/null 2>&1 && ! pgrep -x slock >/dev/null 2>&1; then
         ( sleep 0.15; exec slock ) </dev/null >/dev/null 2>&1 &
@@ -353,7 +353,7 @@ jarvis_lockdown() {
 
 jarvis_toggle() {
     if is_jarvis_running; then
-        jarvis_lockdown
+        jarvis_stop
     else
         jarvis_start
     fi

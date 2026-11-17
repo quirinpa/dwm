@@ -12,9 +12,11 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod +Shift + Enter` | Open terminal (`ghostty`) | `ghostty` |
 | `Mod + p` | Application launcher (`dmenu`) | `dmenu_run` |
 | `Mod + Space` | **Toggle Keyboard Layout (`US` ⇄ `PT`)** | `dwm-ctl kbd-toggle` |
+| `Mod + v` | **Toggle Jarvis Listener On (`Yellow`) ⇄ Off (`Silver`)** (without locking screen) | `dwm-voice toggle` |
+| `Mod + Shift + v` | **Jarvis Settings & Pi Menu** (`dmenu`) | `dwm-voice menu` |
 | `Mod + n` | **Quick Wi-Fi Switcher** (`dmenu`) | `dwm-net wifi` |
-| `Mod + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
-| `Mod + Shift + l` | **Lock screen immediately** | `slock` |
+| `Mod + s` or `Mod + Shift + l` | **Lock screen immediately** | `slock` |
+| `Mod + Ctrl + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
 | `Mod + Escape` | **Session / Power Menu** (Lock, Hot-Restart, Logout, Suspend, Reboot, Poweroff) | `dwm-ctl power-menu` |
 | `Mod + F1` or `Mod + /` | **Toggle Floating Keyboard Shortcuts Window** (closes with `Esc`, `q`, or second press) | `dwm-help` |
 
