@@ -52,6 +52,7 @@ install: all
 	install -m 644 intents.conf $(HOME)/.config/dwm/intents.conf
 	mkdir -p $(HOME)/.config/dunst
 	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc
+	install -m 644 Xresources $(HOME)/.Xresources
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1

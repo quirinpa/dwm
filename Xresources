@@ -1,0 +1,122 @@
+! =============================================================================
+! XTerm configuration — matching Ghostty (Catppuccin Mocha)
+! =============================================================================
+
+XTerm*termName:                 xterm-256color
+XTerm*locale:                   true
+XTerm*utf8:                     1
+
+! Font (matches Ghostty default monospace + font-size = 16)
+XTerm*faceName:                 DejaVu Sans Mono
+XTerm*faceSize:                 16
+XTerm*renderFont:               true
+
+! Window & Padding (matches Ghostty window-padding-x/y = 8)
+XTerm*internalBorder:           8
+XTerm*borderWidth:              0
+XTerm*scrollBar:                false
+XTerm*saveLines:                20000
+
+! Cursor (matches Ghostty cursor-style = block, cursor-style-blink = true, #f5e0dc)
+XTerm*cursorBlink:              true
+XTerm*cursorColor:              #f5e0dc
+XTerm*pointerMode:              1
+
+! Clipboard & Selection (matches Ghostty copy-on-select = true)
+XTerm*selectToClipboard:        true
+XTerm*highlightSelection:       true
+XTerm*trimSelection:            true
+XTerm*charClass:                33:48,35:48,37-38:48,43-47:48,58:48,61:48,63-64:48,95:48,126:48
+
+! Bell
+XTerm*visualBell:               false
+XTerm*bellIsUrgent:             false
+
+! Catppuccin Mocha Theme
+XTerm*background:               #1e1e2e
+XTerm*foreground:               #cdd6f4
+XTerm*highlightColor:           #585b70
+XTerm*highlightTextColor:       #cdd6f4
+XTerm*reverseWrap:              true
+
+! Standard 16 Palette (matches Ghostty Catppuccin Mocha)
+XTerm*color0:                   #45475a
+XTerm*color1:                   #f38ba8
+XTerm*color2:                   #a6e3a1
+XTerm*color3:                   #f9e2af
+XTerm*color4:                   #89b4fa
+XTerm*color5:                   #f5c2e7
+XTerm*color6:                   #94e2d5
+XTerm*color7:                   #a6adc8
+XTerm*color8:                   #585b70
+XTerm*color9:                   #f37799
+XTerm*color10:                  #89d88b
+XTerm*color11:                  #ebd391
+XTerm*color12:                  #74a8fc
+XTerm*color13:                  #f2aede
+XTerm*color14:                  #6bd7ca
+XTerm*color15:                  #bac2de
+
+! Keybindings (Ctrl+Shift+C / Ctrl+Shift+V & Font Zoom like Ghostty)
+XTerm*VT100.Translations: #override \n\
+    Ctrl Shift <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl Shift <Key>V: insert-selection(CLIPBOARD) \n\
+    Ctrl <Key>plus: larger-vt-font() \n\
+    Ctrl <Key>equal: larger-vt-font() \n\
+    Ctrl <Key>minus: smaller-vt-font() \n\
+    Ctrl <Key>0: set-vt-font(d)
+
+! =============================================================================
+! dwm & desktop configuration (Catppuccin Mocha — live reload via `dwm-msg reload`)
+! =============================================================================
+
+dwm.normbgcolor:                #11111b
+dwm.normbordercolor:            #313244
+dwm.normfgcolor:                #a6adc8
+dwm.selfgcolor:                 #ffffff
+dwm.selbgcolor:                 #232336
+dwm.selbordercolor:             #a07eff
+dwm.titlefgcolor:               #a07eff
+dwm.gearfgcolor:                #a07eff
+dwm.skycolor:                   #89dceb
+dwm.peachcolor:                 #fab387
+dwm.yellowcolor:                #f9e2af
+dwm.tealcolor:                  #94e2d5
+dwm.greencolor:                 #a6e3a1
+dwm.redcolor:                   #f38ba8
+dwm.lavendercolor:              #b4befe
+dwm.rosewatercolor:             #f5e0dc
+dwm.mauvecolor:                 #7c6ff2
+dwm.dimcolor:                   #585b70
+
+dwm.gappx:                      8
+dwm.borderpx:                   2
+dwm.snap:                       32
+dwm.showbar:                    1
+dwm.topbar:                     1
+dwm.nmaster:                    1
+dwm.resizehints:                0
+dwm.mfact:                      0.55
+
+! Status bar daemon (dwm-bar) preferences
+dwm.bar.interval:               5
+dwm.bar.ping_host:              tty.pt
+dwm.bar.mem_warn:               70
+dwm.bar.mem_crit:               85
+dwm.bar.cpu_warn:               4
+dwm.bar.cpu_crit:               10
+dwm.bar.bat_warn:               30
+dwm.bar.bat_crit:               15
+
+! Local AI / Voice integration (axil-auren + dwm-voice)
+dwm.auren.url:                  http://localhost:4242/v1/systemone
+dwm.auren.model:                bge-base
+dwm.auren.threshold:            0.68
+dwm.voice.auto_kbd_lang:        true
+dwm.voice.auto_stop:            true
+dwm.voice.silence_ms:           520
+dwm.voice.cmd_silence_ms: 650
+dwm.voice.threshold_db:         -36
+dwm.voice.wake_word:            jarvis
+dwm.voice.jarvis_autostart:     true
+dwm.voice.server_port:          8178
