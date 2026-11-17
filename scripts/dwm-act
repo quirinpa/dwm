@@ -122,8 +122,8 @@ def expand_selection_pronouns(text: str, for_pi: bool = False) -> str:
         sel = get_x11_selection()
         return sel if sel else t_clean
     if for_pi:
-        import re
-        if re.search(r"\b(this|that|selection|selected\s+text|clipboard|isto|isso)\b", t_low):
+        wset = set(norm_text(t_low).split())
+        if wset & PRONOUN_EXACT:
             sel = get_x11_selection()
             if sel:
                 return f"{t_clean}\n\n[Selected X11 text: {sel}]"
@@ -1782,6 +1782,46 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         run_cmd(["xdotool", "key", "--clearmodifiers", combo])
         time.sleep(0.07)
         return f"key {combo}"
+
+    if op in ("type_other", "write_other"):
+        text = expand_selection_pronouns(arg.strip("\"'"))
+        other = get_other_window()
+        if not other:
+            return "type_other:none"
+        if text:
+            save_undo_snapshot("type_other")
+            prev_foc = get_focused()
+            run_cmd(["dwm-msg", "focus-win", other["id"]])
+            wait_window_focused(other["id"], timeout=0.6)
+            ensure_input_focused()
+            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
+            time.sleep(0.05)
+            if prev_foc and prev_foc["id"] != other["id"]:
+                run_cmd(["dwm-msg", "focus-win", prev_foc["id"]])
+                wait_window_focused(prev_foc["id"], timeout=0.4)
+        return f"type_other({other['class']}) “{text}”"
+
+    if op in ("type_enter_other", "submit_other"):
+        text = expand_selection_pronouns(arg.strip("\"'"))
+        other = get_other_window()
+        if not other:
+            return "type_enter_other:none"
+        save_undo_snapshot("type_enter_other")
+        prev_foc = get_focused()
+        run_cmd(["dwm-msg", "focus-win", other["id"]])
+        wait_window_focused(other["id"], timeout=0.6)
+        if text:
+            ensure_input_focused()
+            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
+            time.sleep(0.05)
+        run_cmd(["xdotool", "key", "--clearmodifiers", "Return"])
+        time.sleep(0.06)
+        if prev_foc and prev_foc["id"] != other["id"]:
+            run_cmd(["dwm-msg", "focus-win", prev_foc["id"]])
+            wait_window_focused(prev_foc["id"], timeout=0.4)
+        return f"type+Enter_other({other['class']}) “{text}”"
 
     if op in ("type", "write", "input", "dictate"):
         text = expand_selection_pronouns(arg.strip("\"'"))
