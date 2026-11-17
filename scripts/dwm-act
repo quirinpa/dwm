@@ -1708,6 +1708,11 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
             "screenshot_full": ["dwm-shot", "full"],
             "screenshot_area": ["dwm-shot", "select"],
             "lock": ["slock"],
+            "lockdown": ["dwm-voice", "lockdown"],
+            "jarvis_off": ["dwm-voice", "lockdown"],
+            "jarvis_on": ["dwm-voice", "on"],
+            "help": ["dwm-help", "show"],
+            "shortcuts": ["dwm-help", "show"],
             "pi_show": ["dwm-jarvis-pi", "show"],
             "pi_stop": ["dwm-jarvis-pi", "stop"],
             "pi_reset": ["dwm-jarvis-pi", "reset"],
@@ -1716,6 +1721,14 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
             subprocess.Popen(sys_map[act], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             time.sleep(0.08)
             return f"sys:{act}"
+
+    if op in ("help", "howto", "instructions"):
+        q = arg.strip("\"'")
+        if q:
+            subprocess.run(["dwm-help", "ask", q], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            return f"help:{q}"
+        subprocess.Popen(["dwm-help", "show"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        return "help:show"
 
     if op == "sh":
         if arg:

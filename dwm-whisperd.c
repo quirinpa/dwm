@@ -1473,7 +1473,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 							post_change_frames = 0;
 							decoded_cmd_voiced_f = res_vf;
 							write_state_file(state_file, "cmd", live_cmd,
-							                 "  Jarvis Command (Live)...");
+							                 "  Jarvis Command (Live)...");
 						} else {
 							unchanged_decodes++;
 							decoded_cmd_voiced_f = res_vf;
@@ -1653,7 +1653,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						wake_end_f = chime_ignore_until_f;
 						post_wake_deadline_ms = now_ms() + 7000L;
 						write_state_file(state_file, "jarvis-cmd", NULL, NULL);
-						notify_osd_async("  Jarvis Listening...",
+						notify_osd_async("  Jarvis Listening...",
 						                 "Speak your command now.", 6000);
 						continue;
 					} else if (mid_wake_check || utter_f > 75) {

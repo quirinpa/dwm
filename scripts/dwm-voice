@@ -1,20 +1,19 @@
 #!/bin/sh
-# dwm-voice: System-wide Whisper voice dictation & "Jarvis" wake-word command assistant for dwm
-# Uses dwm-vad (real-time VAD + auto-stop on silence), dwm-whisperd (fast C libwhisper daemon
-# with proportional audio_ctx scaling & dual q5_1 models), and dwm-auren (3-tier semantic router).
+# dwm-voice: Always-On "Jarvis" Voice Assistant Controller for dwm
+# Lifecycle:
+#   - On (Default): Yellow robot icon () in dwm-bar; listens for "Jarvis" wake word
+#   - Acting:       Red robot icon () while hearing or executing a command
+#   - Off/Lockdown: Silver robot icon (); microphone listener stopped (+ screen locked via slock)
 export PATH="$HOME/.local/bin:$PATH"
 
-PID_FILE="/tmp/dwm-voice-$USER.pid"
 STATE_FILE="/tmp/dwm-voice-$USER.state"
-MODE_FILE="/tmp/dwm-voice-$USER.mode"
-WAV_FILE="/tmp/dwm-voice-$USER.wav"
 LAST_TXT="/tmp/dwm-voice-$USER.last.txt"
+ACTING_PID_FILE="/tmp/dwm-acting-$USER.pid"
 
 JARVIS_PID_FILE="/tmp/dwm-jarvis-$USER.pid"
 JARVIS_VAD_PID="/tmp/dwm-jarvis-vad-$USER.pid"
 JARVIS_WAV="/tmp/dwm-jarvis-$USER.wav"
 JARVIS_OUT="/tmp/dwm-jarvis-$USER.out"
-STREAM_OUT="/tmp/dwm-voice-$USER.out"
 SRV_PID_FILE="/tmp/dwm-whisper-srv-$USER.pid"
 XRES_CACHE="/tmp/dwm-voice-xres-$USER.env"
 CHIME_WAV="/tmp/dwm-voice-chime-$USER.wav"
@@ -135,7 +134,7 @@ get_wake_word() {
 dmenu_voice() {
     prompt="$1"
     lines="$2"
-    accent="${3:-#f5e0dc}"
+    accent="${3:-#f9e2af}"
     dmenu -i -l "$lines" -p "$prompt" -fn "$FONT" -nb "$NB" -nf "$NF" -sb "$accent" -sf "#1e1e2e"
 }
 
@@ -174,23 +173,6 @@ PYEOF2
     fi
 }
 
-play_chime() {
-    ensure_chime_wav
-    if [ -f "$CHIME_WAV" ] && command -v pw-play >/dev/null 2>&1; then
-        pw-play --volume=0.45 "$CHIME_WAV" >/dev/null 2>&1 &
-    fi
-}
-
-is_recording() {
-    if [ -f "$PID_FILE" ]; then
-        rec_pid=$(cat "$PID_FILE" 2>/dev/null)
-        if [ -n "$rec_pid" ] && kill -0 "$rec_pid" 2>/dev/null; then
-            return 0
-        fi
-    fi
-    return 1
-}
-
 is_jarvis_running() {
     if [ -f "$JARVIS_PID_FILE" ]; then
         jpid=$(cat "$JARVIS_PID_FILE" 2>/dev/null)
@@ -203,10 +185,6 @@ is_jarvis_running() {
 
 restore_idle_state() {
     if is_jarvis_running; then
-        printf 'jarvis\n' > "$STATE_FILE"
-    elif [ -f "$JARVIS_PID_FILE" ]; then
-        rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
-        setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
         printf 'jarvis\n' > "$STATE_FILE"
     else
         rm -f "$STATE_FILE"
@@ -226,7 +204,6 @@ ensure_whisper_server() {
         pgrep -x "dwm-whisperd" | head -n 1 > "$SRV_PID_FILE"
         return 0
     fi
-    # Kill any legacy whisper-server holding the port
     pkill -f "whisper-server.*--port $port" 2>/dev/null || true
 
     if command -v dwm-whisperd >/dev/null 2>&1; then
@@ -244,183 +221,14 @@ ensure_whisper_server() {
     fi
 }
 
-transcribe_wav() {
-    wav_in="$1"
-    lang_in="$2"
-    prompt_in="${3:--}"
-    mode_in="${4:-cmd}"
-    port=$(get_srv_port)
-
-    ensure_whisper_server
-
-    max_tok=24
-    if [ "$mode_in" = "wake" ]; then
-        max_tok=8
-    elif [ "$mode_in" = "type" ] || [ "$mode_in" = "clip" ]; then
-        max_tok=96
-    fi
-
-    raw_out=$(dwm-whisperd -p "$port" -c "TRANSCRIBE|${mode_in}|${lang_in}|${max_tok}|${prompt_in}|${wav_in}" 2>/dev/null)
-
-    printf '%s\n' "$raw_out" | \
-        sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/\[BLANK_AUDIO\]//gI; s/\(blank audio\)//gI; s/\[[[:space:]]*Silence[[:space:]]*\]//gI; s/\[[[:space:]]*Music[[:space:]]*\]//gI; s/\([[:space:]]*music[[:space:]]*\)//gI' | \
-        tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//'
-}
-
-dispatch_transcript() {
-    text="$1"
-    out_mode="$2"
-
-    if [ -z "$text" ]; then
-        notify_voice "voice" 2200 "  No Speech Detected" "Audio contained no recognizable speech."
-        return 0
-    fi
-
-    printf '%s' "$text" > "$LAST_TXT"
-
-    if command -v xsel >/dev/null 2>&1; then
-        printf '%s' "$text" | xsel -ib 2>/dev/null || true
-        printf '%s' "$text" | xsel -ip 2>/dev/null || true
-    fi
-
-    wake=$(get_wake_word)
-    wake_re="^[[:space:],.!?;:-]*(((hey|hi|oh|oi|ol[áa]|hola|ok|okay|ei|yo|al[ôo])[[:space:],.!?;:-]+)?(${wake}|jarvis|charvis|jarves|j[áa]rvis|travis|jervis|service|jorge|chaves|javis|jarv|darvis|garvis|jarbas|javes|j[áa][[:space:]]+fiz))([[:space:],:;.!?-]+|$)"
-    has_wake=0
-    rest_after_wake="$text"
-    while printf '%s\n' "$rest_after_wake" | grep -iqE "$wake_re"; do
-        has_wake=1
-        rest_after_wake=$(printf '%s\n' "$rest_after_wake" | sed -E "s/${wake_re}//I" | sed -E 's/^[[:space:],.!?;:-]+//; s/[[:space:]]+$//')
-    done
-
-    if [ "$out_mode" = "cmd" ]; then
-        cmd_query="${rest_after_wake:-$text}"
-        cmd_query=$(printf '%s\n' "$cmd_query" | sed -E 's/^[[:space:],.!?;:-]+//; s/[[:space:],.!?;:-]+$//')
-        if [ -z "$cmd_query" ] || [ "$has_wake" -eq 1 -a -z "$rest_after_wake" ]; then
-            notify_voice "voice" 2200 "  Jarvis Standby" "Say “Jarvis <command>” (e.g. “Jarvis switch to workspace 2”)."
+is_lockdown_phrase() {
+    phrase=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:],.!?;:-]+//; s/[[:space:],.!?;:-]+$//')
+    case "$phrase" in
+        lockdown|"lock down"|lock-down|"locked down"|"log down"|"enter lockdown"|"lockdown mode"|"jarvis lockdown"|"jarvis lock down"|"turn off"|"turn off jarvis"|"jarvis off"|"shut down jarvis"|"stop listening"|"disable jarvis"|"go to sleep"|"bloquear"|"bloquear jarvis"|"modo bloqueio"|"desligar jarvis")
             return 0
-        fi
-        /home/quirinpa/.local/bin/dwm-auren query "$cmd_query"
-    elif [ "$has_wake" -eq 1 ]; then
-        if [ -n "$rest_after_wake" ]; then
-            /home/quirinpa/.local/bin/dwm-auren query "$rest_after_wake"
-        else
-            notify_voice "voice" 2500 "  Jarvis Standby" "Say “Jarvis <command>” in one breath, or speak normal text to dictate."
-        fi
-    elif [ "$out_mode" = "type" ] && command -v xdotool >/dev/null 2>&1; then
-        xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V 2>/dev/null || true
-        xdotool type --clearmodifiers --delay 4 -- "$text" 2>/dev/null || true
-        notify_voice "voice" 4000 "  Dictated + Copied (xsel)" "$text"
-    else
-        notify_voice "voice" 4000 "📋  Copied to Clipboard (xsel)" "$text"
-    fi
-}
-
-start_recording() {
-    out_mode="${1:-type}"
-    if is_recording; then
-        stop_recording
-        return $?
-    fi
-
-    # Claim PID_FILE immediately so jarvis_loop sees is_recording == true
-    printf '%s\n' "$$" > "$PID_FILE"
-
-    if [ -f "$JARVIS_VAD_PID" ]; then
-        jvad=$(cat "$JARVIS_VAD_PID" 2>/dev/null)
-        [ -n "$jvad" ] && kill -USR1 "$jvad" 2>/dev/null || true
-    fi
-
-    rm -f "$WAV_FILE" "$STREAM_OUT"
-    if command -v wpctl >/dev/null 2>&1; then
-        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
-    fi
-
-    printf '%s\n' "$out_mode" > "$MODE_FILE"
-    if [ "$out_mode" = "cmd" ]; then
-        printf 'cmd\n' > "$STATE_FILE"
-    else
-        printf 'rec\n' > "$STATE_FILE"
-    fi
-    refresh_bar
-
-    lang=$(get_lang)
-    lang_mode=$(get_lang_mode)
-    port=$(get_srv_port)
-    auto_stop=$(get_xres "dwm.voice.auto_stop" "true")
-    thresh_db=$(get_xres "dwm.voice.threshold_db" "-36")
-    if [ "$out_mode" = "cmd" ]; then
-        sil_ms=$(get_xres "dwm.voice.cmd_silence_ms" "650")
-    else
-        sil_ms=$(get_xres "dwm.voice.silence_ms" "700")
-    fi
-    if [ "$auto_stop" = "false" ] || [ "$auto_stop" = "0" ]; then
-        sil_ms=0
-    fi
-
-    if [ "$out_mode" = "cmd" ]; then
-        play_chime
-        notify_voice "voice" 6000 "  Command (Streaming)..." "Lang: ${lang}  |  Speak command now (auto-stops on pause)"
-    elif [ "$out_mode" = "clip" ]; then
-        notify_voice "voice" 6000 "  Clipboard (Streaming)..." "Lang: ${lang}  |  Speak now (or say “Jarvis <cmd>”)"
-    else
-        notify_voice "voice" 6000 "  Streaming (Dictate or “Jarvis”)..." "Lang: ${lang}  |  Speak text or say “Jarvis <cmd>”"
-    fi
-
-    (
-        ensure_whisper_server
-        dwm-whisperd -p "$port" -c "STREAM|${out_mode}|${lang_mode}|${thresh_db}|${sil_ms}|7000|${STATE_FILE}" > "$STREAM_OUT" 2>/dev/null &
-        vad_pid=$!
-        printf '%s\n' "$vad_pid" > "$PID_FILE"
-        wait "$vad_pid"
-        rc=$?
-        rm -f "$PID_FILE"
-
-        if [ "$rc" -eq 130 ]; then
-            rm -f "$MODE_FILE" "$STREAM_OUT"
-            restore_idle_state
-            exit 0
-        fi
-
-        cur_mode=$(cat "$MODE_FILE" 2>/dev/null)
-        [ -z "$cur_mode" ] && cur_mode="$out_mode"
-        rm -f "$MODE_FILE"
-
-        text=$(cat "$STREAM_OUT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
-        rm -f "$STREAM_OUT"
-
-        if [ "$rc" -ne 0 ] || [ -z "$text" ]; then
-            restore_idle_state
-            notify_voice "voice" 2200 "  No Speech Detected" "Timed out waiting for voice."
-            exit 0
-        fi
-
-        restore_idle_state
-        dispatch_transcript "$text" "$cur_mode"
-    ) >/dev/null 2>&1 &
-}
-
-stop_recording() {
-    if ! is_recording; then
-        return 1
-    fi
-    port=$(get_srv_port)
-    dwm-whisperd -p "$port" -c "STOP" >/dev/null 2>&1 &
-    rec_pid=$(cat "$PID_FILE" 2>/dev/null)
-    if [ -n "$rec_pid" ]; then
-        kill -INT "$rec_pid" 2>/dev/null || true
-    fi
-}
-
-cancel_recording() {
-    port=$(get_srv_port)
-    dwm-whisperd -p "$port" -c "CANCEL" >/dev/null 2>&1 &
-    if is_recording; then
-        rec_pid=$(cat "$PID_FILE" 2>/dev/null)
-        kill -USR1 "$rec_pid" 2>/dev/null || kill -9 "$rec_pid" 2>/dev/null || true
-    fi
-    rm -f "$PID_FILE" "$MODE_FILE" "$WAV_FILE" "$STREAM_OUT"
-    restore_idle_state
-    notify_voice "voice" 2000 "  Cancelled" "Voice recording discarded."
+            ;;
+    esac
+    return 1
 }
 
 # =============================================================================
@@ -439,11 +247,6 @@ jarvis_loop() {
     trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT"; restore_idle_state; exit 0' INT TERM
 
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
-        if is_recording; then
-            sleep 0.15
-            continue
-        fi
-
         printf 'jarvis\n' > "$STATE_FILE"
         refresh_bar
 
@@ -463,45 +266,44 @@ jarvis_loop() {
         rc=$?
         rm -f "$JARVIS_VAD_PID"
 
-        if [ "$rc" -eq 130 ] || is_recording; then
+        if [ "$rc" -eq 130 ]; then
             rm -f "$JARVIS_OUT"
             sleep 0.15
-            while is_recording; do
-                sleep 0.15
-            done
             continue
         fi
 
         cmd_text=$(cat "$JARVIS_OUT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
         rm -f "$JARVIS_OUT"
 
-        printf 'jarvis\n' > "$STATE_FILE"
-        refresh_bar
-
         if [ "$rc" -eq 0 ] && [ -n "$cmd_text" ]; then
             printf '%s' "$cmd_text" > "$LAST_TXT"
-            /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1 &
+            if is_lockdown_phrase "$cmd_text"; then
+                setsid "$0" lockdown </dev/null >/dev/null 2>&1 &
+                exit 0
+            fi
+            (
+                printf '%s\n' "$$" > "$ACTING_PID_FILE"
+                refresh_bar
+                /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
+                rm -f "$ACTING_PID_FILE"
+                refresh_bar
+            ) </dev/null >/dev/null 2>&1 &
+            printf 'jarvis\n' > "$STATE_FILE"
+            refresh_bar
         elif [ "$rc" -eq 2 ]; then
-            notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
+            printf 'jarvis\n' > "$STATE_FILE"
+            refresh_bar
+            notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
+        else
+            printf 'jarvis\n' > "$STATE_FILE"
+            refresh_bar
         fi
     done
 }
 
-jarvis_start() {
-    if is_jarvis_running; then
-        notify_voice "voice" 2200 "  Jarvis Already Active" "Say “Jarvis” followed by a command."
-        return 0
-    fi
-    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
-    ensure_whisper_server
-    setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
-    sleep 0.12
-    refresh_bar
-    wake=$(get_wake_word)
-    notify_voice "voice" 3500 "  Jarvis Wake-Word Active" "Say “${wake}” at any time to issue a voice command."
-}
-
-jarvis_stop() {
+jarvis_stop_quiet() {
+    port=$(get_srv_port)
+    dwm-whisperd -p "$port" -c "CANCEL" >/dev/null 2>&1 &
     if [ -f "$JARVIS_VAD_PID" ]; then
         jvad=$(cat "$JARVIS_VAD_PID" 2>/dev/null)
         [ -n "$jvad" ] && kill -USR1 "$jvad" 2>/dev/null || true
@@ -510,17 +312,48 @@ jarvis_stop() {
         jpid=$(cat "$JARVIS_PID_FILE" 2>/dev/null)
         [ -n "$jpid" ] && kill "$jpid" 2>/dev/null || true
     fi
-    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT"
-    if ! is_recording; then
-        rm -f "$STATE_FILE"
-    fi
+    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT" "$STATE_FILE" "$ACTING_PID_FILE"
     refresh_bar
-    notify_voice "voice" 2500 "  Jarvis Wake-Word Off" "Background wake listener stopped."
+}
+
+jarvis_start() {
+    if is_jarvis_running; then
+        printf 'jarvis\n' > "$STATE_FILE"
+        refresh_bar
+        notify_voice "voice" 2200 "  Jarvis Active (On)" "Listening for “Jarvis” wake word."
+        return 0
+    fi
+    if command -v wpctl >/dev/null 2>&1; then
+        wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
+    fi
+    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
+    ensure_whisper_server
+    setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
+    sleep 0.12
+    refresh_bar
+    wake=$(get_wake_word)
+    notify_voice "voice" 3000 "  Jarvis Active (On)" "Say “${wake}” at any time, or “${wake}, lockdown” to turn off."
+}
+
+jarvis_stop() {
+    jarvis_stop_quiet
+    notify_voice "voice" 2500 "  Jarvis Off (Lockdown)" "Microphone listener stopped. Press Mod+v to turn back on."
+}
+
+jarvis_lockdown() {
+    jarvis_stop_quiet
+    notify_voice "voice" 2500 "  Jarvis Lockdown" "Jarvis listener turned OFF and locking screen..."
+    if command -v xdotool >/dev/null 2>&1; then
+        xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V 2>/dev/null || true
+    fi
+    if command -v slock >/dev/null 2>&1 && ! pgrep -x slock >/dev/null 2>&1; then
+        ( sleep 0.15; exec slock ) </dev/null >/dev/null 2>&1 &
+    fi
 }
 
 jarvis_toggle() {
     if is_jarvis_running; then
-        jarvis_stop
+        jarvis_lockdown
     else
         jarvis_start
     fi
@@ -529,39 +362,26 @@ jarvis_toggle() {
 voice_menu() {
     lang=$(get_lang)
     model=$(basename "$(get_model)")
-    if is_recording; then
-        choice=$(printf "⏹  Finish & Transcribe Now\n📋  Finish & Copy Only (xsel)\n✖  Cancel Recording\n" | \
-            dmenu_voice "Recording:" 3 "#f38ba8")
-        case "$choice" in
-            *"Finish & Transcribe"*)
-                stop_recording
-                ;;
-            *"Finish & Copy"*)
-                printf 'clip\n' > "$MODE_FILE"
-                stop_recording
-                ;;
-            *Cancel*)
-                cancel_recording
-                ;;
-        esac
-        exit 0
-    fi
-
-    last_preview="(none)"
-    if [ -s "$LAST_TXT" ]; then
-        last_preview=$(cut -c 1-42 "$LAST_TXT" 2>/dev/null)
-    fi
-
     if is_jarvis_running; then
-        j_status="ON"
+        j_status="ON (Yellow)"
     else
-        j_status="OFF"
+        j_status="OFF / Lockdown (Silver)"
     fi
 
-    choice=$(printf "🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🎙  Toggle Always-On “Jarvis” Wake Listener [current: %s]\n✍  Stream Dictation / “Jarvis <cmd>” (Mod+v)\n⚡  Stream Direct Command — No Keyword Needed (Mod+Ctrl+v)\n🔍  Type / Browse Semantic Intents (Mod+a)\n📋  Stream to Clipboard Only (xsel)\n⌨  Type Last Transcript: %s\n📎  Copy Last Transcript to xsel\n🌐  Language [current: %s]\n🧠  Model [current: %s]\n" "$j_status" "$last_preview" "$lang" "$model" | \
-        dmenu_voice "Voice / Jarvis:" 12 "#f5e0dc")
+    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$lang" "$model" | \
+        dmenu_voice "Jarvis:" 9 "#f9e2af")
 
     case "$choice" in
+        *"Toggle Jarvis Listener"*)
+            if is_jarvis_running; then
+                jarvis_stop
+            else
+                jarvis_start
+            fi
+            ;;
+        *"Jarvis Lockdown"*)
+            jarvis_lockdown
+            ;;
         *"Open Jarvis Pi Terminal"*)
             exec /home/quirinpa/.local/bin/dwm-jarvis-pi show
             ;;
@@ -571,51 +391,24 @@ voice_menu() {
         *"Reset Jarvis Pi"*)
             exec /home/quirinpa/.local/bin/dwm-jarvis-pi reset
             ;;
-        *"Toggle Always-On"*)
-            jarvis_toggle
-            ;;
-        *"Stream Dictation"*)
-            start_recording "type"
-            ;;
-        *"Stream Direct Command"*)
-            start_recording "cmd"
-            ;;
-        *"Semantic Intents"*)
+        *"Semantic Command Bar"*)
             exec /home/quirinpa/.local/bin/dwm-auren dmenu
             ;;
-        *"Stream to Clipboard"*)
-            start_recording "clip"
+        *"Window Manager Instructions"*)
+            exec /home/quirinpa/.local/bin/dwm-help show
             ;;
-        *"Type Last Transcript"*)
-            if [ -s "$LAST_TXT" ]; then
-                text=$(cat "$LAST_TXT")
-                printf '%s' "$text" | xsel -ib 2>/dev/null || true
-                printf '%s' "$text" | xsel -ip 2>/dev/null || true
-                xdotool keyup Super_L Super_R Shift_L Shift_R v V 2>/dev/null || true
-                xdotool type --clearmodifiers --delay 4 -- "$text" 2>/dev/null || true
-                notify_voice "voice" 3000 "  Typed Last Transcript" "$text"
-            fi
-            ;;
-        *"Copy Last Transcript"*)
-            if [ -s "$LAST_TXT" ]; then
-                text=$(cat "$LAST_TXT")
-                printf '%s' "$text" | xsel -ib 2>/dev/null || true
-                printf '%s' "$text" | xsel -ip 2>/dev/null || true
-                notify_voice "voice" 3000 "📋  Copied Last Transcript (xsel)" "$text"
-            fi
-            ;;
-        *"Language"*)
+        *"Whisper Language"*)
             lchoice=$(printf "kbd   (Follow US/PT keyboard layout automatically)\nauto  (Whisper auto-detect language)\nen    (English)\npt    (Portuguese)\nes    (Spanish)\nfr    (French)\nde    (German)\n" | \
-                dmenu_voice "Whisper Lang:" 7 "#f5e0dc")
+                dmenu_voice "Whisper Lang:" 7 "#f9e2af")
             if [ -n "$lchoice" ]; then
                 new_lang=$(printf '%s\n' "$lchoice" | awk '{print $1}')
                 printf '%s' "$new_lang" > "$CONF_DIR/lang"
                 notify_voice "voice" 2500 "🌐  Whisper Language" "Set to: $new_lang"
             fi
             ;;
-        *"Model"*)
+        *"Whisper Model"*)
             mchoice=$(printf "ggml-small-q8_0.bin          (253 MB - 244M Q8 AVX-VNNI High Accuracy, Default)\nggml-small-q5_1.bin          (182 MB - 244M Q5 Balanced)\nggml-base-q8_0.bin           (78 MB  - 74M Q8 Ultra-Fast)\nggml-large-v3-turbo-q5_0.bin (547 MB - 809M Turbo Max Accuracy)\n" | \
-                dmenu_voice "Whisper Model:" 4 "#f5e0dc")
+                dmenu_voice "Whisper Model:" 4 "#f9e2af")
             if [ -n "$mchoice" ]; then
                 mfile=$(printf '%s\n' "$mchoice" | awk '{print $1}')
                 mpath="$MODEL_DIR/$mfile"
@@ -641,37 +434,17 @@ voice_menu() {
 }
 
 case "${1:-toggle}" in
-    toggle)
-        if is_recording; then
-            stop_recording
-        else
-            start_recording "type"
-        fi
+    toggle|jarvis-toggle|jarvis)
+        jarvis_toggle
         ;;
-    copy|clip)
-        if is_recording; then
-            printf 'clip\n' > "$MODE_FILE"
-            stop_recording
-        else
-            start_recording "clip"
-        fi
-        ;;
-    cmd|command|auren)
-        if is_recording; then
-            printf 'cmd\n' > "$MODE_FILE"
-            stop_recording
-        else
-            start_recording "cmd"
-        fi
-        ;;
-    jarvis-start)
+    on|start|jarvis-start)
         jarvis_start
         ;;
-    jarvis-stop)
+    off|stop|jarvis-stop)
         jarvis_stop
         ;;
-    jarvis-toggle|jarvis)
-        jarvis_toggle
+    lockdown|lock)
+        jarvis_lockdown
         ;;
     pi-show|pi)
         exec /home/quirinpa/.local/bin/dwm-jarvis-pi show
@@ -688,16 +461,18 @@ case "${1:-toggle}" in
     server-start)
         ensure_whisper_server
         ;;
-    start)
-        start_recording "${2:-type}"
-        ;;
-    stop)
-        stop_recording
-        ;;
-    cancel)
-        cancel_recording
-        ;;
     menu)
         voice_menu
+        ;;
+    status)
+        if is_jarvis_running; then
+            echo "on"
+        else
+            echo "off"
+        fi
+        ;;
+    *)
+        echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|pi-show|pi-stop|pi-reset|server-start}" >&2
+        exit 1
         ;;
 esac

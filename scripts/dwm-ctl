@@ -129,12 +129,12 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Auren Semantic Command Bar (Mod+a)\n  Calendar & Google Sync (ikhal)\n  Voice Dictation / Command (Mod+v / Mod+Ctrl+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+        choice=$(printf "  Auren Semantic Command Bar (Mod+a)\n  Calendar & Google Sync (ikhal)\n  Jarvis Voice Assistant (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
             dmenu_themed "System:" 14 "#7c6ff2" "#cdd6f4")
         case "$choice" in
             *"Auren Semantic"*)     exec /home/quirinpa/.local/bin/dwm-auren dmenu ;;
             *"Calendar"*)           exec /home/quirinpa/.local/bin/dwm-cal menu ;;
-            *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+            *"Jarvis Voice"*)       exec /home/quirinpa/.local/bin/dwm-voice menu ;;
             *"Keyboard Layout"*)    exec "$0" kbd-menu ;;
             *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
             *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
@@ -225,10 +225,10 @@ case "$1" in
                     3) exec /home/quirinpa/.local/bin/dwm-cal popup ;;
                 esac
                 ;;
-            12) # Voice segment (SchemeVoice=12)
+            12) # Voice / Jarvis robot segment (SchemeVoice=12)
                 case "$btn" in
                     1) exec /home/quirinpa/.local/bin/dwm-voice toggle ;;
-                    2) exec /home/quirinpa/.local/bin/dwm-voice cmd ;;
+                    2) exec /home/quirinpa/.local/bin/dwm-auren dmenu ;;
                     3) exec /home/quirinpa/.local/bin/dwm-voice menu ;;
                 esac
                 ;;

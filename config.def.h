@@ -9,6 +9,7 @@ static int showbar                  = 1;        /* 0 means no bar */
 static int topbar                   = 1;        /* 0 means bottom bar */
 static const char *fonts[]          = {
 	"Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true",
+	"Font Awesome 6 Free:style=Solid:size=12:antialias=true:autohint=true",
 	"FontAwesome:size=12:antialias=true:autohint=true",
 	"Ubuntu Mono:size=13:antialias=true:autohint=true",
 	"DejaVu Sans Mono:size=12:antialias=true:autohint=true",
@@ -157,8 +158,6 @@ static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window
 static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
 static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/dwm-voice", "toggle", NULL };
 static const char *voicemenu[] = { "/home/quirinpa/.local/bin/dwm-voice", "menu", NULL };
-static const char *voicecmdm[] = { "/home/quirinpa/.local/bin/dwm-voice", "cmd", NULL };
-static const char *jarviscmd[] = { "/home/quirinpa/.local/bin/dwm-voice", "jarvis-toggle", NULL };
 static const char *aurencmd[]  = { "/home/quirinpa/.local/bin/dwm-auren", "dmenu", NULL };
 static const char *kbdtoggle[] = { "/home/quirinpa/.local/bin/dwm-ctl", "kbd-toggle", NULL };
 
@@ -170,8 +169,6 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_slash,  spawn,          {.v = helpcmd } },
 	{ MODKEY,                       XK_v,      spawn,          {.v = voicecmd } },
 	{ MODKEY|ShiftMask,             XK_v,      spawn,          {.v = voicemenu } },
-	{ MODKEY|ControlMask,           XK_v,      spawn,          {.v = voicecmdm } },
-	{ MODKEY|Mod1Mask,              XK_v,      spawn,          {.v = jarviscmd } },
 	{ MODKEY,                       XK_a,      spawn,          {.v = aurencmd } },
 	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
 	{ MODKEY,                       XK_s,      spawn,          {.v = sysmenucmd } },

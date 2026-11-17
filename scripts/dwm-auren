@@ -66,6 +66,12 @@ notify_auren() {
     fi
 }
 
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
 ensure_auren_server() {
     if curl -s --max-time 0.3 "${AUREN_BASE}/v1/models" 2>/dev/null | grep -q '"qwen"'; then
         return 0
@@ -391,6 +397,24 @@ def match_single_clause(clause):
 
 # Normalize compound recording noun-phrases so 'screen and audio' is not split on ' and '
 import re
+
+q_trimmed = raw_query.strip().strip(",.!?;:")
+q_low = q_trimmed.lower()
+
+# Fast-path 1: Direct Jarvis lockdown phrases
+if re.match(r"^(jarvis[\s,.!?;:-]+)?(lock[\s-]*down|locked[\s-]*down|log[\s-]*down|enter\s+lock[\s-]*down|lock[\s-]*down\s+mode|turn\s+off(\s+jarvis)?|shut\s+down\s+jarvis|stop\s+listening|disable\s+jarvis|go\s+to\s+sleep|bloquear(\s+jarvis)?|modo\s+bloqueio|desligar\s+jarvis)$", q_low):
+    print("ACT\t1.00\tjarvis_lockdown\tsys lockdown")
+    sys.exit(0)
+
+# Fast-path 2: Window manager instructions & "how do I..." questions
+if (
+    re.match(r"^(how\s+do\s+i|how\s+can\s+i|how\s+to|what\s+is\s+the\s+(shortcut|keybinding|key|command)|what\s+(shortcut|keybinding|key)|which\s+(shortcut|key)|tell\s+me\s+how\s+to|explain\s+how\s+to|can\s+you\s+(tell|explain|show)\s+me\s+how|give\s+me\s+instructions|instructions\s+(on|for)|help\s+me\s+use|como\s+(fa[cç]o|posso|usar|utilizar)|qual\s+([eé]\s+)?o\s+atalho|instru[cç][oõ]es\s+(para|de|do))\b", q_low)
+    or re.search(r"\b(window\s+manager\s+(instructions|help|shortcuts|guide)|dwm\s+(instructions|help|shortcuts|guide)|(show|open)\s+(keyboard\s+)?shortcuts|mostrar\s+atalhos|ajuda\s+do\s+(dwm|gestor\s+de\s+janelas))\b", q_low)
+):
+    safe_q = q_trimmed.replace('"', "")
+    print(f'ACT\t0.99\twm_help\thelp "{safe_q}"')
+    sys.exit(0)
+
 norm_query = raw_query
 for pat, rep in (
     (r"(?i)\b(screen|desktop|video)\s+and\s+(audio|sound|mic|microphone|voice)\b", r"\1 with \2"),
@@ -578,12 +602,24 @@ PYEOF
 
     case "$status" in
         ACT)
-            notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
-            exec /home/quirinpa/.local/bin/dwm-act exec "$cmd"
+            notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
+            printf '%s\n' "$$" > "/tmp/dwm-acting-$USER.pid"
+            refresh_bar
+            /home/quirinpa/.local/bin/dwm-act exec "$cmd"
+            rc=$?
+            rm -f "/tmp/dwm-acting-$USER.pid"
+            refresh_bar
+            exit "$rc"
             ;;
         OK)
-            notify_auren "  Auren → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
-            exec /bin/sh -c "$cmd"
+            notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
+            printf '%s\n' "$$" > "/tmp/dwm-acting-$USER.pid"
+            refresh_bar
+            /bin/sh -c "$cmd"
+            rc=$?
+            rm -f "/tmp/dwm-acting-$USER.pid"
+            refresh_bar
+            exit "$rc"
             ;;
         *)
             word_count=$(printf '%s\n' "$query" | wc -w | tr -d ' ')
@@ -591,7 +627,7 @@ PYEOF
             if [ "${word_count:-0}" -ge 2 ] && [ "${alnum_len:-0}" -ge 6 ]; then
                 exec /home/quirinpa/.local/bin/dwm-jarvis-pi send "$query"
             fi
-            notify_auren "  Low Confidence" "“${query}”"
+            notify_auren "  Low Confidence" "“${query}”"
             return 1
             ;;
     esac

@@ -70,7 +70,7 @@ static BarConfig cfg = {
 	.cpu_crit     = 10,
 	.bat_warn     = 30,
 	.bat_crit     = 15,
-	.modules      = "host mem cpu voice vol net bat kbd cal date time gear"
+	.modules      = "host voice mem cpu vol net bat kbd cal date time gear"
 };
 
 static volatile sig_atomic_t running = 1;
@@ -276,8 +276,9 @@ static void
 seg_voice(char *out, size_t len, const char *user)
 {
 	char path[256], buf[160], jpid_path[256], jpid_buf[32];
+	char apid_path[256], apid_buf[32];
 	char pi_path[256], pi_buf[64], rpid_path[256], rpid_buf[32], extra_tags[64];
-	int pi_working = 0, scr_rec = 0;
+	int pi_working = 0, scr_rec = 0, acting = 0, jarvis_on = 0;
 
 	out[0] = '\0';
 	snprintf(pi_path, sizeof(pi_path), "/tmp/dwm-pi-%s.state", user);
@@ -292,60 +293,44 @@ seg_voice(char *out, size_t len, const char *user)
 			scr_rec = 1;
 	}
 	snprintf(extra_tags, sizeof(extra_tags), "%s%s",
-		scr_rec ? "  REC" : "",
-		pi_working ? "  Pi" : "");
-	const char *pi_tag = extra_tags;
+		scr_rec ? C_VOC "  REC" : "",
+		pi_working ? C_ICO "  Pi" : "");
+
+	snprintf(apid_path, sizeof(apid_path), "/tmp/dwm-acting-%s.pid", user);
+	if (read_small_file(apid_path, apid_buf, sizeof(apid_buf)) > 0) {
+		int apid = atoi(apid_buf);
+		if (apid > 1 && kill((pid_t)apid, 0) == 0)
+			acting = 1;
+	}
 
 	snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
 	if (read_small_file(path, buf, sizeof(buf)) > 0) {
-		if (!strncmp(buf, "rec:", 4) && buf[4]) {
-			const char *txt = buf + 4;
-			while (*txt == ' ')
-				txt++;
-			size_t tlen = strlen(txt);
-			if (tlen > 28) {
-				txt += (tlen - 28);
-				while (*txt && ((*txt & 0xC0) == 0x80))
-					txt++;
-			}
-			snprintf(out, len, "%s    REC%s %.28s", C_VOC, C_VAL, txt);
-			return;
-		} else if (!strncmp(buf, "rec", 3)) {
-			snprintf(out, len, "%s    REC", C_VOC);
-			return;
-		} else if ((!strncmp(buf, "cmd:", 4) && buf[4]) ||
-		           (!strncmp(buf, "jarvis-cmd:", 11) && buf[11])) {
-			const char *txt = strchr(buf, ':') + 1;
-			while (*txt == ' ')
-				txt++;
-			size_t tlen = strlen(txt);
-			if (tlen > 28) {
-				txt += (tlen - 28);
-				while (*txt && ((*txt & 0xC0) == 0x80))
-					txt++;
-			}
-			snprintf(out, len, "%s    JARVIS%s %.28s", C_VOC, C_VAL, txt);
-			return;
-		} else if (!strncmp(buf, "cmd", 3) || !strncmp(buf, "jarvis-cmd", 10)) {
-			snprintf(out, len, "%s    JARVIS", C_VOC);
-			return;
-		} else if (!strncmp(buf, "transcribing", 12)) {
-			snprintf(out, len, "%s%s    ...", C_VOC, C_WRN);
-			return;
+		if (!strncmp(buf, "jarvis-cmd", 10) ||
+		    !strncmp(buf, "cmd", 3) ||
+		    !strncmp(buf, "acting", 6)) {
+			acting = 1;
 		} else if (!strncmp(buf, "jarvis", 6)) {
-			snprintf(out, len, "%s%s   %s J%s", C_VOC, C_ICO, C_VAL, pi_tag);
-			return;
+			jarvis_on = 1;
 		}
 	}
+
 	snprintf(jpid_path, sizeof(jpid_path), "/tmp/dwm-jarvis-%s.pid", user);
 	if (read_small_file(jpid_path, jpid_buf, sizeof(jpid_buf)) > 0) {
 		int jpid = atoi(jpid_buf);
-		if (jpid > 1 && kill((pid_t)jpid, 0) == 0) {
-			snprintf(out, len, "%s%s   %s J%s", C_VOC, C_ICO, C_VAL, pi_tag);
-			return;
-		}
+		if (jpid > 1 && kill((pid_t)jpid, 0) == 0)
+			jarvis_on = 1;
 	}
-	snprintf(out, len, "%s%s   %s", C_VOC, C_ICO, pi_tag);
+
+	if (acting) {
+		/* Red robot icon: Jarvis heard wake word / capturing or executing command */
+		snprintf(out, len, "%s   %s", C_VOC, extra_tags);
+	} else if (jarvis_on) {
+		/* Yellow robot icon: Jarvis is On and listening for wake word */
+		snprintf(out, len, "%s%s   %s", C_VOC, C_WRN, extra_tags);
+	} else {
+		/* Silver robot icon: Jarvis is Off (lockdown) */
+		snprintf(out, len, "%s%s   %s", C_VOC, C_VAL, extra_tags);
+	}
 }
 
 static void
@@ -557,7 +542,14 @@ main(void)
 		}
 	}
 
-	signal(SIGUSR1, on_sigusr1);
+	{
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sa.sa_handler = on_sigusr1;
+		sigemptyset(&sa.sa_mask);
+		sa.sa_flags = 0; /* interrupt poll() immediately on SIGUSR1 */
+		sigaction(SIGUSR1, &sa, NULL);
+	}
 	signal(SIGTERM, on_sigterm);
 	signal(SIGINT, on_sigterm);
 	signal(SIGCHLD, SIG_IGN);
