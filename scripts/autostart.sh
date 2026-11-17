@@ -6,9 +6,10 @@ if command -v xrandr >/dev/null 2>&1; then
     xrandr --output eDP-1 --mode 1600x900
 fi
 
-# 2. Load Xresources (xterm Catppuccin Mocha theme, fonts, padding)
+# 2. Load Xresources (xterm & dwm Catppuccin Mocha theme, fonts, padding, bar/auren prefs)
 if [ -f "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1; then
     xrdb -merge "$HOME/.Xresources"
+    command -v dwm-msg >/dev/null 2>&1 && dwm-msg reload 2>/dev/null || true
 fi
 
 # 3. Import X11 environment into systemd/DBus and ensure portal is healthy in background
@@ -47,216 +48,12 @@ elif [ -x /usr/lib/notification-daemon/notification-daemon ]; then
     /usr/lib/notification-daemon/notification-daemon &
 fi
 
-# 6. Minimalist UTF-8 status bar loop (FontAwesome glyphs + Catppuccin Mocha colors + clickable segments)
-# Supports instant refresh on SIGUSR1 (used by dwm-ctl for <20ms volume updates)
-# Kill any stale status bar loop from a prior reload before starting a new one
+# 6. Start pure-C event-driven status bar daemon (dwm-bar)
 if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
     old_pid=$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)
     if [ -n "$old_pid" ]; then
         kill "$old_pid" 2>/dev/null || true
     fi
 fi
-(
-    my_pid=$(sh -c 'echo $PPID')
-    printf '%s\n' "$my_pid" > "/tmp/dwm-bar-$USER.pid"
-    trap ':' USR1
-    c_wrn=$(printf '\014')
-    c_off=$(printf '\015')
-    c_ico=$(printf '\016')
-    c_val=$(printf '\017')
-    c_sys_ok=$(printf '\020')
-    c_mem=$(printf '\023')
-    c_cpu=$(printf '\024')
-    c_vol=$(printf '\025')
-    c_vmu=$(printf '\026')
-    c_net=$(printf '\027')
-    c_bok=$(printf '\030')
-    c_bwn=$(printf '\031')
-    c_bcr=$(printf '\032')
-    c_dat=$(printf '\033')
-    c_voc=$(printf '\034')
-    c_ger=$(printf '\035')
-    c_tup=$(printf '\036')
-    c_tdn=$(printf '\037')
-    c_kbd=$(printf '\013')
-    last_tty_ts=0
-    last_cal_check_ts=0
-    last_cal_sync_ts=0
-    while [ "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" = "$my_pid" ]; do
-        # tty.pt online state ( cool steel when up, red when down; cached 10s so SIGUSR1 stays <20ms)
-        now_ts=$(date +%s)
-        if [ $(( now_ts - last_tty_ts )) -ge 10 ]; then
-            last_tty_ts="$now_ts"
-            if [ ! -f "/tmp/dwm-tty-$USER.state" ]; then
-                if ping -c 1 -W 1 tty.pt >/dev/null 2>&1; then
-                    printf 'up\n' > "/tmp/dwm-tty-$USER.state"
-                else
-                    printf 'down\n' > "/tmp/dwm-tty-$USER.state"
-                fi
-            else
-                (
-                    if ping -c 1 -W 2 tty.pt >/dev/null 2>&1; then
-                        printf 'up\n' > "/tmp/dwm-tty-$USER.state.tmp"
-                    else
-                        printf 'down\n' > "/tmp/dwm-tty-$USER.state.tmp"
-                    fi
-                    mv -f "/tmp/dwm-tty-$USER.state.tmp" "/tmp/dwm-tty-$USER.state"
-                ) &
-            fi
-        fi
-        if [ "$(cat "/tmp/dwm-tty-$USER.state" 2>/dev/null)" = "up" ]; then
-            tty_seg="${c_tup}  "
-        else
-            tty_seg="${c_tdn}  "
-        fi
-
-        # Memory (): two-tone <70%, amber 70-84%, red >=85%
-        mem_info=$(awk '/MemAvailable/ {avail=$2} /MemTotal/ {total=$2} END {used=total-avail; pct=(total>0)?int(used*100/total):0; printf "%.1fG %d", used/1048576, pct}' /proc/meminfo 2>/dev/null)
-        mem=${mem_info% *}
-        mem_pct=${mem_info#* }
-        if [ "${mem_pct:-0}" -ge 85 ]; then
-            mem_seg="${c_cpu}    ${mem}"
-        elif [ "${mem_pct:-0}" -ge 70 ]; then
-            mem_seg="${c_mem}    ${mem}"
-        else
-            mem_seg="${c_sys_ok}${c_ico}   ${c_val} ${mem}"
-        fi
-
-        # CPU load (): two-tone <4.0, amber 4.0-9.99, red >=10.0
-        load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null)
-        load_int=${load%.*}
-        if [ "${load_int:-0}" -ge 10 ]; then
-            cpu_seg="${c_cpu}    ${load}"
-        elif [ "${load_int:-0}" -ge 4 ]; then
-            cpu_seg="${c_mem}    ${load}"
-        else
-            cpu_seg="${c_sys_ok}${c_ico}   ${c_val} ${load}"
-        fi
-
-        # Whisper voice recording / transcribing indicator ( REC /  ...)
-        voc_seg=""
-        if [ -f "/tmp/dwm-voice-$USER.state" ]; then
-            case "$(cat "/tmp/dwm-voice-$USER.state" 2>/dev/null)" in
-                rec*)
-                    voc_seg="${c_voc}    REC"
-                    ;;
-                transcribing*)
-                    voc_seg="${c_bwn}    ..."
-                    ;;
-            esac
-        fi
-
-        # Audio volume via PipeWire wpctl ( /  / )
-        vol_seg=""
-        if command -v wpctl >/dev/null 2>&1; then
-            vol_out=$(wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null)
-            if [ -n "$vol_out" ]; then
-                vol_pct=$(printf '%s\n' "$vol_out" | awk '{printf "%d", $2 * 100}')
-                case "$vol_out" in
-                    *MUTED*)
-                        vol_seg="${c_vmu}    ×"
-                        ;;
-                    *)
-                        if [ "${vol_pct:-0}" -eq 0 ]; then
-                            vol_glyph=""
-                        elif [ "${vol_pct:-0}" -lt 40 ]; then
-                            vol_glyph=""
-                        else
-                            vol_glyph=""
-                        fi
-                        vol_seg="${c_vol}   ${vol_glyph}${c_val} ${vol_pct}%"
-                        ;;
-                esac
-            fi
-        fi
-
-        # Network state + active SSID / connection name ( Wi-Fi /  Ethernet)
-        net_seg=""
-        wifi_ssid=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="wifi" && $2=="connected" {print $3; exit}')
-        if [ -n "$wifi_ssid" ]; then
-            net_seg="${c_net}   ${c_val} ${wifi_ssid}"
-        else
-            for w in /sys/class/net/wl*/operstate; do
-                if [ -f "$w" ] && [ "$(cat "$w" 2>/dev/null)" = "up" ]; then
-                    net_seg="${c_net}   "
-                    break
-                fi
-            done
-        fi
-        if [ -z "$net_seg" ]; then
-            eth_conn=$(nmcli -t -f TYPE,STATE,CONNECTION dev 2>/dev/null | awk -F: '$1=="ethernet" && $2=="connected" {print $3; exit}')
-            if [ -n "$eth_conn" ]; then
-                net_seg="${c_net}   ${c_val} ${eth_conn}"
-            else
-                for e in /sys/class/net/en*/operstate; do
-                    if [ -f "$e" ] && [ "$(cat "$e" 2>/dev/null)" = "up" ]; then
-                        net_seg="${c_net}   "
-                        break
-                    fi
-                done
-            fi
-        fi
-        if [ -z "$net_seg" ]; then
-            net_seg="${c_net}${c_off}    no signal"
-        fi
-
-        # Dynamic Battery: 5 fullness levels (    ) or bolt () when connected to power
-        bat_seg=""
-        ac_online=$(cat /sys/class/power_supply/AC*/online 2>/dev/null | head -n 1)
-        for b in /sys/class/power_supply/BAT*; do
-            if [ -f "$b/capacity" ]; then
-                cap=$(cat "$b/capacity" 2>/dev/null)
-                status=$(cat "$b/status" 2>/dev/null)
-                if [ "${cap:-0}" -ge 85 ]; then
-                    bat_icon=""
-                elif [ "${cap:-0}" -ge 60 ]; then
-                    bat_icon=""
-                elif [ "${cap:-0}" -ge 35 ]; then
-                    bat_icon=""
-                elif [ "${cap:-0}" -ge 15 ]; then
-                    bat_icon=""
-                else
-                    bat_icon=""
-                fi
-                bat_seg="${c_bok}   ${bat_icon}${c_val} ${cap}%"
-                case "$status" in
-                    Charging|Full|"Not charging")
-                        bat_seg="${c_bok}   ${c_val} ${cap}%"
-                        ;;
-                    *)
-                        if [ "$ac_online" = "1" ]; then
-                            bat_seg="${c_bok}   ${c_val} ${cap}%"
-                        elif [ "${cap:-0}" -lt 15 ]; then
-                            bat_seg="${c_bcr}   ${bat_icon} ${cap}%"
-                        elif [ "${cap:-0}" -lt 30 ]; then
-                            bat_seg="${c_bwn}   ${bat_icon} ${cap}%"
-                        fi
-                        ;;
-                esac
-                break
-            fi
-        done
-
-        # Calendar sync (every 4 hours) & upcoming 30-min meeting check (every 60s)
-        if [ $(( now_ts - last_cal_sync_ts )) -ge 14400 ]; then
-            last_cal_sync_ts="$now_ts"
-            /home/quirinpa/.local/bin/dwm-cal sync --quiet >/dev/null 2>&1 &
-        elif [ $(( now_ts - last_cal_check_ts )) -ge 60 ]; then
-            last_cal_check_ts="$now_ts"
-            /home/quirinpa/.local/bin/dwm-cal refresh-upcoming >/dev/null 2>&1 &
-        fi
-        cal_alert_seg=""
-        if [ -s "/tmp/dwm-cal-$USER.upcoming" ]; then
-            cal_alert_seg="${c_dat}${c_wrn}    $(head -n 1 "/tmp/dwm-cal-$USER.upcoming" 2>/dev/null)"
-        fi
-
-        # Keyboard layout indicator ( US / PT)
-        kbd_layout=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print toupper($2)}')
-        [ -z "$kbd_layout" ] && kbd_layout="US"
-        kbd_seg="${c_kbd}   ${c_val} ${kbd_layout}"
-
-        xsetroot -name "${tty_seg}${mem_seg}${cpu_seg}${voc_seg}${vol_seg}${net_seg}${bat_seg}${kbd_seg}${cal_alert_seg}${c_dat}   ${c_val} $(date '+%d/%m')${c_dat}   ${c_val} $(date '+%H:%M')   ${c_ger}  "
-        sleep 5 &
-        wait $!
-    done
-) &
+pkill -x dwm-bar 2>/dev/null || true
+/home/quirinpa/.local/bin/dwm-bar &
