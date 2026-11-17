@@ -18,12 +18,36 @@ NF="#cdd6f4"
 
 mkdir -p "$CONF_DIR" "$MODEL_DIR"
 
+get_xres() {
+    key="$1"
+    def="$2"
+    val=""
+    if command -v xrdb >/dev/null 2>&1; then
+        val=$(xrdb -query 2>/dev/null | awk -v k="${key}:" '$1 == k {sub(/^[^:]+:[ \t]*/, ""); print; exit}')
+    fi
+    [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
+}
+
 get_lang() {
     if [ -f "$CONF_DIR/lang" ]; then
-        cat "$CONF_DIR/lang" 2>/dev/null
-    else
-        printf 'auto'
+        cfg_lang=$(cat "$CONF_DIR/lang" 2>/dev/null)
+        if [ -n "$cfg_lang" ] && [ "$cfg_lang" != "kbd" ]; then
+            printf '%s' "$cfg_lang"
+            return
+        fi
     fi
+    auto_kbd=$(get_xres "dwm.voice.auto_kbd_lang" "true")
+    if [ "$auto_kbd" = "true" ] || [ "$auto_kbd" = "1" ]; then
+        kbd=$(setxkbmap -query 2>/dev/null | awk '/^layout:/ {print $2}')
+        if [ "$kbd" = "pt" ]; then
+            printf 'pt'
+            return
+        elif [ "$kbd" = "us" ]; then
+            printf 'en'
+            return
+        fi
+    fi
+    printf 'auto'
 }
 
 get_model() {
@@ -88,7 +112,9 @@ start_recording() {
     refresh_bar
 
     lang=$(get_lang)
-    if [ "$out_mode" = "clip" ]; then
+    if [ "$out_mode" = "cmd" ]; then
+        notify_voice "voice-rec" 30000 "  Recording Voice Command (axil-auren)..." "Lang: ${lang}  |  Speak a command in EN or PT"
+    elif [ "$out_mode" = "clip" ]; then
         notify_voice "voice-rec" 30000 "  Recording Voice (xsel only)..." "Lang: ${lang}  |  Press Mod+v to stop & copy"
     else
         notify_voice "voice-rec" 30000 "  Recording Voice..." "Lang: ${lang}  |  Press Mod+v to stop & dictate"
@@ -161,7 +187,9 @@ stop_recording() {
         printf '%s' "$text" | xsel -ip 2>/dev/null || true
     fi
 
-    if [ "$out_mode" = "type" ] && command -v xdotool >/dev/null 2>&1; then
+    if [ "$out_mode" = "cmd" ]; then
+        exec /home/quirinpa/.local/bin/dwm-auren query "$text"
+    elif [ "$out_mode" = "type" ] && command -v xdotool >/dev/null 2>&1; then
         # Release any held hotkey modifiers before typing into the active window
         xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R v V 2>/dev/null || true
         xdotool type --clearmodifiers --delay 4 -- "$text" 2>/dev/null || true
@@ -198,12 +226,18 @@ voice_menu() {
         last_preview=$(cut -c 1-42 "$LAST_TXT" 2>/dev/null)
     fi
 
-    choice=$(printf "  Start Dictation — Type + xsel (Mod+v)\n  Start Dictation — Clipboard / xsel Only\n  Type Last Transcript: %s\n  Copy Last Transcript to xsel\n🌐  Language [current: %s]\n  Model [current: %s]\n" "$last_preview" "$lang" "$model" | \
-        dmenu_voice "Whisper:" 6 "#f5e0dc")
+    choice=$(printf "  Start Dictation — Type + xsel (Mod+v)\n  Voice Command Mode — axil-auren Semantic Action\n🔍  Type / Browse Semantic Intents (dwm-auren)\n  Start Dictation — Clipboard / xsel Only\n  Type Last Transcript: %s\n  Copy Last Transcript to xsel\n🌐  Language [current: %s]\n  Model [current: %s]\n" "$last_preview" "$lang" "$model" | \
+        dmenu_voice "Whisper:" 8 "#f5e0dc")
 
     case "$choice" in
         *"Start Dictation — Type"*)
             start_recording "type"
+            ;;
+        *"Voice Command Mode"*)
+            start_recording "cmd"
+            ;;
+        *"Semantic Intents"*)
+            exec /home/quirinpa/.local/bin/dwm-auren dmenu
             ;;
         *"Start Dictation — Clipboard"*)
             start_recording "clip"
@@ -227,8 +261,8 @@ voice_menu() {
             fi
             ;;
         *"Language"*)
-            lchoice=$(printf "auto  (Auto-detect language)\nen    (English)\npt    (Portuguese)\nes    (Spanish)\nfr    (French)\nde    (German)\n" | \
-                dmenu_voice "Whisper Lang:" 6 "#f5e0dc")
+            lchoice=$(printf "kbd   (Follow US/PT keyboard layout automatically)\nauto  (Whisper auto-detect language)\nen    (English)\npt    (Portuguese)\nes    (Spanish)\nfr    (French)\nde    (German)\n" | \
+                dmenu_voice "Whisper Lang:" 7 "#f5e0dc")
             if [ -n "$lchoice" ]; then
                 new_lang=$(printf '%s\n' "$lchoice" | awk '{print $1}')
                 printf '%s' "$new_lang" > "$CONF_DIR/lang"
@@ -272,6 +306,14 @@ case "${1:-toggle}" in
             stop_recording
         else
             start_recording "clip"
+        fi
+        ;;
+    cmd|command|auren)
+        if is_recording; then
+            printf 'cmd\n' > "$MODE_FILE"
+            stop_recording
+        else
+            start_recording "cmd"
         fi
         ;;
     start)

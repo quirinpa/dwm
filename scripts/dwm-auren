@@ -1,0 +1,167 @@
+#!/bin/sh
+# dwm-auren: Declarative semantic desktop command router powered by axil-auren (/v1/systemone)
+# Configured via ~/.Xresources (dwm.auren.*) and ~/.config/dwm/intents.conf
+export PATH="$HOME/.local/bin:$PATH"
+
+CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
+
+get_xres() {
+    key="$1"
+    def="$2"
+    val=""
+    if command -v xrdb >/dev/null 2>&1; then
+        val=$(xrdb -query 2>/dev/null | awk -v k="${key}:" '$1 == k {sub(/^[^:]+:[ \t]*/, ""); print; exit}')
+    fi
+    if [ -n "$val" ]; then
+        printf '%s' "$val"
+    else
+        printf '%s' "$def"
+    fi
+}
+
+AUREN_URL=$(get_xres "dwm.auren.url" "http://localhost:4242/v1/systemone")
+case "$AUREN_URL" in
+    http://*|https://*) ;;
+    *) AUREN_URL="http://localhost:4242/v1/systemone" ;;
+esac
+AUREN_MODEL=$(get_xres "dwm.auren.model" "bge-base")
+AUREN_THRESHOLD=$(get_xres "dwm.auren.threshold" "0.68")
+NB=$(get_xres "dwm.normbgcolor" "#11111b")
+NF=$(get_xres "dwm.normfgcolor" "#a6adc8")
+SB=$(get_xres "dwm.mauvecolor" "#7c6ff2")
+SF=$(get_xres "dwm.selfgcolor" "#ffffff")
+FN="Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true"
+
+notify_auren() {
+    title="$1"
+    body="$2"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t 3000 -h string:x-dunst-stack-tag:auren "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+run_query() {
+    query="$1"
+    dry_run="$2"
+    [ -z "$query" ] && exit 0
+    if [ ! -f "$CONF_FILE" ]; then
+        notify_auren "  Auren Router" "Missing $CONF_FILE"
+        exit 1
+    fi
+
+    # Build /v1/systemone JSON request & evaluate response via python3 (zero external deps, safe JSON encoding)
+    eval_out=$(python3 - "$CONF_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$query" << 'PYEOF'
+import sys, json, urllib.request
+
+conf_path, url, model, thresh_s, query = sys.argv[1:6]
+thresh = float(thresh_s)
+labels = {}
+commands = {}
+
+with open(conf_path, "r", encoding="utf-8") as f:
+    for line in f:
+        line = line.strip()
+        if not line or line.startswith("#") or "|" not in line:
+            continue
+        parts = [p.strip() for p in line.split("|", 2)]
+        if len(parts) < 3:
+            continue
+        iid, cmd, ex_str = parts
+        exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
+        if iid and cmd and exemplars:
+            labels[iid] = exemplars
+            commands[iid] = cmd
+
+payload = json.dumps({"model": model, "text": query, "labels": labels}).encode("utf-8")
+req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"}, method="POST")
+try:
+    with urllib.request.urlopen(req, timeout=8.0) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+except Exception as e:
+    print(f"ERR\t0.00\t{e}\t")
+    sys.exit(0)
+
+choice = data.get("choice") or data.get("decision") or ""
+sim = float(data.get("similarity") or data.get("confidence") or 0.0)
+cmd = commands.get(choice, "")
+if choice and cmd and sim >= thresh:
+    print(f"OK\t{sim:.2f}\t{choice}\t{cmd}")
+else:
+    print(f"LOW\t{sim:.2f}\t{choice}\t{cmd}")
+PYEOF
+    )
+
+    status=$(printf '%s\n' "$eval_out" | cut -f1)
+    score=$(printf '%s\n' "$eval_out" | cut -f2)
+    intent=$(printf '%s\n' "$eval_out" | cut -f3)
+    cmd=$(printf '%s\n' "$eval_out" | cut -f4-)
+
+    if [ "$dry_run" = "--dry-run" ]; then
+        printf 'status=%s score=%s intent=%s cmd=%s\n' "$status" "$score" "$intent" "$cmd"
+        return 0
+    fi
+
+    case "$status" in
+        OK)
+            notify_auren "  Auren → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
+            exec /bin/sh -c "$cmd"
+            ;;
+        LOW)
+            notify_auren "  Low Confidence (${score} < ${AUREN_THRESHOLD})" "“${query}”\nClosest: ${intent:-none}"
+            return 1
+            ;;
+        *)
+            notify_auren "  axil-auren Unreachable" "Check ${AUREN_URL}"
+            return 1
+            ;;
+    esac
+}
+
+case "${1:-dmenu}" in
+    dmenu|omni)
+        # Show interactive prompt where user can either type natural language OR pick a listed intent
+        selection=$(awk -F'|' '
+            !/^[[:space:]]*#/ && NF >= 3 {
+                id=$1; cmd=$2; ex=$3;
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", id);
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd);
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", ex);
+                split(ex, arr, ";");
+                printf "%-16s  ▸ %-28s (%s)\n", id, cmd, arr[1];
+            }
+        ' "$CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Auren Intent / NL:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        [ -z "$selection" ] && exit 0
+        # If user selected an exact row from the list, extract the command directly; otherwise classify via axil-auren
+        if printf '%s\n' "$selection" | grep -q "▸"; then
+            direct_id=$(printf '%s\n' "$selection" | awk '{print $1}')
+            direct_cmd=$(awk -F'|' -v target="$direct_id" '
+                !/^[[:space:]]*#/ && NF >= 3 {
+                    id=$1; gsub(/^[[:space:]]+|[[:space:]]+$/, "", id);
+                    if (id == target) {
+                        cmd=$2; gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd);
+                        print cmd; exit;
+                    }
+                }
+            ' "$CONF_FILE")
+            if [ -n "$direct_cmd" ]; then
+                notify_auren "  Auren → ${direct_id}" "▸ ${direct_cmd}"
+                exec /bin/sh -c "$direct_cmd"
+            fi
+        fi
+        run_query "$selection"
+        ;;
+    query|exec)
+        shift
+        run_query "$*"
+        ;;
+    dry-run)
+        shift
+        run_query "$*" "--dry-run"
+        ;;
+    edit-config)
+        exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="Auren Intents Config" -e "${EDITOR:-vi}" "$CONF_FILE"
+        ;;
+    *)
+        run_query "$*"
+        ;;
+esac

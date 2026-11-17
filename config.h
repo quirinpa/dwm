@@ -157,6 +157,8 @@ static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window
 static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
 static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/dwm-voice", "toggle", NULL };
 static const char *voicemenu[] = { "/home/quirinpa/.local/bin/dwm-voice", "menu", NULL };
+static const char *voicecmdm[] = { "/home/quirinpa/.local/bin/dwm-voice", "cmd", NULL };
+static const char *aurencmd[]  = { "/home/quirinpa/.local/bin/dwm-auren", "dmenu", NULL };
 static const char *kbdtoggle[] = { "/home/quirinpa/.local/bin/dwm-ctl", "kbd-toggle", NULL };
 
 static const Key keys[] = {
@@ -167,6 +169,8 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_slash,  spawn,          {.v = helpcmd } },
 	{ MODKEY,                       XK_v,      spawn,          {.v = voicecmd } },
 	{ MODKEY|ShiftMask,             XK_v,      spawn,          {.v = voicemenu } },
+	{ MODKEY|ControlMask,           XK_v,      spawn,          {.v = voicecmdm } },
+	{ MODKEY,                       XK_a,      spawn,          {.v = aurencmd } },
 	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
 	{ MODKEY,                       XK_s,      spawn,          {.v = sysmenucmd } },
 	{ MODKEY|ShiftMask,             XK_l,      spawn,          {.v = lockcmd } },

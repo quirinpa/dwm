@@ -126,9 +126,10 @@ case "$1" in
         fi
         ;;
     power-menu)
-        choice=$(printf "  Calendar & Google Sync (ikhal)\n  Voice Dictation (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
-            dmenu_themed "System:" 13 "#7c6ff2" "#cdd6f4")
+        choice=$(printf "  Auren Semantic Command Bar (Mod+a)\n  Calendar & Google Sync (ikhal)\n  Voice Dictation / Command (Mod+v / Mod+Ctrl+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
+            dmenu_themed "System:" 14 "#7c6ff2" "#cdd6f4")
         case "$choice" in
+            *"Auren Semantic"*)     exec /home/quirinpa/.local/bin/dwm-auren dmenu ;;
             *"Calendar"*)           exec /home/quirinpa/.local/bin/dwm-cal menu ;;
             *"Voice Dictation"*)    exec /home/quirinpa/.local/bin/dwm-voice menu ;;
             *"Keyboard Layout"*)    exec "$0" kbd-menu ;;
@@ -145,7 +146,7 @@ case "$1" in
         esac
         ;;
     reload-xrdb)
-        [ -f "$HOME/.Xresources" ] && xrdb -merge "$HOME/.Xresources" 2>/dev/null
+        [ -f "$HOME/.Xresources" ] && xrdb -nocpp -merge "$HOME/.Xresources" 2>/dev/null
         /home/quirinpa/.local/bin/dwm-msg reload 2>/dev/null || true
         refresh_bar
         if command -v notify-send >/dev/null 2>&1; then

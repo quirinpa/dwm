@@ -8,7 +8,7 @@ fi
 
 # 2. Load Xresources (xterm & dwm Catppuccin Mocha theme, fonts, padding, bar/auren prefs)
 if [ -f "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1; then
-    xrdb -merge "$HOME/.Xresources"
+    xrdb -nocpp -merge "$HOME/.Xresources"
     command -v dwm-msg >/dev/null 2>&1 && dwm-msg reload 2>/dev/null || true
 fi
 
