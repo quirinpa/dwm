@@ -1,2 +1,4 @@
-dwm
 *.o
+dwm
+dwm-msg
+dwm-bar
