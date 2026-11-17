@@ -1051,8 +1051,24 @@ contains_wake_word(const char *text, const char *wake_word)
 }
 
 static void
-poll_control_socket(int srv, int is_jarvis_idle)
+poll_control_socket(int srv, int cli, int is_jarvis_idle)
 {
+	if (cli >= 0) {
+		struct pollfd cpfd;
+		cpfd.fd = cli;
+		cpfd.events = POLLIN | POLLHUP | POLLERR;
+		cpfd.revents = 0;
+		if (poll(&cpfd, 1, 0) > 0) {
+			char peek;
+			if ((cpfd.revents & (POLLHUP | POLLERR)) ||
+			    ((cpfd.revents & POLLIN) && recv(cli, &peek, 1, MSG_PEEK | MSG_DONTWAIT) == 0)) {
+				g_cancel_req = 1;
+				g_dec.abort_flag = 1;
+				return;
+			}
+		}
+	}
+
 	struct pollfd pfd;
 	pfd.fd = srv;
 	pfd.events = POLLIN;
@@ -1086,7 +1102,9 @@ poll_control_socket(int srv, int is_jarvis_idle)
 			g_dec.abort_flag = 1;
 			write_all(cfd, "OK\n", 3);
 			close(cfd);
-		} else if (is_jarvis_idle && strncmp(cbuf, "STREAM|", 7) == 0 && g_preempt_cli < 0) {
+		} else if (is_jarvis_idle &&
+		           (strncmp(cbuf, "STREAM|", 7) == 0 || strncmp(cbuf, "JARVIS_WAIT|", 12) == 0) &&
+		           g_preempt_cli < 0) {
 			g_preempt_cli = cfd;
 			snprintf(g_preempt_buf, sizeof(g_preempt_buf), "%s", cbuf);
 			g_cancel_req = 1;
@@ -1166,7 +1184,7 @@ handle_stream(int srv, int cli, const char *mode, const char *lang,
 	long t_start = now_ms();
 
 	while (running && !g_stop_req && !g_cancel_req) {
-		poll_control_socket(srv, 0);
+		poll_control_socket(srv, cli, 0);
 		if (g_stop_req || g_cancel_req)
 			break;
 
@@ -1420,7 +1438,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 		cmd_silence_ms = 360;
 
 	while (running && !g_stop_req && !g_cancel_req) {
-		poll_control_socket(srv, !wake_confirmed);
+		poll_control_socket(srv, cli, !wake_confirmed);
 		if (g_stop_req || g_cancel_req)
 			break;
 
@@ -1759,6 +1777,8 @@ send_control_msg(int port, const char *msg)
 static int
 run_client_mode(int port, const char *req)
 {
+	signal(SIGHUP, SIG_IGN);
+	signal(SIGPIPE, SIG_IGN);
 	struct sigaction sa;
 	memset(&sa, 0, sizeof(sa));
 	sa.sa_handler = on_cli_sigint;
@@ -1993,6 +2013,7 @@ main(int argc, char *argv[])
 
 	signal(SIGINT, on_sig);
 	signal(SIGTERM, on_sig);
+	signal(SIGHUP, SIG_IGN);
 	signal(SIGPIPE, SIG_IGN);
 	signal(SIGCHLD, SIG_IGN);
 

@@ -204,6 +204,10 @@ is_jarvis_running() {
 restore_idle_state() {
     if is_jarvis_running; then
         printf 'jarvis\n' > "$STATE_FILE"
+    elif [ -f "$JARVIS_PID_FILE" ]; then
+        rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
+        setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
+        printf 'jarvis\n' > "$STATE_FILE"
     else
         rm -f "$STATE_FILE"
     fi
@@ -227,7 +231,7 @@ ensure_whisper_server() {
 
     if command -v dwm-whisperd >/dev/null 2>&1; then
         model=$(get_model)
-        dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 >/dev/null 2>&1 &
+        setsid dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 </dev/null >/dev/null 2>&1 &
         printf '%s\n' "$!" > "$SRV_PID_FILE"
         i=0
         while [ "$i" -lt 20 ]; do
@@ -424,10 +428,11 @@ cancel_recording() {
 # =============================================================================
 
 jarvis_loop() {
+    trap '' HUP
     printf '%s\n' "$$" > "$JARVIS_PID_FILE"
     ensure_chime_wav
     ensure_whisper_server
-    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/dwm-auren warmup </dev/null >/dev/null 2>&1 &
     printf 'jarvis\n' > "$STATE_FILE"
     refresh_bar
 
@@ -451,7 +456,7 @@ jarvis_loop() {
         ensure_whisper_server
         rm -f "$JARVIS_OUT"
 
-        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}" > "$JARVIS_OUT" 2>/dev/null &
+        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
         jvad_pid=$!
         printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
         wait "$jvad_pid"
@@ -475,7 +480,7 @@ jarvis_loop() {
 
         if [ "$rc" -eq 0 ] && [ -n "$cmd_text" ]; then
             printf '%s' "$cmd_text" > "$LAST_TXT"
-            /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" &
+            /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1 &
         elif [ "$rc" -eq 2 ]; then
             notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
         fi
@@ -487,8 +492,9 @@ jarvis_start() {
         notify_voice "voice" 2200 "  Jarvis Already Active" "Say “Jarvis” followed by a command."
         return 0
     fi
+    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
     ensure_whisper_server
-    "$0" jarvis-daemon >/dev/null 2>&1 &
+    setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
     sleep 0.12
     refresh_bar
     wake=$(get_wake_word)
