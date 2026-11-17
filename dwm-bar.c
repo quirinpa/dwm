@@ -275,16 +275,31 @@ seg_cpu(char *out, size_t len)
 static void
 seg_voice(char *out, size_t len, const char *user)
 {
-	char path[256], buf[64];
+	char path[256], buf[64], jpid_path[256], jpid_buf[32];
 
 	out[0] = '\0';
 	snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
-	if (read_small_file(path, buf, sizeof(buf)) <= 0)
-		return;
-	if (!strncmp(buf, "rec", 3))
-		snprintf(out, len, "%s    REC", C_VOC);
-	else if (!strncmp(buf, "transcribing", 12))
-		snprintf(out, len, "%s    ...", C_BWN);
+	if (read_small_file(path, buf, sizeof(buf)) > 0) {
+		if (!strncmp(buf, "rec", 3)) {
+			snprintf(out, len, "%s    REC", C_VOC);
+			return;
+		} else if (!strncmp(buf, "cmd", 3) || !strncmp(buf, "jarvis-cmd", 10)) {
+			snprintf(out, len, "%s    JARVIS", C_VOC);
+			return;
+		} else if (!strncmp(buf, "transcribing", 12)) {
+			snprintf(out, len, "%s%s    ...", C_VOC, C_WRN);
+			return;
+		} else if (!strncmp(buf, "jarvis", 6)) {
+			snprintf(out, len, "%s%s   %s J", C_VOC, C_ICO, C_VAL);
+			return;
+		}
+	}
+	snprintf(jpid_path, sizeof(jpid_path), "/tmp/dwm-jarvis-%s.pid", user);
+	if (read_small_file(jpid_path, jpid_buf, sizeof(jpid_buf)) > 0) {
+		int jpid = atoi(jpid_buf);
+		if (jpid > 1 && kill((pid_t)jpid, 0) == 0)
+			snprintf(out, len, "%s%s   %s J", C_VOC, C_ICO, C_VAL);
+	}
 }
 
 static void

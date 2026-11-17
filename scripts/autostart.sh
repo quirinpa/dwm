@@ -57,3 +57,13 @@ if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
 fi
 pkill -x dwm-bar 2>/dev/null || true
 /home/quirinpa/.local/bin/dwm-bar &
+
+# 7. Start warm whisper-server & Jarvis wake-word listener (if enabled in ~/.Xresources)
+(
+    jarvis_auto=$(xrdb -query 2>/dev/null | awk '$1 == "dwm.voice.jarvis_autostart:" {print $2}')
+    if [ "$jarvis_auto" = "true" ] || [ "$jarvis_auto" = "1" ]; then
+        /home/quirinpa/.local/bin/dwm-voice jarvis-start >/dev/null 2>&1 &
+    else
+        /home/quirinpa/.local/bin/dwm-voice server-start >/dev/null 2>&1 &
+    fi
+) &
