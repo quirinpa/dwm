@@ -22,14 +22,14 @@ DONE_CHIME_WAV="/tmp/dwm-voice-done-$USER.wav"
 CONF_DIR="$HOME/.config/dwm-voice"
 MODEL_DIR="$HOME/.local/share/whisper"
 
-if [ -f "$MODEL_DIR/ggml-base-q8_0.bin" ]; then
+if [ -f "$MODEL_DIR/ggml-small.en-q5_1.bin" ]; then
+    DEFAULT_MODEL="$MODEL_DIR/ggml-small.en-q5_1.bin"
+elif [ -f "$MODEL_DIR/ggml-small-q5_1.bin" ]; then
+    DEFAULT_MODEL="$MODEL_DIR/ggml-small-q5_1.bin"
+elif [ -f "$MODEL_DIR/ggml-base-q8_0.bin" ]; then
     DEFAULT_MODEL="$MODEL_DIR/ggml-base-q8_0.bin"
 elif [ -f "$MODEL_DIR/ggml-base-q5_1.bin" ]; then
     DEFAULT_MODEL="$MODEL_DIR/ggml-base-q5_1.bin"
-elif [ -f "$MODEL_DIR/ggml-tiny-q5_1.bin" ]; then
-    DEFAULT_MODEL="$MODEL_DIR/ggml-tiny-q5_1.bin"
-elif [ -f "$MODEL_DIR/ggml-small-q5_1.bin" ]; then
-    DEFAULT_MODEL="$MODEL_DIR/ggml-small-q5_1.bin"
 else
     DEFAULT_MODEL="$MODEL_DIR/ggml-base.bin"
 fi
@@ -247,7 +247,7 @@ jarvis_loop() {
         printf 'jarvis\n' > "$STATE_FILE"
         refresh_bar
 
-        thresh_db=$(get_xres "dwm.voice.threshold_db" "-32")
+        thresh_db=$(get_xres "dwm.voice.threshold_db" "-35")
         cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "500")
         wake_word=$(get_wake_word)
         lang_mode=$(get_lang_mode)

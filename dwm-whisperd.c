@@ -68,7 +68,7 @@ static struct {
 	.pw_open        = 0
 };
 
-static const char *WAKE_INITIAL_PROMPT = NULL;
+static const char *WAKE_INITIAL_PROMPT = "Jarvis.";
 static const char *CMD_INITIAL_PROMPT  = NULL;
 
 /* Non-blocking background Whisper decode worker for ctx_main */
@@ -750,7 +750,10 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 		wparams.abort_callback_user_data = NULL;
 	}
 
-	if (!eff_lang[0] || strcmp(eff_lang, "auto") == 0) {
+	if (!whisper_is_multilingual(ctx)) {
+		wparams.language = "en";
+		wparams.detect_language = false;
+	} else if (!eff_lang[0] || strcmp(eff_lang, "auto") == 0) {
 		wparams.language = "auto";
 		wparams.detect_language = false;
 	} else {
@@ -763,10 +766,11 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 	if (whisper_full(ctx, wparams, pcm, n_samples) == 0) {
 		int n_seg = whisper_full_n_segments(ctx);
 		int valid_seg = 0;
+		float nsp_limit = is_wake ? 0.72f : 0.58f;
 		char prev_seg[1024] = {0};
 		for (int i = 0; i < n_seg; i++) {
 			float nsp = whisper_full_get_segment_no_speech_prob(ctx, i);
-			if (nsp > 0.55f)
+			if (nsp > nsp_limit)
 				continue;
 			const char *seg = whisper_full_get_segment_text(ctx, i);
 			if (!seg)
@@ -946,7 +950,7 @@ match_wake_prefix(const char *text, const char *wake_word, char *out_cmd, size_t
 		"ok", "okay", "ei", "yo", "al\xc3\xb4", "alo", NULL
 	};
 	static const char *aliases[] = {
-		"jarvis", "charvis", "jarves", "j\xc3\xa1rvis", "travis",
+		"jarvis", "jawvis", "charvis", "jarves", "j\xc3\xa1rvis", "travis",
 		"jervis", "service", "jorge", "chaves", "javis", "jarv",
 		"darvis", "garvis", "jarbas", "javes", "j\xc3\xa1 fiz", "ja fiz", NULL
 	};
@@ -1043,7 +1047,7 @@ static int
 contains_wake_word(const char *text, const char *wake_word)
 {
 	static const char *aliases[] = {
-		"jarvis", "charvis", "jarves", "j\xc3\xa1rvis", "travis",
+		"jarvis", "jawvis", "charvis", "jarves", "j\xc3\xa1rvis", "travis",
 		"jervis", "service", "jorge", "chaves", "javis", "jarv",
 		"darvis", "garvis", "jarbas", "javes", "j\xc3\xa1 fiz", "ja fiz", NULL
 	};
@@ -1767,9 +1771,10 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						snprintf(live_cmd, sizeof(live_cmd), "%s", stripped);
 					} else if (wm == 0) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", final_raw);
-					} else if (wm == 1 && is_followup_window) {
-						/* User explicitly said "Jarvis" again during follow-up window */
+					} else if (wm == 1 && (!chime_played || is_followup_window)) {
+						/* User spoke ONLY "Jarvis" and paused: play chime and wait for command */
 						is_followup_window = 0;
+						chime_played = 1;
 						waiting_post_wake = 1;
 						in_speech = 0;
 						consec_voiced = 0;
@@ -1777,10 +1782,15 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						silence_frames = 0;
 						live_cmd[0] = '\0';
 						play_chime_async(chime_wav);
-						post_wake_deadline_ms = now_ms() + 7000L;
+						pthread_mutex_lock(&g_audio.mtx);
+						g_audio.in_speech_hint = 0;
+						chime_ignore_until_f = g_audio.total_frames + 11;
+						pthread_mutex_unlock(&g_audio.mtx);
+						wake_end_f = chime_ignore_until_f;
+						post_wake_deadline_ms = now_ms() + 4500L;
 						write_state_file(state_file, "jarvis-cmd", NULL, NULL);
 						notify_osd_async("  Jarvis Listening...",
-						                 "Speak your command now.", 6000);
+						                 "Speak your command now.", 4000);
 						continue;
 					} else {
 						live_cmd[0] = '\0';

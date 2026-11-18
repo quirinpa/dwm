@@ -156,7 +156,7 @@ except Exception:
 
 FILLER_WORDS = {
     "please", "jarvis", "hey", "ok", "okay", "can", "could", "would", "you",
-    "the", "a", "an", "my", "some", "me", "for", "now", "right",
+    "the", "a", "an", "my", "some", "me", "for", "now", "right", "up",
 }
 
 def clean_phrase(s):
@@ -400,14 +400,21 @@ def resolve_payload_and_target(iid, raw_arg):
     return iid, payload
 
 def promote_intent(iid, arg_val):
+    arg_low = clean_phrase(arg_val)
     if iid == "open_target":
-        arg_low = clean_phrase(arg_val)
+        if arg_low in ("terminal", "new terminal", "xterm", "shell", "console", "term", "new term", "term online", "new term online"):
+            return "open_terminal"
+        if arg_low in ("new tab", "tab", "browser tab", "new browser tab"):
+            return "new_tab"
         if "record" in arg_low and "screen" in arg_low:
             if "without audio" in arg_low or "silent" in arg_low or "only" in arg_low:
                 return "record_silent"
             return "record_start"
         if dwm_act is not None and dwm_act.is_media_query(arg_val, use_inference=False):
             return "play_target"
+    elif iid == "focus_target":
+        if arg_low in ("terminal", "xterm", "shell", "console", "term"):
+            return "focus_terminal"
     return iid
 
 def normalize_intent_arg(iid, arg_val):
@@ -633,14 +640,12 @@ def match_single_clause(clause, use_inference=False):
                 cmd_tmpl = commands.get(iid_res, commands[iid])
                 return iid_res, 0.99, cmd_to_dsl(cmd_tmpl.replace("{arg}", arg_val))
 
-    # 2. Zero-inference static exact/core match & parametric prefix template match
+    # 2. Priority to normal static commands before parametric prefix templates
     st_fast = match_static_fast(c_clean)
-    if st_fast and st_fast[1] >= 0.98:
+    if st_fast and st_fast[1] >= 0.84:
         return st_fast
 
     pm = match_param_template(c_clean)
-    if st_fast and pm:
-        return st_fast if st_fast[1] >= pm[1] else pm
     if pm:
         return pm
     if st_fast:
