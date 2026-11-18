@@ -240,6 +240,56 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("intent=type_text", r6e)
         self.assertIn('cmd=type "buy milk"', r6e)
 
+    def test_context_scoped_intents(self):
+        env_term = dict(os.environ, DWM_AUREN_CONTEXT_OVERRIDE="terminal")
+        out_term = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "clear the line"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=clear_line@terminal", out_term)
+        self.assertIn("cmd=key ctrl+u", out_term)
+
+        env_browser = dict(os.environ, DWM_AUREN_CONTEXT_OVERRIDE="browser")
+        out_browser = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "clear the line"], text=True, env=env_browser, timeout=6.0
+        ).strip()
+        self.assertIn("intent=clear_line@browser", out_browser)
+        self.assertIn("cmd=key ctrl+a BackSpace", out_browser)
+
+        out_word_term = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "delete previous word"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=del_word@terminal", out_word_term)
+        self.assertIn("cmd=key ctrl+w", out_word_term)
+
+        out_word_browser = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "delete previous word"], text=True, env=env_browser, timeout=6.0
+        ).strip()
+        self.assertIn("intent=del_word@browser", out_word_browser)
+        self.assertIn("cmd=key ctrl+BackSpace", out_word_browser)
+
+    def test_learned_intent_persistence_and_undo_eviction(self):
+        learned_path = os.path.expanduser("~/.config/dwm/intents.learned.conf")
+        last_learned_json = f"/tmp/dwm-last-learned-{os.environ.get('USER', 'user')}.json"
+        os.makedirs(os.path.dirname(learned_path), exist_ok=True)
+        entry = "learned_unit_test_transpose@terminal | dwm-act key ctrl+t | unit test transpose chars\n"
+        with open(learned_path, "a", encoding="utf-8") as f:
+            f.write(entry)
+        with open(last_learned_json, "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "id": "learned_unit_test_transpose@terminal", "exemplar": "unit test transpose chars"}, f)
+
+        env_term = dict(os.environ, DWM_AUREN_CONTEXT_OVERRIDE="terminal")
+        out_learned = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "unit test transpose chars"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=learned_unit_test_transpose@terminal", out_learned)
+        self.assertIn("cmd=key ctrl+t", out_learned)
+
+        undo_res = dwm_act.do_undo()
+        self.assertIn("undo:unlearned", undo_res)
+        if os.path.exists(learned_path):
+            with open(learned_path, "r", encoding="utf-8") as f:
+                self.assertNotIn("learned_unit_test_transpose@terminal", f.read())
+
     def test_recording_and_demo_chains(self):
         r7 = self._dry_run("start recording my screen and audio")
         self.assertIn("intent=record_start", r7)

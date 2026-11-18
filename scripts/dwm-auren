@@ -1,11 +1,16 @@
 #!/bin/sh
-# dwm-auren: Fast Zero-Inference Declarative Desktop Router + Opt-In bge-base Embeddings
+# dwm-auren: Fast Context-Scoped Declarative Desktop Router + Pluggable Inference Adapter
 # Uses:
-#   1. Zero-inference declarative constituent & template/trigram router (<1ms) against ~/.config/dwm/intents.conf
-#   2. Opt-in bge-base-en-v1.5.gguf embeddings (/v1/embeddings on axil-auren, shared with pi-mm) when dwm.auren.inference is enabled
+#   1. Tier 0: Zero-inference context-scoped (@terminal, @browser) + global router (<1ms)
+#              against ~/.config/dwm/intents.conf + ~/.config/dwm/intents.learned.conf
+#   2. Tier 1: Opt-in bge-base-en-v1.5.gguf embeddings (/v1/embeddings on axil-auren)
+#   3. Tier 2: Optional LLM Inference Adapter (auto | cloud | local | local-0.5b | pi | off)
+#              with self-learning persistence into ~/.config/dwm/intents.learned.conf
 export PATH="$HOME/.local/bin:$PATH"
 
 CONF_FILE="${DWM_INTENTS_CONF:-$HOME/.config/dwm/intents.conf}"
+LEARNED_CONF_FILE="${DWM_LEARNED_CONF:-$HOME/.config/dwm/intents.learned.conf}"
+MODE_FILE="$HOME/.config/dwm/llm-mode"
 CACHE_FILE="${XDG_CACHE_HOME:-$HOME/.cache}/dwm-auren-embeddings.json"
 XRES_CACHE="/tmp/dwm-auren-xres-$USER.env"
 AUREN_CFG="$HOME/.config/auren/config.json"
@@ -45,6 +50,29 @@ get_xres() {
     [ -n "$val" ] && printf '%s' "$val" || printf '%s' "$def"
 }
 
+get_llm_mode() {
+    if [ -n "${DWM_AUREN_LLM_MODE:-}" ]; then
+        printf '%s' "$DWM_AUREN_LLM_MODE"
+        return 0
+    fi
+    if [ -f "$MODE_FILE" ]; then
+        m=$(cat "$MODE_FILE" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$m" ]; then
+            printf '%s' "$m"
+            return 0
+        fi
+    fi
+    if [ -n "${XRES_auren_llm_mode:-}" ]; then
+        printf '%s' "$XRES_auren_llm_mode"
+        return 0
+    fi
+    if [ "${XRES_auren_llm_fallback:-}" = "false" ] || [ "${XRES_auren_llm_fallback:-}" = "0" ]; then
+        printf 'auto'
+        return 0
+    fi
+    printf 'auto'
+}
+
 load_xres_cache
 AUREN_URL="${XRES_auren_url:-http://localhost:4242/v1/systemone}"
 case "$AUREN_URL" in
@@ -55,6 +83,7 @@ AUREN_BASE="${AUREN_URL%%/v1/*}"
 AUREN_MODEL="${XRES_auren_model:-bge-base}"
 AUREN_THRESHOLD="${XRES_auren_threshold:-0.68}"
 AUREN_INFERENCE="${DWM_AUREN_INFERENCE:-${XRES_auren_inference:-false}}"
+AUREN_LLM_MODE="$(get_llm_mode)"
 NB="${XRES_normbgcolor:-#11111b}"
 NF="${XRES_normfgcolor:-#a6adc8}"
 SB="${XRES_mauvecolor:-#7c6ff2}"
@@ -76,11 +105,63 @@ refresh_bar() {
 }
 
 ensure_auren_server() {
+    want_local_chat="${1:-0}"
     embed_gguf="$HOME/.models/bge-base-en-v1.5.gguf"
+    qwen_15b="$HOME/.models/qwen2.5-1.5b-instruct-q4_k_m.gguf"
+    qwen_05b="$HOME/.models/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+
+    mode_cur="$(get_llm_mode)"
+    case "$mode_cur" in
+        local|local-1.5b|local-0.5b)
+            want_local_chat=1
+            ;;
+    esac
+
     if [ -f "$embed_gguf" ]; then
         mkdir -p "$(dirname "$AUREN_CFG")" "$HOME/.cache/auren"
-        if [ ! -f "$AUREN_CFG" ] || grep -q 'embeddinggemma\|qwen' "$AUREN_CFG" 2>/dev/null; then
-            cat > "$AUREN_CFG" << EOF
+        if [ "$want_local_chat" = "1" ] && { [ -f "$qwen_15b" ] || [ -f "$qwen_05b" ]; }; then
+            def_chat="qwen-local"
+            [ "$mode_cur" = "local-0.5b" ] && [ -f "$qwen_05b" ] && def_chat="qwen-0.5b"
+            if [ ! -f "$AUREN_CFG" ] || ! grep -q "\"$def_chat\"" "$AUREN_CFG" 2>/dev/null; then
+                cat > "$AUREN_CFG" << CFG_EOF
+{
+  "models": [
+    {
+      "id": "bge-base",
+      "path": "$embed_gguf",
+      "capabilities": ["embed"],
+      "enable_embeddings": 1,
+      "n_ctx": 512,
+      "n_gpu_layers": 0
+    },
+    {
+      "id": "qwen-local",
+      "path": "${qwen_15b:-$qwen_05b}",
+      "capabilities": ["chat"],
+      "n_ctx": 512,
+      "n_gpu_layers": 0
+    },
+    {
+      "id": "qwen-0.5b",
+      "path": "${qwen_05b:-$qwen_15b}",
+      "capabilities": ["chat"],
+      "n_ctx": 512,
+      "n_gpu_layers": 0
+    }
+  ],
+  "defaults": {
+    "embed": "bge-base",
+    "chat": "$def_chat"
+  },
+  "max_resident": 2
+}
+CFG_EOF
+                fuser -k 4242/tcp >/dev/null 2>&1 || true
+                sleep 0.2
+            fi
+        else
+            if [ ! -f "$AUREN_CFG" ] || grep -q 'embeddinggemma\|qwen' "$AUREN_CFG" 2>/dev/null; then
+                cat > "$AUREN_CFG" << CFG_EOF
 {
   "models": [
     {
@@ -97,9 +178,10 @@ ensure_auren_server() {
   },
   "max_resident": 1
 }
-EOF
-            fuser -k 4242/tcp >/dev/null 2>&1 || true
-            sleep 0.2
+CFG_EOF
+                fuser -k 4242/tcp >/dev/null 2>&1 || true
+                sleep 0.2
+            fi
         fi
     fi
     if curl -s --max-time 0.3 "${AUREN_BASE}/v1/models" 2>/dev/null | grep -q '"bge-base"'; then
@@ -136,14 +218,15 @@ play_done_earcon() {
 
 run_auren_python() {
     mode_or_query="$1"
-    python3 - "$CONF_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$AUREN_INFERENCE" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
-import sys, os, json, math, socket, subprocess, urllib.request, importlib.util, importlib.machinery
+    python3 - "$CONF_FILE" "$LEARNED_CONF_FILE" "$MODE_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$AUREN_INFERENCE" "$AUREN_LLM_MODE" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
+import sys, os, json, math, time, base64, socket, subprocess, urllib.parse, urllib.request, importlib.util, importlib.machinery
 
-conf_path, cache_path, sys1_url, embed_model, thresh_s, infer_s, raw_query, sock_path = sys.argv[1:9]
+conf_path, learned_path, mode_path, cache_path, sys1_url, embed_model, thresh_s, infer_s, llm_mode_default, raw_query, sock_path = sys.argv[1:12]
 thresh = float(thresh_s)
 infer_default = infer_s.strip().lower() in ("1", "true", "yes", "on")
 base_url = sys1_url.split("/v1/")[0] if "/v1/" in sys1_url else sys1_url.rstrip("/")
 embed_url = base_url + "/v1/embeddings"
+local_chat_url = base_url + "/v1/chat/completions"
 
 dwm_act = None
 try:
@@ -162,6 +245,51 @@ FILLER_WORDS = {
     "please", "jarvis", "hey", "ok", "okay", "can", "could", "would", "you",
     "the", "a", "an", "my", "some", "me", "for", "now", "right", "up",
 }
+
+TERMINAL_HINTS = ("st-256color", "ghostty", "xterm", "alacritty", "kitty", "wezterm", "foot", "urxvt", "jarvis-pi", "dwm-float")
+BROWSER_HINTS = ("firefox", "navigator", "chromium", "chrome", "brave", "vivaldi", "zen")
+EDITOR_HINTS = ("code", "vscodium", "nvim", "vim", "emacs", "gedit", "sublime")
+
+def get_focused_context():
+    """Return (ctx_scope, class_str, title_str) for the currently focused X11 window (<1ms)."""
+    foc = None
+    try:
+        if dwm_act is not None:
+            foc = dwm_act.get_focused()
+        else:
+            out = subprocess.check_output(["dwm-msg", "focused"], text=True, timeout=0.6).strip()
+            parts = out.split("\t")
+            if len(parts) >= 3:
+                foc = {"id": parts[0].strip(), "class": parts[1].strip(), "title": parts[2].strip()}
+    except Exception:
+        foc = None
+    if not foc:
+        return "any", "none", ""
+    cls_str = foc.get("class", "")
+    title_str = foc.get("title", "")
+    cl = cls_str.lower()
+    tl = title_str.lower()
+    if any(h in cl for h in BROWSER_HINTS):
+        return "browser", cls_str, title_str
+    if any(h in cl for h in TERMINAL_HINTS) or "tmux" in tl:
+        return "terminal", cls_str, title_str
+    if any(h in cl for h in EDITOR_HINTS):
+        return "editor", cls_str, title_str
+    return "any", cls_str, title_str
+
+def get_active_llm_mode():
+    env_m = os.environ.get("DWM_AUREN_LLM_MODE", "").strip().lower()
+    if env_m:
+        return env_m
+    try:
+        if os.path.exists(mode_path):
+            with open(mode_path, "r", encoding="utf-8") as mf:
+                m = mf.read().strip().lower()
+                if m:
+                    return m
+    except Exception:
+        pass
+    return (llm_mode_default or "auto").strip().lower()
 
 def clean_phrase(s):
     out = []
@@ -223,47 +351,62 @@ def lexical_similarity(q_str, ex_str):
     return min(score, 0.99)
 
 commands = {}
-static_exemplars = []
-static_exact_map = {}
-static_core_map = {}
-param_exemplars = []
-param_frames = []
+intent_scopes = {}
+static_exemplars = []          # list of (iid, scope, ex)
+static_exact_scoped = {}       # (scope, ec) -> iid
+static_core_scoped = {}        # (scope, cc) -> iid
+param_exemplars = []           # list of (iid, scope, ex, pre_c, suf_c)
+param_frames = []              # list of (iid, scope, pre_c)
 span_roles = {}
 span_role_lookup = {}
 conf_mtime = 0.0
+learned_mtime = 0.0
+
+def _load_conf_file(path):
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read().splitlines()
+    except Exception:
+        return []
 
 def reload_conf_if_needed():
-    global conf_mtime, commands, static_exemplars, static_exact_map, static_core_map
+    global conf_mtime, learned_mtime, commands, intent_scopes
+    global static_exemplars, static_exact_scoped, static_core_scoped
     global param_exemplars, param_frames, span_roles, span_role_lookup
     try:
-        mt = os.path.getmtime(conf_path)
+        mt1 = os.path.getmtime(conf_path) if os.path.exists(conf_path) else 0.0
+        mt2 = os.path.getmtime(learned_path) if os.path.exists(learned_path) else 0.0
     except Exception:
         return
-    if mt == conf_mtime and commands:
+    if mt1 == conf_mtime and mt2 == learned_mtime and commands:
         return
-    conf_mtime = mt
+    conf_mtime = mt1
+    learned_mtime = mt2
     commands = {}
+    intent_scopes = {}
     static_exemplars = []
-    static_exact_map = {}
-    static_core_map = {}
+    static_exact_scoped = {}
+    static_core_scoped = {}
     param_exemplars = []
     param_frames = []
     span_roles = {}
     span_role_lookup = {}
-    with open(conf_path, "r", encoding="utf-8") as f:
-        conf_raw = f.read()
-    for line in conf_raw.splitlines():
+
+    all_lines = _load_conf_file(conf_path) + _load_conf_file(learned_path)
+    for line in all_lines:
         line = line.strip()
         if not line or line.startswith("#") or "|" not in line:
             continue
         parts = [p.strip() for p in line.split("|", 2)]
         if len(parts) < 3:
             continue
-        iid, cmd, ex_str = parts
+        raw_iid, cmd, ex_str = parts
         exemplars = [e.strip() for e in ex_str.split(";") if e.strip()]
-        if not (iid and cmd and exemplars):
+        if not (raw_iid and cmd and exemplars):
             continue
-        if iid.startswith("@"):
+        if raw_iid.startswith("@"):
             span_roles[cmd] = exemplars
             role_set = set()
             for rex in exemplars:
@@ -272,24 +415,32 @@ def reload_conf_if_needed():
                     role_set.add(rc)
             span_role_lookup[cmd] = role_set
             continue
+        if "@" in raw_iid:
+            base_id, scope = raw_iid.split("@", 1)
+            scope = scope.strip().lower() or "any"
+            iid = f"{base_id.strip()}@{scope}" if scope != "any" else base_id.strip()
+        else:
+            iid = raw_iid.strip()
+            scope = "any"
         commands[iid] = cmd
+        intent_scopes[iid] = scope
         for ex in exemplars:
             if "{arg}" in cmd and "{arg}" in ex:
                 pre, suf = ex.split("{arg}", 1)
                 pre_c = pre.strip().lower()
                 suf_c = suf.strip().lower()
-                param_exemplars.append((iid, ex, pre_c, suf_c))
+                param_exemplars.append((iid, scope, ex, pre_c, suf_c))
                 if pre_c and not suf_c:
-                    param_frames.append((iid, pre_c))
+                    param_frames.append((iid, scope, pre_c))
             else:
-                static_exemplars.append((iid, ex))
+                static_exemplars.append((iid, scope, ex))
                 ec = clean_phrase(ex)
-                if ec and ec not in static_exact_map:
-                    static_exact_map[ec] = iid
+                if ec and (scope, ec) not in static_exact_scoped:
+                    static_exact_scoped[(scope, ec)] = iid
                 cc = " ".join(core_tokens(ec))
-                if cc and cc not in static_core_map:
-                    static_core_map[cc] = iid
-    param_exemplars.sort(key=lambda x: len(x[2]) + len(x[3]), reverse=True)
+                if cc and (scope, cc) not in static_core_scoped:
+                    static_core_scoped[(scope, cc)] = iid
+    param_exemplars.sort(key=lambda x: (x[1] != "any", len(x[3]) + len(x[4])), reverse=True)
 
 reload_conf_if_needed()
 
@@ -356,15 +507,11 @@ def cmd_to_dsl(cmd_str):
     return f"sh {cmd_str}"
 
 def resolve_payload_and_target(iid, raw_arg):
-    """
-    Zero-Inference Declarative Constituent Span Stripper:
-    Matches trailing spans w[m-L:] against @target_self, @target_other, and @submit_tail
-    from intents.conf without calling the neural embedding server.
-    """
+    base_iid = iid.split("@", 1)[0]
     cleaned = raw_arg.strip().strip("\"'")
     if not cleaned:
         return iid, ""
-    if iid not in ("type_text", "type_enter", "type_other", "type_enter_other", "pull_target", "search_web"):
+    if base_iid not in ("type_text", "type_enter", "type_other", "type_enter_other", "pull_target", "search_web"):
         return iid, cleaned
 
     words = cleaned.split()
@@ -372,7 +519,7 @@ def resolve_payload_and_target(iid, raw_arg):
     if m < 2:
         return iid, cleaned
 
-    allowed_roles = ("SELF", "OTHER", "SUBMIT") if iid in ("type_text", "type_enter", "type_other", "type_enter_other") else ("SELF",)
+    allowed_roles = ("SELF", "OTHER", "SUBMIT") if base_iid in ("type_text", "type_enter", "type_other", "type_enter_other") else ("SELF",)
 
     best_role = None
     best_L = 0
@@ -396,16 +543,17 @@ def resolve_payload_and_target(iid, raw_arg):
         return iid, cleaned
 
     if best_role == "OTHER":
-        new_iid = "type_enter_other" if iid in ("type_enter", "type_enter_other") else "type_other"
+        new_iid = "type_enter_other" if base_iid in ("type_enter", "type_enter_other") else "type_other"
         return new_iid, payload
     if best_role == "SUBMIT":
-        new_iid = "type_enter_other" if iid in ("type_other", "type_enter_other") else "type_enter"
+        new_iid = "type_enter_other" if base_iid in ("type_other", "type_enter_other") else "type_enter"
         return resolve_payload_and_target(new_iid, payload)
     return iid, payload
 
 def promote_intent(iid, arg_val):
+    base_iid = iid.split("@", 1)[0]
     arg_low = clean_phrase(arg_val)
-    if iid == "open_target":
+    if base_iid == "open_target":
         if arg_low in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term", "new term", "term online", "new term online"):
             return "open_terminal"
         if arg_low in ("new tab", "tab", "browser tab", "new browser tab"):
@@ -417,18 +565,17 @@ def promote_intent(iid, arg_val):
         if arg_low.startswith(("some ", "a bit of ", "a little ")):
             return "play_target"
         if dwm_act is not None:
-            # First check if arg_val matches a known desktop window/tab/app/site lexically
             best_t = dwm_act.resolve_semantic_target(arg_val, use_inference=False)
             if not (best_t and best_t.get("score", 0.0) >= 0.75):
                 if dwm_act.is_media_query(arg_val):
                     return "play_target"
-    elif iid == "focus_target":
+    elif base_iid == "focus_target":
         if arg_low in ("terminal", "st", "xterm", "shell", "console", "term"):
             return "focus_terminal"
     return iid
 
 def normalize_intent_arg(iid, arg_val):
-    if iid == "play_target" and dwm_act is not None:
+    if iid.split("@", 1)[0] == "play_target" and dwm_act is not None:
         return dwm_act.normalize_media_query(arg_val)
     return arg_val
 
@@ -439,7 +586,8 @@ def strip_leading_fillers(s):
     return " ".join(words)
 
 def strip_arg_determiner(iid, arg_val):
-    if iid in ("play_target", "open_target", "focus_target", "pull_target"):
+    base_iid = iid.split("@", 1)[0]
+    if base_iid in ("play_target", "open_target", "focus_target", "pull_target"):
         low_full = arg_val.strip().lower()
         for phrase_det in ("a bit of ", "a little bit of ", "a little "):
             if low_full.startswith(phrase_det) and len(arg_val.strip()) > len(phrase_det):
@@ -449,7 +597,7 @@ def strip_arg_determiner(iid, arg_val):
         while len(words) >= 2 and words[0].lower() in ("up", "on", "some", "the", "a", "an", "my", "to"):
             words.pop(0)
         return " ".join(words)
-    if iid in ("type_text", "type_enter", "type_other", "type_enter_other"):
+    if base_iid in ("type_text", "type_enter", "type_other", "type_enter_other"):
         low_full = arg_val.strip().lower()
         for phrase_det in ("the words ", "the word ", "the text ", "the phrase "):
             if low_full.startswith(phrase_det) and len(arg_val.strip()) > len(phrase_det):
@@ -466,13 +614,18 @@ INVALID_BARE_ARGS = {
     "press", "open", "switch", "go", "click", "move", "and", "then",
 }
 
-def match_param_template(clause):
+def scope_matches(rule_scope, active_scope):
+    return rule_scope in ("any", active_scope)
+
+def match_param_template(clause, active_scope="any"):
     """Zero-inference match of a clause against configurable {arg} templates in intents.conf."""
     for cand in (clause.strip().strip(",.!?;:"), strip_leading_fillers(clause)):
         if not cand:
             continue
         c_low = cand.lower()
-        for iid, ex, pre, suf in param_exemplars:
+        for iid, scope, ex, pre, suf in param_exemplars:
+            if not scope_matches(scope, active_scope):
+                continue
             if pre and not (c_low.startswith(pre + " ") or c_low == pre):
                 continue
             if suf and not (c_low.endswith(" " + suf) or c_low == suf):
@@ -484,7 +637,8 @@ def match_param_template(clause):
             raw_arg = cand[start:end].strip()
             if not raw_arg:
                 continue
-            if iid in NON_DICTATION_PARAM_IIDS and ("," in raw_arg or ";" in raw_arg):
+            base_iid = iid.split("@", 1)[0]
+            if base_iid in NON_DICTATION_PARAM_IIDS and ("," in raw_arg or ";" in raw_arg):
                 continue
             iid_resolved, arg_val = resolve_payload_and_target(iid, raw_arg)
             if not arg_val:
@@ -500,27 +654,31 @@ def match_param_template(clause):
             return iid_resolved, 0.99, cmd_to_dsl(cmd_filled)
     return None
 
-def match_static_fast(clause):
-    """Zero-inference exact + lexical/trigram scorer against static exemplars in intents.conf."""
+def match_static_fast(clause, active_scope="any"):
+    """Zero-inference exact + lexical/trigram scorer against static exemplars (prioritizing active_scope)."""
     c_clean = clean_phrase(clause)
     if not c_clean:
         return None
-    if c_clean in static_exact_map:
-        iid = static_exact_map[c_clean]
-        return iid, 1.00, cmd_to_dsl(commands[iid])
+    for sc in ((active_scope, "any") if active_scope != "any" else ("any",)):
+        if (sc, c_clean) in static_exact_scoped:
+            iid = static_exact_scoped[(sc, c_clean)]
+            return iid, 1.00, cmd_to_dsl(commands[iid])
 
     q_words = c_clean.split()
     q_digits = {w for w in q_words if w.isdigit()}
     c_core = " ".join(core_tokens(c_clean))
-    if c_core in static_core_map:
-        iid = static_core_map[c_core]
-        ex_digits = {w for w in c_core.split() if w.isdigit()}
-        if q_digits == ex_digits:
-            return iid, 0.98, cmd_to_dsl(commands[iid])
+    for sc in ((active_scope, "any") if active_scope != "any" else ("any",)):
+        if (sc, c_core) in static_core_scoped:
+            iid = static_core_scoped[(sc, c_core)]
+            ex_digits = {w for w in c_core.split() if w.isdigit()}
+            if q_digits == ex_digits:
+                return iid, 0.98, cmd_to_dsl(commands[iid])
 
     best_iid = ""
     best_sim = -1.0
-    for iid, ex in static_exemplars:
+    for iid, scope, ex in static_exemplars:
+        if not scope_matches(scope, active_scope):
+            continue
         ex_clean = clean_phrase(ex)
         ex_words = ex_clean.split()
         if len(q_words) > len(ex_words) + 3:
@@ -529,6 +687,8 @@ def match_static_fast(clause):
         if q_digits != ex_digits:
             continue
         sim = lexical_similarity(c_clean, ex_clean)
+        if scope == active_scope and active_scope != "any":
+            sim = min(0.99, sim + 0.02)
         if sim > best_sim:
             best_sim = sim
             best_iid = iid
@@ -537,7 +697,7 @@ def match_static_fast(clause):
         return best_iid, best_sim, cmd_to_dsl(commands[best_iid])
     return None
 
-def match_lexical_frame(clause):
+def match_lexical_frame(clause, active_scope="any"):
     """Zero-inference verb-prefix matcher against {arg} templates in intents.conf."""
     cand = strip_leading_fillers(clause)
     words = cand.split()
@@ -548,15 +708,17 @@ def match_lexical_frame(clause):
     for k in range(1, min(5, len(words))):
         prefix_str = " ".join(words[:k]).lower()
         arg_raw = " ".join(words[k:])
-        for iid, tmpl_pre in param_frames:
+        for iid, scope, tmpl_pre in param_frames:
+            if not scope_matches(scope, active_scope):
+                continue
             sim = lexical_similarity(prefix_str, tmpl_pre)
-            adj = sim + 0.015 * k
+            adj = sim + 0.015 * k + (0.01 if scope == active_scope and active_scope != "any" else 0.0)
             if sim >= 0.84 and adj > best_adj:
                 best_adj = adj
                 best_hit = (iid, sim, arg_raw)
     if best_hit:
         iid, sim, arg_raw = best_hit
-        if iid in NON_DICTATION_PARAM_IIDS and ("," in arg_raw or ";" in arg_raw):
+        if iid.split("@", 1)[0] in NON_DICTATION_PARAM_IIDS and ("," in arg_raw or ";" in arg_raw):
             return None
         iid_resolved, arg_val = resolve_payload_and_target(iid, arg_raw)
         if arg_val:
@@ -571,21 +733,22 @@ def match_lexical_frame(clause):
             return iid_resolved, min(sim, 0.96), cmd_to_dsl(cmd_filled)
     return None
 
-def match_static_embedding(clause):
+def match_static_embedding(clause, active_scope="any"):
     """Opt-in bge-base embedding match against static exemplars in intents.conf."""
     c_clean = clause.strip().strip(",.!?;:")
     if not c_clean:
         return None
     q_words = c_clean.lower().split()
     q_digits = {w for w in q_words if w.isdigit()}
-    ensure_embedded([ex for _, ex in static_exemplars] + [c_clean])
+    scoped_exs = [(iid, scope, ex) for iid, scope, ex in static_exemplars if scope_matches(scope, active_scope)]
+    ensure_embedded([ex for _, _, ex in scoped_exs] + [c_clean])
     q_vec = vec_map.get(c_clean)
     if not q_vec:
         return None
 
     best_iid = ""
     best_sim = -1.0
-    for iid, ex in static_exemplars:
+    for iid, scope, ex in scoped_exs:
         ex_words = ex.lower().split()
         if len(q_words) > len(ex_words) + 3:
             continue
@@ -595,16 +758,16 @@ def match_static_embedding(clause):
         ex_vec = vec_map.get(ex)
         if not ex_vec:
             continue
-        sim = dot_vec(q_vec, ex_vec)
+        sim = dot_vec(q_vec, ex_vec) + (0.015 if scope == active_scope and active_scope != "any" else 0.0)
         if sim > best_sim:
             best_sim = sim
             best_iid = iid
 
     if best_iid and best_sim >= max(thresh, 0.78):
-        return best_iid, best_sim, cmd_to_dsl(commands[best_iid])
+        return best_iid, min(best_sim, 0.99), cmd_to_dsl(commands[best_iid])
     return None
 
-def match_semantic_frame_embedding(clause):
+def match_semantic_frame_embedding(clause, active_scope="any"):
     """Opt-in bge-base embedding match for verb frames."""
     c_clean = strip_leading_fillers(clause)
     words = c_clean.split()
@@ -613,15 +776,15 @@ def match_semantic_frame_embedding(clause):
     splits = []
     for k in range(1, min(5, len(words))):
         splits.append((k, " ".join(words[:k]).lower() + " {arg}", " ".join(words[k:])))
-    frame_tmpls = [(iid, f"{pre} {{arg}}") for iid, pre in param_frames]
-    ensure_embedded([fs for _, fs, _ in splits] + [tf for _, tf in frame_tmpls])
+    frame_tmpls = [(iid, scope, f"{pre} {{arg}}") for iid, scope, pre in param_frames if scope_matches(scope, active_scope)]
+    ensure_embedded([fs for _, fs, _ in splits] + [tf for _, _, tf in frame_tmpls])
     best_adj = -1.0
     best_hit = None
     for k, frame_str, arg_raw in splits:
         f_vec = vec_map.get(frame_str)
         if not f_vec:
             continue
-        for iid, tmpl_str in frame_tmpls:
+        for iid, scope, tmpl_str in frame_tmpls:
             t_vec = vec_map.get(tmpl_str)
             if not t_vec:
                 continue
@@ -643,13 +806,15 @@ def match_semantic_frame_embedding(clause):
             return iid_resolved, min(sim, 0.95), cmd_to_dsl(cmd_filled)
     return None
 
-def match_single_clause(clause, use_inference=False):
+def match_single_clause(clause, active_scope="any", use_inference=False):
     """Resolve a single clause via zero-inference tiers first, then opt-in bge-base embeddings."""
     c_clean = clause.strip().strip(",.!?;:")
     if not c_clean:
         return None
     # 1. Parametric templates that have BOTH prefix and suffix (0 inference)
-    for iid, ex, pre, suf in param_exemplars:
+    for iid, scope, ex, pre, suf in param_exemplars:
+        if not scope_matches(scope, active_scope):
+            continue
         if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
             raw_arg = c_clean[len(pre):len(c_clean) - len(suf)].strip()
             iid_res, arg_val = resolve_payload_and_target(iid, raw_arg)
@@ -661,27 +826,27 @@ def match_single_clause(clause, use_inference=False):
                 return iid_res, 0.99, cmd_to_dsl(cmd_tmpl.replace("{arg}", arg_val))
 
     # 2. Priority to exact/core static commands (>= 0.98) before parametric prefix templates
-    st_fast = match_static_fast(c_clean)
+    st_fast = match_static_fast(c_clean, active_scope=active_scope)
     if st_fast and st_fast[1] >= 0.98:
         return st_fast
 
-    pm = match_param_template(c_clean)
+    pm = match_param_template(c_clean, active_scope=active_scope)
     if pm:
         return pm
     if st_fast:
         return st_fast
 
     # 3. Zero-inference lexical verb frame match
-    lf = match_lexical_frame(c_clean)
+    lf = match_lexical_frame(c_clean, active_scope=active_scope)
     if lf:
         return lf
 
     # 4. Opt-in neural embedding fallback (bge-base)
     if use_inference:
-        st_emb = match_static_embedding(c_clean)
+        st_emb = match_static_embedding(c_clean, active_scope=active_scope)
         if st_emb:
             return st_emb
-        sf_emb = match_semantic_frame_embedding(c_clean)
+        sf_emb = match_semantic_frame_embedding(c_clean, active_scope=active_scope)
         if sf_emb:
             return sf_emb
 
@@ -699,7 +864,7 @@ def match_single_clause(clause, use_inference=False):
         pass
     return None
 
-def split_clauses_semantic(raw_q):
+def split_clauses_semantic(raw_q, active_scope="any"):
     """Split multi-step commands into clauses using punctuation and @clause_sep exemplars."""
     chunks = []
     for semi_part in raw_q.split(";"):
@@ -710,9 +875,7 @@ def split_clauses_semantic(raw_q):
             c_part = comma_part.strip()
             if not c_part:
                 continue
-            # If the comma-separated part already matches a static intent (not a greedy {arg} template),
-            # do not split internal "and" (e.g. "record my screen and audio")
-            c_hit = match_static_fast(c_part)
+            c_hit = match_static_fast(c_part, active_scope=active_scope)
             if c_hit and c_hit[1] >= 0.96:
                 chunks.append(c_part)
                 continue
@@ -745,7 +908,296 @@ def split_clauses_semantic(raw_q):
                     chunks.append(clause_str)
     return chunks if chunks else [raw_q.strip()]
 
-def evaluate_query(raw_query, use_inference=None):
+# =============================================================================
+# Tier 2: Pluggable Context-Aware LLM Inference Adapter (cloud | local | pi)
+# =============================================================================
+
+VALID_DSL_OPS = {
+    "view", "tag", "tag_other", "close_other", "focus_other", "pull", "search",
+    "focus", "open", "play", "key", "type", "type_other", "type_enter", "type_enter_other",
+    "click", "right_click", "double_click", "scroll", "wm", "sys", "help", "pi",
+    "wait", "wait_sec", "record", "media", "undo",
+}
+
+LLM_SYSTEM_PROMPT = (
+    "You are the Jarvis X11 desktop action planner. Translate the user's spoken command into valid dwm-act DSL for the focused window.\n"
+    "Output ONLY the DSL command (one line, or semicolon-separated steps). No markdown, no explanation.\n"
+    "Valid ops: key <X11_combo> | type \"<text>\" | type_enter \"<text>\" | focus \"<target>\" | open \"<target>\" | "
+    "play \"<query>\" | click \"<target>\" | scroll <up|down> <N> | view <1..5> | tag <1..5> | "
+    "wm <fullscreen|float|zoom|close|next|prev> | media <play|pause|next|prev> | undo | NONE\n"
+    "Reference shortcuts by focused window kind:\n"
+    "- [terminal] clear/erase/wipe line -> key ctrl+u\n"
+    "- [terminal] delete/erase/wipe previous/last word -> key ctrl+w\n"
+    "- [terminal] delete to end of line -> key ctrl+k\n"
+    "- [terminal] jump to start/beginning of line -> key ctrl+a\n"
+    "- [terminal] jump to end of line -> key ctrl+e\n"
+    "- [terminal] clear screen/terminal -> key ctrl+l\n"
+    "- [terminal] interrupt/cancel/kill running command/process -> key ctrl+c\n"
+    "- [terminal] reverse search history for <text> -> key ctrl+r ; type \"<text>\"\n"
+    "- [terminal] copy -> key ctrl+shift+c | paste -> key ctrl+shift+v\n"
+    "- [browser] reopen/restore closed tab -> key ctrl+shift+t\n"
+    "- [browser] open developer tools/web inspector -> key ctrl+shift+i\n"
+    "- [browser] find/search on page -> key ctrl+f\n"
+    "- [browser] mute/silence/unmute tab -> key ctrl+m\n"
+    "- [browser] zoom in -> key ctrl+plus | zoom out -> key ctrl+minus | reset zoom -> key ctrl+0\n"
+    "- [browser] go back -> key alt+Left | go forward -> key alt+Right\n"
+    "If the request is gibberish or unrelated to desktop control, output NONE."
+)
+
+def sanitize_llm_dsl(raw_text):
+    if not raw_text:
+        return ""
+    steps = []
+    for chunk in raw_text.replace(";", "\n").splitlines():
+        line = chunk.strip().lstrip("-*•0123456789.) ").strip("`").strip()
+        if "->" in line:
+            line = line.split("->")[-1].strip()
+        line = line.strip("[]")
+        if not line or line.upper() == "NONE":
+            continue
+        parts = line.split(None, 1)
+        op = parts[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        if op not in VALID_DSL_OPS:
+            # If the LLM emitted a bare shortcut like "ctrl+u", wrap it as "key ctrl+u"
+            if "+" in op and any(m in op for m in ("ctrl", "alt", "shift", "super")):
+                arg = line
+                op = "key"
+            else:
+                continue
+        if op == "key":
+            arg = arg.strip("\"'")
+            if dwm_act is not None:
+                arg = dwm_act.normalize_key_combo(arg)
+            steps.append(f"key {arg}")
+        elif op in ("type", "type_enter", "type_other", "type_enter_other", "open", "focus", "play", "search", "click", "right_click", "double_click", "pull", "pi"):
+            arg_clean = arg.strip("\"'")
+            if arg_clean:
+                steps.append(f'{op} "{arg_clean}"')
+        else:
+            steps.append(f"{op} {arg}".strip())
+    return " ; ".join(steps)
+
+_cached_ag_token = {"access": "", "project": "aicode-consumers", "exp": 0.0}
+
+def _get_antigravity_auth():
+    now = time.time()
+    if _cached_ag_token["access"] and now < _cached_ag_token["exp"]:
+        return _cached_ag_token["access"], _cached_ag_token["project"]
+    auth_file = os.path.expanduser("~/.pi/agent/auth.json")
+    if not os.path.exists(auth_file):
+        return "", ""
+    try:
+        with open(auth_file, "r", encoding="utf-8") as f:
+            auth = json.load(f)
+        ag = auth.get("antigravity", {})
+        access = ag.get("access", "")
+        refresh = ag.get("refresh", "").split("|")[0]
+        proj = ag.get("projectId", "aicode-consumers")
+        exp_ms = float(ag.get("expires", 0))
+        if access and exp_ms > (now + 120) * 1000:
+            _cached_ag_token.update({"access": access, "project": proj, "exp": now + 300})
+            return access, proj
+        if not refresh:
+            return access, proj
+        cid = os.environ.get("DWM_AG_CLIENT_ID", "")
+        csec = os.environ.get("DWM_AG_CLIENT_SECRET", "")
+        if not cid or not csec:
+            return access, proj
+        form = urllib.parse.urlencode({
+            "client_id": cid,
+            "client_secret": csec,
+            "refresh_token": refresh,
+            "grant_type": "refresh_token",
+        }).encode()
+        req = urllib.request.Request(
+            "https://oauth2.googleapis.com/token",
+            data=form,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3.5) as r:
+            td = json.loads(r.read().decode())
+        new_tok = td.get("access_token", "")
+        if new_tok:
+            ag["access"] = new_tok
+            ag["expires"] = int((now + int(td.get("expires_in", 3600))) * 1000)
+            with open(auth_file, "w", encoding="utf-8") as wf:
+                json.dump(auth, wf, indent=2)
+            _cached_ag_token.update({"access": new_tok, "project": proj, "exp": now + 1800})
+            return new_tok, proj
+    except Exception:
+        pass
+    return "", ""
+
+def infer_via_cloud(query_str, active_scope, cls_str, title_str):
+    """Zero-RAM Cloud Flash inference via Antigravity gemini-3-flash (~650ms) with Kilo fallback."""
+    user_prompt = f"Context: [{active_scope}] app={cls_str} title={title_str!r}\nCommand: {query_str} ->"
+    tok, proj = _get_antigravity_auth()
+    if tok:
+        ua = "antigravity/cli/1.5.5 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)"
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
+                    data=json.dumps({
+                        "project": proj or "aicode-consumers",
+                        "model": "gemini-3-flash",
+                        "request": {
+                            "systemInstruction": {"parts": [{"text": LLM_SYSTEM_PROMPT}]},
+                            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 96},
+                        },
+                    }).encode("utf-8"),
+                    headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json", "User-Agent": ua},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=4.5) as r:
+                    res = json.loads(r.read().decode("utf-8"))
+                parts = res.get("response", {}).get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                txt = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
+                dsl = sanitize_llm_dsl(txt)
+                if dsl:
+                    return dsl, "cloud-flash"
+                break
+            except urllib.error.HTTPError as he:
+                if he.code == 401 and attempt == 0:
+                    _cached_ag_token["exp"] = 0.0
+                    # Force token refresh by expiring auth.json entry
+                    try:
+                        auth_file = os.path.expanduser("~/.pi/agent/auth.json")
+                        with open(auth_file, "r", encoding="utf-8") as f:
+                            a = json.load(f)
+                        if "antigravity" in a:
+                            a["antigravity"]["expires"] = 0
+                            with open(auth_file, "w", encoding="utf-8") as wf:
+                                json.dump(a, wf, indent=2)
+                    except Exception:
+                        pass
+                    tok, proj = _get_antigravity_auth()
+                    continue
+                break
+            except Exception:
+                break
+
+    # Fallback to Kilo OpenRouter free endpoint if Antigravity is unavailable
+    try:
+        auth_file = os.path.expanduser("~/.pi/agent/auth.json")
+        with open(auth_file, "r", encoding="utf-8") as f:
+            ktok = json.load(f).get("kilo", {}).get("access", "")
+        if ktok:
+            req = urllib.request.Request(
+                "https://api.kilo.ai/api/openrouter/chat/completions",
+                data=json.dumps({
+                    "model": "kilo-auto/free",
+                    "temperature": 0.0,
+                    "max_tokens": 36,
+                    "messages": [
+                        {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                }).encode("utf-8"),
+                headers={"Authorization": f"Bearer {ktok}", "Content-Type": "application/json", "User-Agent": "Kilo-Code/4.0.0"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=5.0) as r:
+                res = json.loads(r.read().decode("utf-8"))
+            txt = res["choices"][0]["message"]["content"].strip()
+            dsl = sanitize_llm_dsl(txt)
+            if dsl:
+                return dsl, "cloud-kilo"
+    except Exception:
+        pass
+    return "", ""
+
+def infer_via_local(query_str, active_scope, cls_str, title_str, model_id="qwen-local"):
+    """Offline Local GGUF inference via axil-auren /v1/chat/completions."""
+    user_prompt = f"[{active_scope}] {query_str} ->"
+    try:
+        req = urllib.request.Request(
+            local_chat_url,
+            data=json.dumps({
+                "model": model_id,
+                "session_id": f"jarvis-{model_id}",
+                "temperature": 0.0,
+                "max_tokens": 20,
+                "messages": [
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=8.0) as r:
+            res = json.loads(r.read().decode("utf-8"))
+        txt = res["choices"][0]["message"]["content"].strip()
+        dsl = sanitize_llm_dsl(txt)
+        if dsl:
+            return dsl, model_id
+    except Exception:
+        pass
+    return "", ""
+
+def record_learned_intent(active_scope, phrase_raw, dsl_cmd):
+    """Persist a newly inferred static shortcut (e.g. key/wm/media) into intents.learned.conf
+    so subsequent invocations resolve in <1ms via Tier 0."""
+    p_clean = clean_phrase(phrase_raw)
+    if not p_clean or len(p_clean.split()) > 8:
+        return
+    # Only auto-cache deterministic non-destructive shortcuts (key, wm, media, scroll)
+    steps = [s.strip() for s in dsl_cmd.split(";") if s.strip()]
+    if not steps or not all(s.split()[0] in ("key", "wm", "media", "scroll") for s in steps):
+        return
+    scope_tag = f"@{active_scope}" if active_scope in ("terminal", "browser", "editor") else ""
+    slug = "_".join(p_clean.split()[:4])
+    learned_id = f"learned_{slug}{scope_tag}"
+    act_cmd = f"dwm-act {dsl_cmd}" if len(steps) == 1 else f"dwm-act exec \"{dsl_cmd}\""
+    if len(steps) > 1:
+        return
+    try:
+        os.makedirs(os.path.dirname(learned_path), exist_ok=True)
+        existing = _load_conf_file(learned_path)
+        for ln in existing:
+            if f"| {p_clean}" in ln.lower() and learned_id in ln:
+                return
+        with open(learned_path, "a", encoding="utf-8") as lf:
+            lf.write(f"{learned_id:<24} | {act_cmd:<31} | {p_clean}\n")
+        last_learned_meta = f"/tmp/dwm-last-learned-{os.environ.get('USER', 'user')}.json"
+        with open(last_learned_meta, "w", encoding="utf-8") as mf:
+            json.dump({"ts": time.time(), "id": learned_id, "exemplar": p_clean, "dsl": dsl_cmd}, mf)
+    except Exception:
+        pass
+
+def infer_fallback(query_str, active_scope, cls_str, title_str):
+    mode = get_active_llm_mode()
+    if mode in ("off", "false", "0", "none", "disabled"):
+        return None
+    words = clean_phrase(query_str).split()
+    if len(words) < 2:
+        return None
+
+    dsl, provider = "", ""
+    if mode == "cloud":
+        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str)
+    elif mode in ("local", "local-1.5b"):
+        dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-local")
+    elif mode == "local-0.5b":
+        dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-0.5b")
+    elif mode == "pi":
+        return "ACT", 0.90, "pi-escalation", f'pi "{query_str}"'
+    else:  # "auto": try zero-RAM cloud-flash first, then local GGUF if resident
+        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str)
+        if not dsl:
+            dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-local")
+
+    if dsl:
+        record_learned_intent(active_scope, query_str, dsl)
+        scope_sfx = f"@{active_scope}" if active_scope != "any" else ""
+        return "ACT", 0.94, f"infer:{provider}{scope_sfx}", dsl
+    return None
+
+def evaluate_query(raw_query, use_inference=None, override_scope=None):
     if use_inference is None:
         use_inference = infer_default
     reload_conf_if_needed()
@@ -753,19 +1205,24 @@ def evaluate_query(raw_query, use_inference=None):
     if not q_trimmed:
         return "LOW\t0.00\tnone\t"
 
+    if override_scope:
+        active_scope, cls_str, title_str = override_scope, override_scope, ""
+    else:
+        active_scope, cls_str, title_str = get_focused_context()
+
     # 1. Check if the entire utterance resolves as a single clause first (0 inference by default)
-    whole_hit = match_single_clause(q_trimmed, use_inference=False)
-    if whole_hit and whole_hit[0] in ("type_text", "type_other", "type_enter", "type_enter_other", "record_start", "record_silent") and whole_hit[1] >= 0.90:
+    whole_hit = match_single_clause(q_trimmed, active_scope=active_scope, use_inference=False)
+    if whole_hit and whole_hit[0].split("@", 1)[0] in ("type_text", "type_other", "type_enter", "type_enter_other", "record_start", "record_silent") and whole_hit[1] >= 0.90:
         iid, sim, dsl = whole_hit
         return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
     # 2. Check multi-clause sequence
-    sub_parts = split_clauses_semantic(q_trimmed)
+    sub_parts = split_clauses_semantic(q_trimmed, active_scope=active_scope)
     if len(sub_parts) > 1:
         matched_steps = []
         min_sim = 1.0
         for idx, p in enumerate(sub_parts):
-            m = match_single_clause(p, use_inference=use_inference)
+            m = match_single_clause(p, active_scope=active_scope, use_inference=use_inference)
             if not m:
                 if idx == len(sub_parts) - 1 and matched_steps and len(p.split()) <= 1:
                     continue
@@ -782,10 +1239,16 @@ def evaluate_query(raw_query, use_inference=None):
         return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
     if use_inference:
-        whole_emb = match_single_clause(q_trimmed, use_inference=True)
+        whole_emb = match_single_clause(q_trimmed, active_scope=active_scope, use_inference=True)
         if whole_emb:
             iid, sim, dsl = whole_emb
             return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
+
+    # 3. Tier 2: Optional LLM Inference Adapter for novel/unlisted commands
+    inf_hit = infer_fallback(q_trimmed, active_scope, cls_str, title_str)
+    if inf_hit:
+        st, sim, iid, dsl = inf_hit
+        return f"{st}\t{sim:.2f}\t{iid}\t{dsl}"
 
     return "LOW\t0.00\tnone\t"
 
@@ -821,6 +1284,11 @@ if raw_query == "--daemon":
                 q = line[11:].strip()
                 res = evaluate_query(q, use_inference=True)
                 conn.sendall((res + "\n").encode("utf-8"))
+            elif line.startswith("EVAL_CTX\t"):
+                rest = line[9:].strip()
+                sc, q = rest.split("\t", 1) if "\t" in rest else ("any", rest)
+                res = evaluate_query(q, use_inference=infer_default, override_scope=sc)
+                conn.sendall((res + "\n").encode("utf-8"))
             elif line.startswith("ACT_EXEC\t"):
                 dsl = line[9:].strip()
                 if dwm_act is not None:
@@ -838,7 +1306,8 @@ if raw_query == "--daemon":
                 pass
     sys.exit(0)
 
-print(evaluate_query(raw_query, use_inference=infer_default))
+override_sc = os.environ.get("DWM_AUREN_CONTEXT_OVERRIDE", "").strip().lower() or None
+print(evaluate_query(raw_query, use_inference=infer_default, override_scope=override_sc))
 PYEOF
 }
 
@@ -876,25 +1345,34 @@ run_query() {
         ensure_auren_server
         eval_cmd="EVAL_INFER"
     fi
+    case "$(get_llm_mode)" in
+        local|local-1.5b|local-0.5b)
+            ensure_auren_server 1
+            ;;
+    esac
 
     eval_out=""
-    if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
-        eval_out=$(printf '%s\t%s\n' "$eval_cmd" "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
-    fi
-    if [ -z "$eval_out" ]; then
-        ensure_jarvisd
+    if [ -n "${DWM_AUREN_CONTEXT_OVERRIDE:-}" ]; then
+        eval_out=$(run_auren_python "$query")
+    else
         if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
             eval_out=$(printf '%s\t%s\n' "$eval_cmd" "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
         fi
-    fi
-    if [ -z "$eval_out" ]; then
-        eval_out=$(run_auren_python "$query")
+        if [ -z "$eval_out" ]; then
+            ensure_jarvisd
+            if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
+                eval_out=$(printf '%s\t%s\n' "$eval_cmd" "$query" | nc -w 14 -N -U "$JARVISD_SOCK" 2>/dev/null)
+            fi
+        fi
+        if [ -z "$eval_out" ]; then
+            eval_out=$(run_auren_python "$query")
+        fi
     fi
 
     tab_char=$(printf '\t')
-    IFS="$tab_char" read -r status score intent cmd <<EOF
+    IFS="$tab_char" read -r status score intent cmd <<__EVAL_EOF__
 $eval_out
-EOF
+__EVAL_EOF__
 
     if [ "$dry_run" = "--dry-run" ]; then
         printf 'status=%s score=%s intent=%s cmd=%s\n' "$status" "$score" "$intent" "$cmd"
@@ -950,9 +1428,9 @@ case "${1:-dmenu}" in
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", cmd);
                 gsub(/^[[:space:]]+|[[:space:]]+$/, "", ex);
                 split(ex, arr, ";");
-                printf "%-16s  ▸ %-28s (%s)\n", id, cmd, arr[1];
+                printf "%-20s  ▸ %-28s (%s)\n", id, cmd, arr[1];
             }
-        ' "$CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Jarvis NL / Intent:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
+        ' "$CONF_FILE" "$LEARNED_CONF_FILE" 2>/dev/null | dmenu -i -l 12 -p " Jarvis NL / Intent:" -fn "$FN" -nb "$NB" -nf "$NF" -sb "$SB" -sf "$SF")
         [ -z "$selection" ] && exit 0
         if printf '%s\n' "$selection" | grep -q "▸"; then
             direct_id=$(printf '%s\n' "$selection" | awk '{print $1}')
@@ -964,13 +1442,47 @@ case "${1:-dmenu}" in
                         print cmd; exit;
                     }
                 }
-            ' "$CONF_FILE")
+            ' "$CONF_FILE" "$LEARNED_CONF_FILE" 2>/dev/null)
             if [ -n "$direct_cmd" ]; then
                 notify_auren "  Jarvis → ${direct_id}" "▸ ${direct_cmd}"
                 exec /bin/sh -c "$direct_cmd"
             fi
         fi
         run_query "$selection"
+        ;;
+    llm-mode)
+        shift
+        if [ -z "${1:-}" ]; then
+            printf '%s\n' "$(get_llm_mode)"
+            exit 0
+        fi
+        mode=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
+        case "$mode" in
+            auto|cloud|local|local-1.5b|local-0.5b|pi|off)
+                mkdir -p "$HOME/.config/dwm"
+                printf '%s\n' "$mode" > "$MODE_FILE"
+                case "$mode" in
+                    local|local-1.5b|local-0.5b)
+                        ensure_auren_server 1
+                        ;;
+                    *)
+                        ensure_auren_server 0
+                        ;;
+                esac
+                notify_auren "  Jarvis LLM Mode" "Mode set to: ${mode}"
+                printf 'LLM mode set to %s\n' "$mode"
+                exit 0
+                ;;
+            *)
+                printf 'Usage: dwm-auren llm-mode [auto|cloud|local|local-0.5b|pi|off]\n' >&2
+                exit 1
+                ;;
+        esac
+        ;;
+    clear-learned)
+        rm -f "$LEARNED_CONF_FILE" "/tmp/dwm-last-learned-$USER.json"
+        notify_auren "  Jarvis Learned Intents" "Cleared ~/.config/dwm/intents.learned.conf"
+        exit 0
         ;;
     warmup)
         ensure_auren_server

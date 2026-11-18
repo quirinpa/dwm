@@ -112,8 +112,9 @@ dwm.bar.bat_crit:               15
 dwm.auren.url:                  http://localhost:4242/v1/systemone
 dwm.auren.model:                bge-base
 dwm.auren.threshold:            0.68
-dwm.auren.inference:            false
-dwm.auren.llm_fallback:         false
+dwm.auren.inference:            true
+dwm.auren.llm_fallback:         true
+dwm.auren.llm_mode:             auto
 dwm.voice.auto_kbd_lang:        false
 dwm.voice.auto_stop:            true
 dwm.voice.silence_ms:           480

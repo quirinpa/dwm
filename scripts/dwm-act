@@ -151,14 +151,42 @@ def save_undo_snapshot(op_desc: str = ""):
 
 
 def do_undo() -> str:
-    """Restore the most recent window/workspace state snapshot ('Scratch that' / 'Undo')."""
+    """Restore the most recent window/workspace state snapshot ('Scratch that' / 'Undo')
+    and evict any recently learned inference intent if within 120 seconds."""
+    evicted_msg = ""
+    last_learned_path = f"/tmp/dwm-last-learned-{os.environ.get('USER', 'user')}.json"
+    learned_conf_path = os.path.expanduser("~/.config/dwm/intents.learned.conf")
+    if os.path.exists(last_learned_path):
+        try:
+            with open(last_learned_path, "r", encoding="utf-8") as lf:
+                lmeta = json.load(lf)
+            os.unlink(last_learned_path)
+            if time.time() - float(lmeta.get("ts", 0.0)) <= 180.0 and os.path.exists(learned_conf_path):
+                target_ex = lmeta.get("exemplar", "").strip().lower()
+                target_id = lmeta.get("id", "").strip()
+                with open(learned_conf_path, "r", encoding="utf-8") as cf:
+                    lines = cf.readlines()
+                kept = []
+                for ln in lines:
+                    if target_id and ln.strip().startswith(target_id + " "):
+                        evicted_msg = f"unlearned:{target_ex}"
+                        continue
+                    if target_ex and ln.strip().lower().endswith("| " + target_ex):
+                        evicted_msg = f"unlearned:{target_ex}"
+                        continue
+                    kept.append(ln)
+                with open(learned_conf_path, "w", encoding="utf-8") as cf:
+                    cf.writelines(kept)
+        except Exception:
+            pass
+
     if not os.path.exists(UNDO_STATE_PATH):
-        return "undo:empty"
+        return evicted_msg if evicted_msg else "undo:empty"
     try:
         with open(UNDO_STATE_PATH, "r", encoding="utf-8") as f:
             snap = json.load(f)
     except Exception:
-        return "undo:error"
+        return evicted_msg if evicted_msg else "undo:error"
 
     cur_state = {
         "ts": time.time(),
@@ -188,7 +216,8 @@ def do_undo() -> str:
         pass
 
     prev_op = snap.get("op", "last action")
-    return f"undo({prev_op}->tag {active_tag})"
+    base_res = f"undo({prev_op}->tag {active_tag})"
+    return f"{base_res}; undo:{evicted_msg}" if evicted_msg else base_res
 
 
 def do_pull(target: str) -> str:
@@ -766,6 +795,11 @@ def normalize_key_combo(raw: str) -> str:
     low = raw.lower()
     if low in shortcut_map:
         return shortcut_map[low]
+
+    # Handle space-separated multi-key sequences like "ctrl+a BackSpace"
+    tokens = raw.split()
+    if len(tokens) > 1 and any("+" in t or "-" in t for t in tokens):
+        return " ".join(normalize_key_combo(t) for t in tokens)
 
     parts = raw.replace("+", " ").replace("-", " ").split()
     if not parts:
@@ -1952,7 +1986,7 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
     if op in ("key", "press", "shortcut", "hotkey"):
         combo = normalize_key_combo(arg)
         run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
-        run_cmd(["xdotool", "key", "--clearmodifiers", combo])
+        run_cmd(["xdotool", "key", "--clearmodifiers"] + combo.split())
         time.sleep(0.07)
         return f"key {combo}"
 

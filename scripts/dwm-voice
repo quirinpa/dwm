@@ -370,14 +370,15 @@ jarvis_toggle() {
 voice_menu() {
     lang=$(get_lang)
     model=$(basename "$(get_model)")
+    llm_mode=$(/home/quirinpa/.local/bin/dwm-auren llm-mode 2>/dev/null || echo "auto")
     if is_jarvis_running; then
         j_status="ON (Yellow)"
     else
         j_status="OFF / Lockdown (Silver)"
     fi
 
-    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$lang" "$model" | \
-        dmenu_voice "Jarvis:" 9 "#f9e2af")
+    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🤖  Jarvis LLM Inference Mode [current: %s]\n🧹  Clear Learned Voice Shortcuts (intents.learned.conf)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$llm_mode" "$lang" "$model" | \
+        dmenu_voice "Jarvis:" 11 "#f9e2af")
 
     case "$choice" in
         *"Toggle Jarvis Listener"*)
@@ -389,6 +390,17 @@ voice_menu() {
             ;;
         *"Jarvis Lockdown"*)
             jarvis_lockdown
+            ;;
+        *"Jarvis LLM Inference Mode"*)
+            lmode=$(printf "auto       (Cloud Flash 0 MB RAM -> Local 1.5B offline fallback)\ncloud      (Cloud Flash only — 0 MB RAM, ~650 ms)\nlocal      (Local Qwen2.5-1.5B GGUF on axil-auren — ~1.1 GB RAM)\nlocal-0.5b (Local Qwen2.5-0.5B GGUF on axil-auren — ~470 MB RAM)\npi         (Escalate novel commands to background Jarvis Pi session)\noff        (Disable LLM inference; use Tier 0 + embeddings only)\n" | \
+                dmenu_voice "LLM Mode:" 6 "#f9e2af")
+            if [ -n "$lmode" ]; then
+                new_lmode=$(printf '%s\n' "$lmode" | awk '{print $1}')
+                exec /home/quirinpa/.local/bin/dwm-auren llm-mode "$new_lmode"
+            fi
+            ;;
+        *"Clear Learned Voice Shortcuts"*)
+            exec /home/quirinpa/.local/bin/dwm-auren clear-learned
             ;;
         *"Open Jarvis Pi Terminal"*)
             exec /home/quirinpa/.local/bin/dwm-jarvis-pi show
