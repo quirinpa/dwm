@@ -45,7 +45,10 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${DESTDIR}${PREFIX}/bin/
-	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/jarvis_core.py scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/jarvis scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/jarvis_core.py scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis
+	cp -r lib/jarvis-core lib/jarvis-adapters lib/jarvis-dsl $(HOME)/.local/lib/
+	install -m 644 ontology.json $(HOME)/.config/jarvis/ontology.json
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
 	mkdir -p $(HOME)/.config/dwm

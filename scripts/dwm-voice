@@ -265,7 +265,7 @@ jarvis_loop() {
     printf '%s\n' "$$" > "$JARVIS_PID_FILE"
     ensure_chime_wav
     ensure_whisper_server
-    /home/quirinpa/.local/bin/dwm-auren warmup </dev/null >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/jarvis warmup </dev/null >/dev/null 2>&1 &
     printf 'jarvis\n' > "$STATE_FILE"
     refresh_bar
 
@@ -325,7 +325,7 @@ jarvis_loop() {
             fi
             printf '%s\n' "$$" > "$ACTING_PID_FILE"
             refresh_bar
-            /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
+            /home/quirinpa/.local/bin/jarvis query "$cmd_text" </dev/null >/dev/null 2>&1
             act_rc=$?
             rm -f "$ACTING_PID_FILE"
             if [ "$act_rc" -eq 0 ]; then
@@ -373,6 +373,10 @@ jarvis_start() {
     fi
     if command -v wpctl >/dev/null 2>&1; then
         wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
+        cur_vol=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | awk '{print $2}')
+        if [ -n "$cur_vol" ]; then
+            awk "BEGIN { exit !($cur_vol < 0.70) }" 2>/dev/null && wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.85 2>/dev/null || true
+        fi
     fi
     rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
     ensure_whisper_server
@@ -410,7 +414,7 @@ jarvis_toggle() {
 voice_menu() {
     lang=$(get_lang)
     model=$(basename "$(get_model)")
-    llm_mode=$(/home/quirinpa/.local/bin/dwm-auren llm-mode 2>/dev/null || echo "auto")
+    llm_mode=$(/home/quirinpa/.local/bin/jarvis llm-mode 2>/dev/null || echo "auto")
     fms=$(get_followup_ms)
     case "$fms" in
         0) f_label="Strict Wake-Word (0s)" ;;
@@ -451,15 +455,15 @@ voice_menu() {
             jarvis_lockdown
             ;;
         *"Jarvis LLM Inference Mode"*)
-            lmode=$(printf "auto       (Cloud Flash 0 MB RAM -> Local 1.5B offline fallback)\ncloud      (Cloud Flash only — 0 MB RAM, ~650 ms)\nlocal      (Local Qwen2.5-1.5B GGUF on axil-auren — ~1.1 GB RAM)\nlocal-0.5b (Local Qwen2.5-0.5B GGUF on axil-auren — ~470 MB RAM)\npi         (Escalate novel commands to background Jarvis Pi session)\noff        (Disable LLM inference; use Tier 0 + embeddings only)\n" | \
-                dmenu_voice "LLM Mode:" 6 "#f9e2af")
+            lmode=$(printf "auto       (bge-base embeddings -> axil-auren remote LLM fast)\ncloud      (axil-auren remote LLM fast/smart — 0 MB RAM)\nembedding  (Local bge-base embeddings only — offline)\noff        (Deterministic Tier-1 solver only)\n" | \
+                dmenu_voice "LLM Mode:" 4 "#f9e2af")
             if [ -n "$lmode" ]; then
                 new_lmode=$(printf '%s\n' "$lmode" | awk '{print $1}')
-                exec /home/quirinpa/.local/bin/dwm-auren llm-mode "$new_lmode"
+                exec /home/quirinpa/.local/bin/jarvis llm-mode "$new_lmode"
             fi
             ;;
         *"Clear Learned Voice Shortcuts"*)
-            exec /home/quirinpa/.local/bin/dwm-auren clear-learned
+            exec /home/quirinpa/.local/bin/jarvis clear-learned
             ;;
         *"Open Jarvis Pi Terminal"*)
             exec /home/quirinpa/.local/bin/dwm-jarvis-pi show
@@ -471,7 +475,7 @@ voice_menu() {
             exec /home/quirinpa/.local/bin/dwm-jarvis-pi reset
             ;;
         *"Semantic Command Bar"*)
-            exec /home/quirinpa/.local/bin/dwm-auren dmenu
+            exec /home/quirinpa/.local/bin/jarvis dmenu
             ;;
         *"Window Manager Instructions"*)
             exec /home/quirinpa/.local/bin/dwm-help show
