@@ -241,20 +241,41 @@ act_path = os.path.expanduser("~/.local/bin/dwm-act")
 if not os.path.exists(act_path):
     act_path = os.path.join(os.path.dirname(os.path.abspath(conf_path)), "dwm-act")
 
+jarvis_core = None
+jcore_mtime = 0.0
+jcore_solver = None
+jcore_candidates = [
+    os.path.expanduser("~/.local/bin/jarvis_core.py"),
+    "/home/quirinpa/.local/src/dwm/scripts/jarvis_core.py",
+]
+
 def reload_dwm_act_if_needed():
-    global dwm_act, act_mtime
+    global dwm_act, act_mtime, jarvis_core, jcore_mtime, jcore_solver
     try:
-        if not os.path.exists(act_path):
-            return
-        mt = os.path.getmtime(act_path)
-        if dwm_act is not None and mt == act_mtime:
-            return
-        act_mtime = mt
-        loader = importlib.machinery.SourceFileLoader("dwm_act", act_path)
-        spec = importlib.util.spec_from_loader("dwm_act", loader)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        dwm_act = mod
+        if os.path.exists(act_path):
+            mt = os.path.getmtime(act_path)
+            if dwm_act is None or mt != act_mtime:
+                act_mtime = mt
+                loader = importlib.machinery.SourceFileLoader("dwm_act", act_path)
+                spec = importlib.util.spec_from_loader("dwm_act", loader)
+                mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(mod)
+                dwm_act = mod
+    except Exception:
+        pass
+    try:
+        for jp in jcore_candidates:
+            if os.path.exists(jp):
+                jmt = os.path.getmtime(jp)
+                if jarvis_core is None or jmt != jcore_mtime:
+                    jcore_mtime = jmt
+                    jloader = importlib.machinery.SourceFileLoader("jarvis_core", jp)
+                    jspec = importlib.util.spec_from_loader("jarvis_core", jloader)
+                    jmod = importlib.util.module_from_spec(jspec)
+                    jspec.loader.exec_module(jmod)
+                    jarvis_core = jmod
+                    jcore_solver = jmod.CompositionalSemanticSolver()
+                break
     except Exception:
         pass
 
@@ -945,7 +966,15 @@ def _is_valid_param_hit(iid_resolved, clause_low, arg_val, active_scope="any"):
     if base_iid == "wm_how_to":
         if not clause_low.startswith(HELP_QUESTION_PREFIXES):
             return False
-    if base_iid in ("focus_target", "open_target"):
+    # Enforce selectional restrictions on play_target / open_target / focus_target via ontology entities
+    if base_iid in ("play_target", "open_target", "focus_target") and jcore_solver is not None:
+        live_ents = jcore_solver.ont.build_live_entity_index()
+        parsed_arg = jcore_solver.extract_constituents(arg_val, live_ents)
+        arg_ent_types = set(parsed_arg.get("entities", {}).keys())
+        non_media_types = {"fs.collection", "fs.metric", "fs.file_type", "fs.location", "git.object", "shell.program", "edit.unit"}
+        if arg_ent_types & non_media_types:
+            return False
+    if base_iid in ("focus_target", "open_target", "play_target"):
         if arg_words & FILESYSTEM_NAV_WORDS or "/" in arg_val or "~" in arg_val:
             return False
     return True
@@ -1199,6 +1228,20 @@ def match_single_clause(clause, active_scope="any", use_inference=False):
         st_fast = match_static_fast(c_raw, active_scope=eff_scope)
     if st_fast and st_fast[1] >= 0.98:
         return st_fast
+
+    # 2a. Universal Compositional Frame-Semantic Solver (jarvis_core + ontology.json)
+    #     Jointly evaluates (VerbConcept x ArgumentEntityType x ContextSurface) with Selectional Restrictions
+    #     so polysemous light verbs ("put on a list of my files" vs "put on some Miles Davis") never collide.
+    if jcore_solver is not None and jarvis_core is not None:
+        ir = jcore_solver.solve_clause(c_raw, active_surface=eff_scope)
+        if ir:
+            lbl, dsl = jarvis_core.compile_ir_linux_dwm(
+                ir,
+                active_surface=active_scope,
+                auto_bridge_terminal=(active_scope != "terminal" and ir.get("surface") == "terminal" and not explicit_term),
+            )
+            if dsl:
+                return lbl, float(ir.get("score", 0.98)), dsl
 
     # 2b. Fast <0.5ms deterministic @terminal shell grammar (CLI tools, ls, cd, find, mkdir)
     sh_fast = synthesize_terminal_shell_fast(c_clean, active_scope=eff_scope, explicit_term=explicit_term)

@@ -300,8 +300,31 @@ class TestLayer4AurenRouter(unittest.TestCase):
         out_find = subprocess.check_output(
             [AUREN_PATH, "dry-run", "find all python files in my home directory"], text=True, env=env_term, timeout=6.0
         ).strip()
-        self.assertIn("intent=find_ext@terminal", out_find)
-        self.assertIn('cmd=type_enter "find ~ -name \'*.py\'"', out_find)
+        self.assertIn("cmd=type_enter \"find ~ -name '*.py'\"", out_find)
+
+        out_put_on_files = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "put on a list of my files"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("status=ACT", out_put_on_files)
+        self.assertIn('cmd=type_enter "ls -la"', out_put_on_files)
+        self.assertNotIn("play", out_put_on_files)
+
+        out_put_on_files_browser = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "put on a list of my files"], text=True, env=env_browser, timeout=6.0
+        ).strip()
+        self.assertIn("status=ACT", out_put_on_files_browser)
+        self.assertIn('cmd=sh st ; type_enter "ls -la"', out_put_on_files_browser)
+        self.assertNotIn("play", out_put_on_files_browser)
+
+        out_pull_up_dl = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "pull up my downloads"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn('cmd=type_enter "ls -la ~/Downloads"', out_pull_up_dl)
+
+        out_put_on_music = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "put on some Miles Davis"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn('cmd=play "Miles Davis"', out_put_on_music)
 
         out_chain = subprocess.check_output(
             [AUREN_PATH, "dry-run", "open up a new terminal and list the files in my home directory"],
