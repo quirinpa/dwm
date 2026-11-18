@@ -141,11 +141,11 @@ ensure_configs
 
 case "${1:-open}" in
     open)
-        if pgrep -f 'ghostty.*title=Calendar' >/dev/null 2>&1; then
-            pkill -f 'ghostty.*title=Calendar' 2>/dev/null || true
+        if pgrep -f '(st|ghostty).*Calendar' >/dev/null 2>&1; then
+            pkill -f '(st|ghostty).*Calendar' 2>/dev/null || true
             exit 0
         fi
-        exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="Calendar" -e sh -c '
+        exec st -c dwm-float -n dwm-float -t "Calendar" -e sh -c '
             export PATH="$HOME/.local/bin:$PATH"
             if ! ikhal; then
                 printf "\n\033[1;31m[ikhal exited with an error — press Enter to close]\033[0m "
@@ -173,7 +173,7 @@ case "${1:-open}" in
         refresh_upcoming
         ;;
     setup)
-        exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="Google Calendar Setup" -e sh -c '
+        exec st -c dwm-float -n dwm-float -t "Google Calendar Setup" -e sh -c '
             export PATH="$HOME/.local/bin:$PATH"
             printf "\033[1;35m=== Google Calendar Sync Setup (vdirsyncer + khal) ===\033[0m\n\n"
             printf "Choose how you want to sync Google Calendar locally:\n"

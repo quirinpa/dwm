@@ -126,11 +126,11 @@ cmd_show() {
         start_jarvis_session ""
         sleep 0.25
     fi
-    # If a jarvis-pi terminal window is already open, focus it; otherwise spawn ghostty attached to tmux
+    # If a jarvis-pi terminal window is already open, focus it; otherwise spawn st attached to tmux
     if xdotool search --class "jarvis-pi" >/dev/null 2>&1; then
         dwm-msg focus-class jarvis-pi >/dev/null 2>&1 || true
     else
-        ghostty --class=jarvis-pi --title="Jarvis Pi Session (tmux)" \
+        st -c jarvis-pi -n jarvis-pi -t "Jarvis Pi Session (tmux)" \
             -e tmux attach-session -t "$SESSION" >/dev/null 2>&1 &
     fi
     notify_pi 2800 "  Jarvis Pi Terminal" "Attached to tmux session '${SESSION}'. Close window anytime to keep running in background."

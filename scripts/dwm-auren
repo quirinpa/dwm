@@ -14,9 +14,13 @@ JARVISD_PID="/tmp/dwm-auren-daemon-$USER.pid"
 DONE_CHIME_WAV="/tmp/dwm-voice-done-$USER.wav"
 
 load_xres_cache() {
+    now_s=$(date +%s 2>/dev/null || echo 0)
     if [ -f "$XRES_CACHE" ]; then
-        . "$XRES_CACHE"
-        return 0
+        mtime=$(stat -c %Y "$XRES_CACHE" 2>/dev/null || echo 0)
+        if [ $(( now_s - mtime )) -lt 15 ]; then
+            . "$XRES_CACHE"
+            return 0
+        fi
     fi
     if command -v xrdb >/dev/null 2>&1; then
         xrdb -query 2>/dev/null | awk '
@@ -402,7 +406,7 @@ def resolve_payload_and_target(iid, raw_arg):
 def promote_intent(iid, arg_val):
     arg_low = clean_phrase(arg_val)
     if iid == "open_target":
-        if arg_low in ("terminal", "new terminal", "xterm", "shell", "console", "term", "new term", "term online", "new term online"):
+        if arg_low in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term", "new term", "term online", "new term online"):
             return "open_terminal"
         if arg_low in ("new tab", "tab", "browser tab", "new browser tab"):
             return "new_tab"
@@ -413,7 +417,7 @@ def promote_intent(iid, arg_val):
         if dwm_act is not None and dwm_act.is_media_query(arg_val, use_inference=False):
             return "play_target"
     elif iid == "focus_target":
-        if arg_low in ("terminal", "xterm", "shell", "console", "term"):
+        if arg_low in ("terminal", "st", "xterm", "shell", "console", "term"):
             return "focus_terminal"
     return iid
 
@@ -640,9 +644,9 @@ def match_single_clause(clause, use_inference=False):
                 cmd_tmpl = commands.get(iid_res, commands[iid])
                 return iid_res, 0.99, cmd_to_dsl(cmd_tmpl.replace("{arg}", arg_val))
 
-    # 2. Priority to normal static commands before parametric prefix templates
+    # 2. Priority to exact/core static commands (>= 0.98) before parametric prefix templates
     st_fast = match_static_fast(c_clean)
-    if st_fast and st_fast[1] >= 0.84:
+    if st_fast and st_fast[1] >= 0.98:
         return st_fast
 
     pm = match_param_template(c_clean)
@@ -972,7 +976,7 @@ case "${1:-dmenu}" in
         run_query "$*" "--dry-run"
         ;;
     edit-config)
-        exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="Auren Intents Config" -e "${EDITOR:-vi}" "$CONF_FILE"
+        exec st -c dwm-float -n dwm-float -t "Auren Intents Config" -e "${EDITOR:-vi}" "$CONF_FILE"
         ;;
     *)
         run_query "$*"

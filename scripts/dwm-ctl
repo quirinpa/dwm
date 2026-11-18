@@ -194,7 +194,7 @@ case "$1" in
         case "$seg" in
             0|3|4) # Memory / CPU segment (SchemeNorm=0, SchemeMem=3, SchemeCpu=4)
                 if [ "$btn" = "1" ]; then
-                    exec ghostty --class=dwm.float --x11-instance-name=dwm-float --title="top" -e top
+                    exec st -c dwm-float -n dwm-float -t "top" -e top
                 fi
                 ;;
             5|6) # Volume segment (SchemeVol=5, SchemeVolMute=6)

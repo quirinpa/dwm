@@ -6,9 +6,9 @@ XTerm*termName:                 xterm-256color
 XTerm*locale:                   true
 XTerm*utf8:                     1
 
-! Font (matches Ghostty default monospace + font-size = 16)
+! Font (matches Ghostty default monospace + font-size = 14)
 XTerm*faceName:                 DejaVu Sans Mono
-XTerm*faceSize:                 16
+XTerm*faceSize:                 14
 XTerm*renderFont:               true
 
 ! Window & Padding (matches Ghostty window-padding-x/y = 8)

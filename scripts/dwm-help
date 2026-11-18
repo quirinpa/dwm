@@ -120,7 +120,7 @@ def answer_query(raw_query: str):
         (
             "Open a Terminal",
             (
-                ["terminal", "shell", "ghostty", "console", "command line"],
+                ["terminal", "shell", "st", "ghostty", "console", "command line"],
                 [""],
             ),
             "⌨  Keyboard:  Mod + Shift + Enter\n"
@@ -322,7 +322,7 @@ def run_gui():
 
     SECTIONS_LEFT = [
         ("Launchers & Jarvis Voice Assistant", [
-            ("Mod + Shift + Enter", "Terminal (ghostty)"),
+            ("Mod + Shift + Enter", "Terminal (st)"),
             ("Mod + p",             "App Launcher (dmenu)"),
             ("Mod + a",             "Jarvis Semantic Command Bar"),
             ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Off (Silver)"),

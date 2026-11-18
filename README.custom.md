@@ -9,7 +9,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 ### Launchers & System Menus
 | Shortcut | Action | Command / Script |
 |---|---|---|
-| `Mod +Shift + Enter` | Open terminal (`ghostty`) | `ghostty` |
+| `Mod +Shift + Enter` | Open terminal (`st`) | `st` |
 | `Mod + p` | Application launcher (`dmenu`) | `dmenu_run` |
 | `Mod + Space` | **Toggle Keyboard Layout (`US` ⇄ `PT`)** | `dwm-ctl kbd-toggle` |
 | `Mod + v` | **Toggle Jarvis Listener On (`Yellow`) ⇄ Off (`Silver`)** (without locking screen) | `dwm-voice toggle` |
