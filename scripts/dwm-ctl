@@ -188,14 +188,30 @@ case "$1" in
             fi
         done
         ;;
+    sys-monitor|top)
+        sort_flag="${2:---mem}"
+        if pgrep -f '(st|ghostty).*System & Memory Monitor' >/dev/null 2>&1; then
+            pkill -f '(st|ghostty).*System & Memory Monitor' 2>/dev/null || true
+            exit 0
+        fi
+        exec st -c dwm-float -n dwm-float -g 108x30 -t "System & Memory Monitor" -e /home/quirinpa/.local/bin/dwm-top "$sort_flag"
+        ;;
+    sys-popup)
+        if command -v notify-send >/dev/null 2>&1; then
+            body=$(/home/quirinpa/.local/bin/dwm-top --popup 2>/dev/null)
+            [ -n "$body" ] && notify-send -t 6000 -h string:x-dunst-stack-tag:sysmon "  System & Memory Usage" "$body" 2>/dev/null || true
+        fi
+        ;;
     status-click)
         seg="$2"
         btn="$3"
         case "$seg" in
             0|3|4) # Memory / CPU segment (SchemeNorm=0, SchemeMem=3, SchemeCpu=4)
-                if [ "$btn" = "1" ]; then
-                    exec st -c dwm-float -n dwm-float -t "top" -e top
-                fi
+                case "$btn" in
+                    1) exec "$0" sys-monitor --mem ;;
+                    2) exec "$0" sys-monitor --cpu ;;
+                    3) exec "$0" sys-popup ;;
+                esac
                 ;;
             5|6) # Volume segment (SchemeVol=5, SchemeVolMute=6)
                 case "$btn" in

@@ -1,0 +1,577 @@
+#!/usr/bin/env python3
+"""
+dwm-top: Fast, zero-dependency, human-friendly Process & Memory Monitor for dwm.
+Replaces raw 80-column `top` with readable application names, grouped multi-process
+apps (e.g. Firefox + all isolated tab processes), visual memory/CPU bars, live search,
+and safe 1-key process termination.
+"""
+import curses
+import glob
+import os
+import signal
+import sys
+import time
+
+APP_ALIASES = {
+    "firefox": "Firefox Web Browser",
+    "isolated web co": "Firefox Tab Process",
+    "isolated servic": "Firefox Service Worker",
+    "privileged cont": "Firefox Privileged Tab",
+    "webextensions": "Firefox Extensions",
+    "rdd process": "Firefox Media Decoder",
+    "socket process": "Firefox Network Socket",
+    "utility process": "Firefox Utility",
+    "forkserver": "Firefox Fork Server",
+    "ghostty": "Ghostty Terminal",
+    "st": "st Terminal",
+    "dwm": "dwm Window Manager",
+    "dwm-bar": "dwm Status Bar",
+    "dwm-whisperd": "Jarvis Whisper Daemon",
+    "dwm-voice": "Jarvis Voice Listener",
+    "axil": "Axil / Auren Server",
+    "cormd": "Corm Database Daemon",
+    "pi": "Pi Coding Agent",
+    "agy_acp_server.": "Antigravity ACP Server",
+    "agy_acp_server.par": "Antigravity ACP Server",
+    "localharness_ex": "Antigravity Local Harness",
+    "localharness_external": "Antigravity Local Harness",
+    "nautilus": "GNOME Files (Nautilus)",
+    "pipewire": "PipeWire Audio Engine",
+    "pipewire-pulse": "PipeWire PulseAudio",
+    "wireplumber": "WirePlumber Audio Session",
+    "xorg": "Xorg Display Server",
+    "picom": "Picom Compositor",
+    "dunst": "Dunst Notifications",
+}
+
+FIREFOX_PROCS = {
+    "firefox", "isolated web co", "isolated servic", "privileged cont",
+    "webextensions", "rdd process", "socket process", "utility process", "forkserver",
+}
+
+
+def read_meminfo():
+    info = {}
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as f:
+            for line in f:
+                if ":" in line:
+                    k, v = line.split(":", 1)
+                    parts = v.strip().split()
+                    if parts and parts[0].isdigit():
+                        info[k] = int(parts[0]) * 1024
+    except Exception:
+        pass
+    total = info.get("MemTotal", 1)
+    avail = info.get("MemAvailable", info.get("MemFree", 0))
+    used = max(0, total - avail)
+    swap_total = info.get("SwapTotal", 0)
+    swap_free = info.get("SwapFree", 0)
+    swap_used = max(0, swap_total - swap_free)
+    return {
+        "total": total,
+        "used": used,
+        "avail": avail,
+        "pct": (used * 100.0 / total) if total else 0.0,
+        "swap_total": swap_total,
+        "swap_used": swap_used,
+        "swap_pct": (swap_used * 100.0 / swap_total) if swap_total else 0.0,
+    }
+
+
+def read_cpu_ticks():
+    try:
+        with open("/proc/stat", "r", encoding="utf-8") as f:
+            first = f.readline().split()
+        if first and first[0] == "cpu":
+            vals = [int(x) for x in first[1:]]
+            idle = vals[3] + (vals[4] if len(vals) > 4 else 0)
+            total = sum(vals)
+            return total, idle
+    except Exception:
+        pass
+    return 0, 0
+
+
+def read_loadavg():
+    try:
+        with open("/proc/loadavg", "r", encoding="utf-8") as f:
+            parts = f.read().split()
+            return " ".join(parts[:3])
+    except Exception:
+        return "0.00 0.00 0.00"
+
+
+def friendly_names(comm, args):
+    comm_low = comm.lower().strip()
+    first_tok = args[0].split()[0] if args and args[0] else comm
+    exe_base = os.path.basename(first_tok).lower()
+    cmd_str = " ".join(args) if args else comm
+
+    # Group classification (for grouped view) and Individual name (for ungrouped view)
+    if comm_low in FIREFOX_PROCS or "firefox" in exe_base or "/firefox/" in cmd_str.lower():
+        group_key = "Firefox Web Browser"
+        indiv_name = APP_ALIASES.get(comm_low, f"Firefox ({comm})")
+        return group_key, indiv_name, cmd_str
+
+    if exe_base in ("node", "deno", "python", "python3", "sh", "bash") and len(args) >= 2:
+        script_arg = None
+        for a in args[1:]:
+            if not a.startswith("-"):
+                script_arg = a
+                break
+        if script_arg:
+            s_base = os.path.basename(script_arg)
+            if s_base in APP_ALIASES:
+                label = APP_ALIASES[s_base]
+                return label, label, cmd_str
+            label = f"{s_base} ({exe_base})"
+            return label, label, cmd_str
+
+    if comm_low.startswith("next-server"):
+        return "Next.js Dev Server", comm, cmd_str
+
+    if comm_low in APP_ALIASES:
+        label = APP_ALIASES[comm_low]
+        return label, label, cmd_str
+    if exe_base in APP_ALIASES:
+        label = APP_ALIASES[exe_base]
+        return label, label, cmd_str
+
+    clean_name = os.path.basename(first_tok) if first_tok.startswith("/") else comm
+    return clean_name, clean_name, cmd_str
+
+
+class ProcessMonitor:
+    def __init__(self, sort_by="mem", grouped=True):
+        self.sort_by = sort_by  # "mem" or "cpu"
+        self.grouped = grouped
+        self.filter_str = ""
+        self.searching = False
+        self.selected_idx = 0
+        self.scroll_top = 0
+        self.prev_proc_ticks = {}
+        self.prev_cpu_total, self.prev_cpu_idle = read_cpu_ticks()
+        self.prev_time = time.monotonic()
+        self.cpu_pct = 0.0
+        self.ncpu = max(1, os.cpu_count() or 1)
+        self.clk_tck = os.sysconf(os.sysconf_names.get("SC_CLK_TCK", "SC_CLK_TCK"))
+        self.page_size = os.sysconf("SC_PAGE_SIZE")
+        self.uid = os.getuid()
+        self.user_Cache = {self.uid: os.environ.get("USER", "user"), 0: "root"}
+        self.status_msg = ""
+        self.status_expire = 0.0
+        self.rows = []
+        self.mem = read_meminfo()
+        self.loadavg = read_loadavg()
+        self.sample()
+
+    def set_status(self, msg, duration=3.0):
+        self.status_msg = msg
+        self.status_expire = time.monotonic() + duration
+
+    def sample(self):
+        now = time.monotonic()
+        dt = max(0.05, now - self.prev_time)
+        self.prev_time = now
+
+        cur_total, cur_idle = read_cpu_ticks()
+        d_total = cur_total - self.prev_cpu_total
+        d_idle = cur_idle - self.prev_cpu_idle
+        if d_total > 0:
+            self.cpu_pct = max(0.0, min(100.0, (1.0 - d_idle / d_total) * 100.0))
+        self.prev_cpu_total, self.prev_cpu_idle = cur_total, cur_idle
+
+        self.mem = read_meminfo()
+        self.loadavg = read_loadavg()
+        mem_total = max(1, self.mem["total"])
+
+        new_ticks = {}
+        raw_procs = []
+
+        for pdir in glob.glob("/proc/[0-9]*"):
+            try:
+                pid = int(os.path.basename(pdir))
+                st = os.stat(pdir)
+                with open(pdir + "/stat", "rb") as f:
+                    stat_b = f.read()
+                lp = stat_b.find(b"(")
+                rp = stat_b.rfind(b")")
+                if lp < 0 or rp < 0:
+                    continue
+                comm = stat_b[lp + 1:rp].decode("utf-8", "replace")
+                fields = stat_b[rp + 2:].split()
+                state = fields[0].decode("ascii", "replace")
+                utime = int(fields[11])
+                stime = int(fields[12])
+                rss_pages = int(fields[21])
+                rss_bytes = rss_pages * self.page_size
+                if rss_bytes <= 0:
+                    continue
+                ticks = utime + stime
+                new_ticks[pid] = ticks
+                prev_t = self.prev_proc_ticks.get(pid, ticks)
+                cpu_p = max(0.0, ((ticks - prev_t) / self.clk_tck) / dt * 100.0)
+
+                try:
+                    with open(pdir + "/cmdline", "rb") as cf:
+                        cmd_b = cf.read()
+                    args = [a.decode("utf-8", "replace") for a in cmd_b.split(b"\0") if a]
+                except Exception:
+                    args = []
+
+                group_name, indiv_name, cmd_str = friendly_names(comm, args)
+                user_str = self.user_Cache.get(st.st_uid, str(st.st_uid))
+                raw_procs.append({
+                    "pid": pid,
+                    "pids": [pid],
+                    "count": 1,
+                    "user": user_str,
+                    "state": state,
+                    "rss": rss_bytes,
+                    "mem_pct": (rss_bytes * 100.0) / mem_total,
+                    "cpu_pct": cpu_p,
+                    "name": group_name if self.grouped else indiv_name,
+                    "comm": comm,
+                    "cmd": cmd_str,
+                })
+            except Exception:
+                continue
+
+        self.prev_proc_ticks = new_ticks
+
+        if self.grouped:
+            groups = {}
+            for p in raw_procs:
+                gkey = p["name"]
+                if gkey not in groups:
+                    groups[gkey] = dict(p)
+                else:
+                    g = groups[gkey]
+                    g["rss"] += p["rss"]
+                    g["mem_pct"] += p["mem_pct"]
+                    g["cpu_pct"] += p["cpu_pct"]
+                    g["count"] += 1
+                    g["pids"].append(p["pid"])
+                    if p["comm"].lower() == gkey.split()[0].lower() or p["pid"] < g["pid"]:
+                        g["pid"] = p["pid"]
+                        g["cmd"] = p["cmd"]
+            items = list(groups.values())
+        else:
+            items = raw_procs
+
+        if self.filter_str:
+            q = self.filter_str.lower()
+            items = [
+                it for it in items
+                if q in it["name"].lower()
+                or q in it["comm"].lower()
+                or q in it["cmd"].lower()
+                or q in str(it["pid"])
+            ]
+
+        if self.sort_by == "cpu":
+            items.sort(key=lambda x: (x["cpu_pct"], x["rss"]), reverse=True)
+        else:
+            items.sort(key=lambda x: (x["rss"], x["cpu_pct"]), reverse=True)
+
+        self.rows = items
+        if self.selected_idx >= len(self.rows):
+            self.selected_idx = max(0, len(self.rows) - 1)
+
+
+def fmt_bytes(b):
+    if b >= 1073741824:
+        return f"{b / 1073741824:.2f} GiB"
+    if b >= 1048576:
+        return f"{b / 1048576:.0f} MiB"
+    return f"{b / 1024:.0f} KiB"
+
+
+def draw_meter(win, y, x, width, label, pct, detail_str, color_ok, color_warn, color_crit):
+    bar_w = max(8, width - len(label) - len(detail_str) - 6)
+    filled = int(round((pct / 100.0) * bar_w))
+    filled = max(0, min(bar_w, filled))
+    col = color_crit if pct >= 85 else (color_warn if pct >= 65 else color_ok)
+    try:
+        win.addstr(y, x, f"{label} [", curses.A_BOLD)
+        if filled > 0:
+            win.addstr("█" * filled, col | curses.A_BOLD)
+        if bar_w - filled > 0:
+            win.addstr("░" * (bar_w - filled), curses.A_DIM)
+        win.addstr(f"] {detail_str}", curses.A_NORMAL)
+    except curses.error:
+        pass
+
+
+def run_tui(stdscr, initial_sort="mem"):
+    curses.curs_set(0)
+    stdscr.nodelay(True)
+    stdscr.keypad(True)
+
+    has_colors = curses.has_colors()
+    if has_colors:
+        curses.start_color()
+        curses.use_default_colors()
+        curses.init_pair(1, curses.COLOR_GREEN, -1)    # OK
+        curses.init_pair(2, curses.COLOR_YELLOW, -1)   # Warn / Highlight
+        curses.init_pair(3, curses.COLOR_RED, -1)      # Crit
+        curses.init_pair(4, curses.COLOR_CYAN, -1)     # Header / Accent
+        curses.init_pair(5, curses.COLOR_MAGENTA, -1)  # App group badge
+        curses.init_pair(6, curses.COLOR_BLACK, curses.COLOR_CYAN)  # Selected row
+
+    c_ok = curses.color_pair(1) if has_colors else 0
+    c_warn = curses.color_pair(2) if has_colors else 0
+    c_crit = curses.color_pair(3) if has_colors else 0
+    c_hdr = curses.color_pair(4) | curses.A_BOLD if has_colors else curses.A_BOLD
+    c_badge = curses.color_pair(5) if has_colors else 0
+    c_sel = curses.color_pair(6) | curses.A_BOLD if has_colors else curses.A_REVERSE
+
+    mon = ProcessMonitor(sort_by=initial_sort, grouped=True)
+    last_sample = time.monotonic()
+    confirm_kill = None  # (pid_list, name, sig)
+
+    while True:
+        now = time.monotonic()
+        if now - last_sample >= 1.5:
+            mon.sample()
+            last_sample = now
+
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+
+        # Title bar
+        mode_lbl = "Grouped Apps" if mon.grouped else "Individual PIDs"
+        sort_lbl = "MEMORY" if mon.sort_by == "mem" else "CPU%"
+        title = f"   System & Memory Monitor  •  View: {mode_lbl} (g)  •  Sort: {sort_lbl} (m/c) "
+        try:
+            stdscr.addstr(0, 0, title[:w - 1].ljust(w - 1), c_hdr)
+        except curses.error:
+            pass
+
+        # Memory & CPU meters
+        mem_used_g = mon.mem["used"] / 1073741824.0
+        mem_tot_g = mon.mem["total"] / 1073741824.0
+        mem_det = f"{mem_used_g:4.1f} / {mem_tot_g:.1f} GiB ({mon.mem['pct']:4.1f}%)"
+        draw_meter(stdscr, 2, 2, w - 4, "RAM ", mon.mem["pct"], mem_det, c_ok, c_warn, c_crit)
+
+        cpu_det = f"{mon.cpu_pct:4.1f}%  (Load: {mon.loadavg})"
+        draw_meter(stdscr, 3, 2, w - 4, "CPU ", mon.cpu_pct, cpu_det, c_ok, c_warn, c_crit)
+
+        # Table header
+        m_arrow = "▼" if mon.sort_by == "mem" else " "
+        c_arrow = "▼" if mon.sort_by == "cpu" else " "
+        hdr_y = 5
+        col_hdr = f" {'APPLICATION / PROCESS':<32} {'PROCS':>5} {'MEMORY':>10} {'MEM%' + m_arrow:>7} {'CPU%' + c_arrow:>7}  {'PID':>7}  {'COMMAND'}"
+        try:
+            stdscr.addstr(hdr_y, 0, col_hdr[:w - 1].ljust(w - 1), curses.A_REVERSE | curses.A_BOLD)
+        except curses.error:
+            pass
+
+        # Table rows
+        table_top = hdr_y + 1
+        table_bot = h - 3
+        vis_rows = max(1, table_bot - table_top + 1)
+
+        if mon.selected_idx < mon.scroll_top:
+            mon.scroll_top = mon.selected_idx
+        elif mon.selected_idx >= mon.scroll_top + vis_rows:
+            mon.scroll_top = mon.selected_idx - vis_rows + 1
+
+        for idx in range(mon.scroll_top, min(len(mon.rows), mon.scroll_top + vis_rows)):
+            r = mon.rows[idx]
+            y = table_top + (idx - mon.scroll_top)
+            is_sel = (idx == mon.selected_idx)
+
+            name_s = r["name"][:31]
+            cnt_s = f"{r['count']}x" if r["count"] > 1 else "1"
+            mem_s = fmt_bytes(r["rss"])
+            mpct_s = f"{r['mem_pct']:5.1f}%"
+            cpct_s = f"{r['cpu_pct']:5.1f}%"
+            pid_s = f"{r['pid']:>7}"
+            prefix = f" {name_s:<32} {cnt_s:>5} {mem_s:>10} {mpct_s:>7} {cpct_s:>7}  {pid_s}  "
+            rem_w = max(0, (w - 1) - len(prefix))
+            cmd_s = r["cmd"][:rem_w]
+            line_s = (prefix + cmd_s).ljust(w - 1)[:w - 1]
+
+            if is_sel:
+                attr = c_sel
+            elif r["mem_pct"] >= 15.0 or r["cpu_pct"] >= 50.0:
+                attr = c_crit
+            elif r["mem_pct"] >= 5.0 or r["cpu_pct"] >= 20.0:
+                attr = c_warn
+            else:
+                attr = curses.A_NORMAL
+
+            try:
+                stdscr.addstr(y, 0, line_s, attr)
+                if not is_sel and r["count"] > 1 and has_colors:
+                    stdscr.addstr(y, 34, f"{cnt_s:>5}", c_badge | curses.A_BOLD)
+            except curses.error:
+                pass
+
+        # Selected process detail bar (line h-2)
+        if 0 <= mon.selected_idx < len(mon.rows):
+            sel = mon.rows[mon.selected_idx]
+            det = f" Selected: {sel['name']} (PID {sel['pid']}, {sel['count']} proc) — {fmt_bytes(sel['rss'])} RAM — {sel['cmd']}"
+            try:
+                stdscr.addstr(h - 2, 0, det[:w - 1].ljust(w - 1), curses.A_DIM)
+            except curses.error:
+                pass
+
+        # Footer / Search / Kill confirmation (line h-1)
+        try:
+            if confirm_kill:
+                pids, kname, sig = confirm_kill
+                sig_name = "SIGKILL (-9)" if sig == signal.SIGKILL else "SIGTERM (-15)"
+                prompt = f" Terminate '{kname}' ({len(pids)} process{'es' if len(pids) > 1 else ''}) with {sig_name}? [y/Enter = Yes, n/Esc = Cancel] "
+                stdscr.addstr(h - 1, 0, prompt[:w - 1].ljust(w - 1), c_crit | curses.A_REVERSE | curses.A_BOLD)
+            elif mon.searching:
+                prompt = f" Filter: {mon.filter_str}█  (Enter/Esc to finish)"
+                stdscr.addstr(h - 1, 0, prompt[:w - 1].ljust(w - 1), c_hdr)
+            elif mon.status_msg and now < mon.status_expire:
+                stdscr.addstr(h - 1, 0, f" {mon.status_msg}"[:w - 1].ljust(w - 1), c_warn | curses.A_BOLD)
+            else:
+                filt_badge = f" [Filter: '{mon.filter_str}' (x to clear)] " if mon.filter_str else ""
+                help_bar = f" [m] Sort RAM  [c] Sort CPU  [g] Group/Ungroup  [/] Search  [k] Kill  [K] Force Kill  [q/Esc] Quit{filt_badge}"
+                stdscr.addstr(h - 1, 0, help_bar[:w - 1].ljust(w - 1), c_hdr)
+        except curses.error:
+            pass
+
+        stdscr.refresh()
+
+        # Input loop (poll every 60ms)
+        time.sleep(0.06)
+        ch = stdscr.getch()
+        if ch == -1:
+            continue
+
+        if confirm_kill:
+            pids, kname, sig = confirm_kill
+            if ch in (ord("y"), ord("Y"), 10, 13, curses.KEY_ENTER):
+                killed = 0
+                for p in pids:
+                    try:
+                        os.kill(p, sig)
+                        killed += 1
+                    except Exception:
+                        pass
+                mon.set_status(f"Sent signal to {killed}/{len(pids)} process(es) of {kname}.")
+                confirm_kill = None
+                time.sleep(0.15)
+                mon.sample()
+                last_sample = time.monotonic()
+            elif ch in (ord("n"), ord("N"), 27, ord("q")):
+                confirm_kill = None
+                mon.set_status("Cancelled.")
+            continue
+
+        if mon.searching:
+            if ch in (10, 13, curses.KEY_ENTER, 27):
+                mon.searching = False
+            elif ch in (curses.KEY_BACKSPACE, 127, 8):
+                mon.filter_str = mon.filter_str[:-1]
+                mon.selected_idx = 0
+                mon.sample()
+            elif 32 <= ch <= 126:
+                mon.filter_str += chr(ch)
+                mon.selected_idx = 0
+                mon.sample()
+            continue
+
+        if ch in (ord("q"), ord("Q"), 27):
+            break
+        elif ch in (curses.KEY_DOWN, ord("j")):
+            if mon.selected_idx + 1 < len(mon.rows):
+                mon.selected_idx += 1
+        elif ch in (curses.KEY_UP,):
+            if mon.selected_idx > 0:
+                mon.selected_idx -= 1
+        elif ch == curses.KEY_NPAGE:
+            mon.selected_idx = min(max(0, len(mon.rows) - 1), mon.selected_idx + 10)
+        elif ch == curses.KEY_PPAGE:
+            mon.selected_idx = max(0, mon.selected_idx - 10)
+        elif ch == curses.KEY_HOME:
+            mon.selected_idx = 0
+        elif ch == curses.KEY_END:
+            mon.selected_idx = max(0, len(mon.rows) - 1)
+        elif ch in (ord("m"), ord("M")):
+            mon.sort_by = "mem"
+            mon.selected_idx = 0
+            mon.sample()
+        elif ch in (ord("c"), ord("C")):
+            mon.sort_by = "cpu"
+            mon.selected_idx = 0
+            mon.sample()
+        elif ch in (ord("g"), ord("G"), ord("t"), ord("T")):
+            mon.grouped = not mon.grouped
+            mon.selected_idx = 0
+            mon.sample()
+        elif ch == ord("/"):
+            mon.searching = True
+        elif ch == ord("x"):
+            mon.filter_str = ""
+            mon.selected_idx = 0
+            mon.sample()
+        elif ch in (ord("k"), ord("K"), curses.KEY_DC):
+            if 0 <= mon.selected_idx < len(mon.rows):
+                sel = mon.rows[mon.selected_idx]
+                sig = signal.SIGKILL if ch == ord("K") else signal.SIGTERM
+                confirm_kill = (list(sel["pids"]), sel["name"], sig)
+        elif ch == ord("r"):
+            mon.sample()
+            last_sample = time.monotonic()
+
+
+def print_snapshot(sort_by="mem", grouped=True, limit=15):
+    mon = ProcessMonitor(sort_by=sort_by, grouped=grouped)
+    time.sleep(0.12)
+    mon.sample()
+    mem_used_g = mon.mem["used"] / 1073741824.0
+    mem_tot_g = mon.mem["total"] / 1073741824.0
+    print(f"RAM: {mem_used_g:.1f} / {mem_tot_g:.1f} GiB ({mon.mem['pct']:.1f}%)  |  CPU: {mon.cpu_pct:.1f}% (Load: {mon.loadavg})")
+    print("-" * 92)
+    print(f"{'APPLICATION / PROCESS':<32} {'PROCS':>5} {'MEMORY':>10} {'MEM%':>7} {'CPU%':>7}  {'PID':>7}  {'COMMAND'}")
+    print("-" * 92)
+    for r in mon.rows[:limit]:
+        cnt_s = f"{r['count']}x" if r["count"] > 1 else "1"
+        print(f"{r['name'][:31]:<32} {cnt_s:>5} {fmt_bytes(r['rss']):>10} {r['mem_pct']:6.1f}% {r['cpu_pct']:6.1f}%  {r['pid']:>7}  {r['cmd'][:30]}")
+
+
+def print_popup_summary(limit=8):
+    mon = ProcessMonitor(sort_by="mem", grouped=True)
+    mem_used_g = mon.mem["used"] / 1073741824.0
+    mem_tot_g = mon.mem["total"] / 1073741824.0
+    lines = [f"<b>RAM:</b> {mem_used_g:.1f} / {mem_tot_g:.1f} GiB ({mon.mem['pct']:.0f}%)   <b>Load:</b> {mon.loadavg}\n"]
+    for r in mon.rows[:limit]:
+        cnt = f" ({r['count']})" if r["count"] > 1 else ""
+        lines.append(f"• <b>{r['name'][:22]}{cnt}:</b> {fmt_bytes(r['rss'])} ({r['mem_pct']:.1f}%)")
+    print("\n".join(lines))
+
+
+if __name__ == "__main__":
+    sort_mode = "mem"
+    grouped_mode = True
+    snap_mode = False
+    popup_mode = False
+    for a in sys.argv[1:]:
+        if a in ("--cpu", "-c", "cpu"):
+            sort_mode = "cpu"
+        elif a in ("--mem", "-m", "mem"):
+            sort_mode = "mem"
+        elif a in ("--ungrouped", "-u"):
+            grouped_mode = False
+        elif a in ("--snapshot", "--once", "-1"):
+            snap_mode = True
+        elif a in ("--popup", "popup"):
+            popup_mode = True
+
+    if popup_mode:
+        print_popup_summary()
+    elif snap_mode:
+        print_snapshot(sort_by=sort_mode, grouped=grouped_mode)
+    else:
+        try:
+            curses.wrapper(run_tui, sort_mode)
+        except KeyboardInterrupt:
+            pass

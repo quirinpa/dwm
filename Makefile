@@ -45,7 +45,7 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${DESTDIR}${PREFIX}/bin/
-	install -m 755 scripts/dwm-ctl scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
 	mkdir -p $(HOME)/.config/dwm
@@ -56,6 +56,10 @@ install: all
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1
+	@if [ -f "/tmp/dwm-auren-daemon-$$USER.pid" ]; then \
+		kill "$$(cat "/tmp/dwm-auren-daemon-$$USER.pid" 2>/dev/null)" 2>/dev/null || true; \
+		rm -f "/tmp/dwm-auren-daemon-$$USER.pid" "/tmp/dwm-auren-$$USER.sock" 2>/dev/null || true; \
+	fi
 	@if pgrep -x dwm >/dev/null 2>&1; then \
 		kill -HUP $$(pgrep -x dwm | head -n 1) 2>/dev/null || true; \
 		DISPLAY=$${DISPLAY:-:0} xprop -root -f _DWM_RELOAD 8s -set _DWM_RELOAD 1 2>/dev/null || true; \

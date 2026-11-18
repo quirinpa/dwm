@@ -449,6 +449,11 @@ def strip_arg_determiner(iid, arg_val):
         while len(words) >= 2 and words[0].lower() in ("up", "on", "some", "the", "a", "an", "my", "to"):
             words.pop(0)
         return " ".join(words)
+    if iid in ("type_text", "type_enter", "type_other", "type_enter_other"):
+        low_full = arg_val.strip().lower()
+        for phrase_det in ("the words ", "the word ", "the text ", "the phrase "):
+            if low_full.startswith(phrase_det) and len(arg_val.strip()) > len(phrase_det):
+                return arg_val.strip()[len(phrase_det):].strip()
     return arg_val
 
 NON_DICTATION_PARAM_IIDS = {

@@ -228,6 +228,18 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("key ctrl+t ; key Return", r6b)
         self.assertNotIn('open "new tab', r6b)
 
+        r6c = self._dry_run("type in hello world")
+        self.assertIn("intent=type_text", r6c)
+        self.assertIn('cmd=type "hello world"', r6c)
+
+        r6d = self._dry_run("type out hello world and press enter")
+        self.assertIn("intent=type_enter", r6d)
+        self.assertIn('cmd=type_enter "hello world"', r6d)
+
+        r6e = self._dry_run("write down buy milk")
+        self.assertIn("intent=type_text", r6e)
+        self.assertIn('cmd=type "buy milk"', r6e)
+
     def test_recording_and_demo_chains(self):
         r7 = self._dry_run("start recording my screen and audio")
         self.assertIn("intent=record_start", r7)
