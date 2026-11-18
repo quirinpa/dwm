@@ -7,6 +7,7 @@ import difflib
 import io
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -1360,30 +1361,45 @@ MEDIA_KEYWORDS = {
     "blues", "soul", "funk", "reggae", "indie", "pop", "rap", "orchestra", "karaoke",
 }
 
-MEDIA_PROTO = "music song audio video lofi soundtrack playlist stream band singer album listen watch"
-WEB_PROTO = "website webpage documentation software repository dashboard portal service tool account"
+MEDIA_ARTIST_PROTO = "famous musician singer band composer jazz rock pop classical artist discography songs album"
+MEDIA_TRACK_PROTO = "music song audio video lofi soundtrack playlist stream listen watch concert live mix"
+WEB_TOOL_PROTO = "website webpage documentation software repository dashboard portal service tool account login"
+APP_SYS_PROTO = "desktop application terminal window system utility browser file manager editor settings calendar"
 
 
 def is_media_query(target: str, use_inference: bool = None) -> bool:
-    """Layer 3 Classifier: Determine whether an unmatched external target is a media playback request."""
-    if use_inference is None:
-        use_inference = os.environ.get("DWM_AUREN_INFERENCE", "").strip().lower() in ("1", "true", "yes", "on")
+    """Layer 3 Classifier: Determine whether an unmatched external target is a media/artist playback request."""
     t_norm = norm_text(normalize_media_query(target))
     if not t_norm:
+        return False
+    if t_norm in {
+        "terminal", "new terminal", "st", "xterm", "shell", "console", "term",
+        "browser", "firefox", "chrome", "chromium", "settings", "calendar",
+        "files", "file manager", "calculator", "mail", "email", "gmail", "github",
+    }:
         return False
     words = set(t_norm.split())
     if words & MEDIA_KEYWORDS or "hip hop" in t_norm or "bossa nova" in t_norm or "heavy metal" in t_norm:
         return True
-    if not use_inference:
+    if use_inference is False:
         return False
-    vecs = embed_with_cache([t_norm, MEDIA_PROTO, WEB_PROTO])
+    # Fast single-target bge-base embedding check (13ms when uncached, <0.1ms cached; 0 LLM overhead)
+    vecs = embed_with_cache([t_norm, MEDIA_ARTIST_PROTO, MEDIA_TRACK_PROTO, WEB_TOOL_PROTO, APP_SYS_PROTO])
     q_v = vecs.get(t_norm)
-    m_v = vecs.get(MEDIA_PROTO)
-    w_v = vecs.get(WEB_PROTO)
-    if q_v and m_v and w_v:
-        sim_m = sum(a * b for a, b in zip(q_v, m_v))
-        sim_w = sum(a * b for a, b in zip(q_v, w_v))
-        if sim_m >= 0.56 and sim_m > sim_w + 0.04:
+    ma_v = vecs.get(MEDIA_ARTIST_PROTO)
+    mt_v = vecs.get(MEDIA_TRACK_PROTO)
+    w_v = vecs.get(WEB_TOOL_PROTO)
+    a_v = vecs.get(APP_SYS_PROTO)
+    if q_v and ma_v and mt_v and w_v and a_v:
+        sim_m = max(
+            sum(a * b for a, b in zip(q_v, ma_v)),
+            sum(a * b for a, b in zip(q_v, mt_v)),
+        )
+        sim_non_media = max(
+            sum(a * b for a, b in zip(q_v, w_v)),
+            sum(a * b for a, b in zip(q_v, a_v)),
+        )
+        if sim_m >= 0.56 and (sim_m - sim_non_media) >= 0.06:
             return True
     return False
 
@@ -1436,22 +1452,106 @@ def resolve_web_url(query: str) -> str:
     return fallback
 
 
+def _parse_yt_duration_sec(dur_text: str) -> int:
+    """Convert YouTube lengthText like '9:07' or '1:18:05' into seconds."""
+    if not dur_text:
+        return 0
+    parts = [p.strip() for p in dur_text.strip().split(":") if p.strip().isdigit()]
+    if not parts:
+        return 0
+    sec = 0
+    for p in parts:
+        sec = sec * 60 + int(p)
+    return sec
+
+
+def _score_yt_video_renderer(vr: dict, q_tokens: set, rank_idx: int) -> tuple:
+    """Score a YouTube videoRenderer object to prefer real songs/albums over Shorts/interviews/karaoke."""
+    vid = vr.get("videoId", "")
+    if not vid or not (8 <= len(vid) <= 16):
+        return (-999.0, "")
+
+    nav_url = (
+        vr.get("navigationEndpoint", {})
+        .get("commandMetadata", {})
+        .get("webCommandMetadata", {})
+        .get("url", "")
+    )
+    if "/shorts/" in nav_url:
+        return (-999.0, "")
+
+    title = "".join(r.get("text", "") for r in vr.get("title", {}).get("runs", []))
+    if not title:
+        title = vr.get("title", {}).get("simpleText", "")
+    chan = "".join(r.get("text", "") for r in vr.get("ownerText", {}).get("runs", []))
+    if not chan:
+        chan = "".join(r.get("text", "") for r in vr.get("longBylineText", {}).get("runs", []))
+    dur_str = vr.get("lengthText", {}).get("simpleText", "")
+    dur_sec = _parse_yt_duration_sec(dur_str)
+
+    title_norm = norm_text(title)
+    chan_norm = norm_text(chan)
+    combined_words = set((title_norm + " " + chan_norm).split())
+
+    score = 50.0 - (rank_idx * 2.5)
+
+    # Reject Shorts and tiny clips (<75s) unless explicitly requested
+    if 0 < dur_sec < 75 and "short" not in q_tokens:
+        score -= 120.0
+    elif 140 <= dur_sec <= 7200:
+        score += 22.0
+    elif dur_sec > 7200:
+        score += 10.0
+
+    # Penalize non-music clutter (interviews, reactions, tutorials, karaoke) unless requested
+    clutter_terms = {
+        "interview", "explains", "reaction", "review", "tutorial", "lesson",
+        "how to", "karaoke", "trailer", "teaser", "unboxing", "biography", "documentary",
+    }
+    for bad in clutter_terms:
+        if bad in title_norm and bad not in q_tokens:
+            score -= 65.0
+
+    # Boost official artist/topic channels, official audio/video, full albums, and token overlap
+    if "topic" in chan_norm or chan_norm in title_norm:
+        score += 18.0
+    if any(tag in title_norm for tag in ("official audio", "official video", "full album", "greatest hits", "live", "mix")):
+        score += 15.0
+    if q_tokens:
+        overlap = len(q_tokens & combined_words) / len(q_tokens)
+        score += 35.0 * overlap
+        if overlap == 0.0:
+            score -= 40.0
+
+    return (score, vid)
+
+
 def resolve_youtube_url(query: str) -> str:
     """Resolve a media search query to a direct YouTube watch?v=<id> autoplay URL (cached)."""
     import urllib.parse, urllib.request
     q_clean = normalize_media_query(query)
     q_norm = norm_text(q_clean)
+    if not q_norm or q_norm in {"terminal", "new terminal", "new term", "new term online", "st", "xterm"}:
+        return ""
+
     cache_p = f"/tmp/dwm-yt-cache-{os.environ.get('USER', 'user')}.json"
     cache_map = {}
     if os.path.exists(cache_p):
         try:
             with open(cache_p, "r", encoding="utf-8") as f:
-                cache_map = json.load(f)
+                raw_cache = json.load(f)
+            # Filter out any historical polluted non-media keys
+            bad_keys = {"terminal", "new terminal", "new term", "new term online", "miles", "miles davis on online"}
+            cache_map = {k: v for k, v in raw_cache.items() if k not in bad_keys and isinstance(v, str) and "watch?v=" in v}
+            if len(cache_map) != len(raw_cache):
+                with open(cache_p, "w", encoding="utf-8") as f:
+                    json.dump(cache_map, f)
         except Exception:
             cache_map = {}
     if q_norm in cache_map:
         return cache_map[q_norm]
 
+    q_tokens = {w for w in q_norm.split() if len(w) >= 2}
     search_url = f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(q_clean)}"
     watch_url = search_url
     try:
@@ -1464,17 +1564,48 @@ def resolve_youtube_url(query: str) -> str:
         )
         with urllib.request.urlopen(req, timeout=3.5) as resp:
             html = resp.read().decode("utf-8", errors="ignore")
-        marker = '"videoId":"'
-        idx = html.find(marker)
-        if idx != -1:
-            start = idx + len(marker)
-            end = html.find('"', start)
-            if end != -1 and 8 <= (end - start) <= 16:
-                vid = html[start:end]
-                watch_url = f"https://www.youtube.com/watch?v={vid}"
-                cache_map[q_norm] = watch_url
-                with open(cache_p, "w", encoding="utf-8") as f:
-                    json.dump(cache_map, f)
+
+        best_vid = ""
+        best_score = -999.0
+        m = re.search(r"var ytInitialData\s*=\s*(\{.*?\});</script>", html)
+        if m:
+            try:
+                yt_data = json.loads(m.group(1))
+                vids = []
+
+                def _collect_vr(obj):
+                    if len(vids) >= 12:
+                        return
+                    if isinstance(obj, dict):
+                        if "videoRenderer" in obj and isinstance(obj["videoRenderer"], dict):
+                            vids.append(obj["videoRenderer"])
+                        else:
+                            for v in obj.values():
+                                _collect_vr(v)
+                    elif isinstance(obj, list):
+                        for item in obj:
+                            _collect_vr(item)
+
+                _collect_vr(yt_data)
+                for idx, vr in enumerate(vids[:10]):
+                    sc, cand_vid = _score_yt_video_renderer(vr, q_tokens, idx)
+                    if cand_vid and sc > best_score:
+                        best_score = sc
+                        best_vid = cand_vid
+            except Exception:
+                pass
+
+        if not best_vid:
+            # Fallback: look specifically for a videoRenderer videoId rather than a sidebar radio/Short
+            vr_m = re.search(r'"videoRenderer":\{"videoId":"([A-Za-z0-9_-]{8,16})"', html)
+            if vr_m:
+                best_vid = vr_m.group(1)
+
+        if best_vid:
+            watch_url = f"https://www.youtube.com/watch?v={best_vid}"
+            cache_map[q_norm] = watch_url
+            with open(cache_p, "w", encoding="utf-8") as f:
+                json.dump(cache_map, f)
     except Exception:
         pass
     return watch_url

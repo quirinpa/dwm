@@ -284,22 +284,124 @@ resolve_lang(const char *req_lang, char *out, size_t out_sz)
 	snprintf(out, out_sz, "%s", req_lang);
 }
 
+/* 2nd-order Butterworth speech-band filter (130 Hz high-pass + 3400 Hz low-pass
+ * at 16 kHz) + Zero-Crossing Rate (ZCR) gate for VAD energy estimation.
+ * Strips laptop cooling fan rumble (<120 Hz), desk thumps, and broadband air
+ * turbulence hiss (>3500 Hz) from VAD decisions without altering the raw PCM
+ * stored for Whisper.
+ */
+typedef struct {
+	double hp_x1, hp_x2, hp_y1, hp_y2;
+	double lp_x1, lp_x2, lp_y1, lp_y2;
+} vad_biquad_t;
+
 static double
-calc_frame_db(const int16_t *samples, size_t n)
+calc_frame_db(const int16_t *samples, size_t n, vad_biquad_t *flt)
 {
+	/* 2nd-order Butterworth HPF fc=130 Hz @ fs=16000 Hz */
+	static const double hp_b0 =  0.9645815294, hp_b1 = -1.9291630588, hp_b2 =  0.9645815294;
+	static const double hp_a1 = -1.9279122460, hp_a2 =  0.9304138716;
+	/* 2nd-order Butterworth LPF fc=3400 Hz @ fs=16000 Hz */
+	static const double lp_b0 =  0.2266816615, lp_b1 =  0.4533633230, lp_b2 =  0.2266816615;
+	static const double lp_a1 = -0.2764683938, lp_a2 =  0.1831950398;
+
 	double sum = 0.0;
+	int zc = 0;
+	double prev_y = 0.0;
 	size_t i;
 
 	if (!n)
 		return -100.0;
 	for (i = 0; i < n; i++) {
-		double s = (double)samples[i] / 32768.0;
-		sum += s * s;
+		double x = (double)samples[i] / 32768.0;
+		double y = x;
+		if (flt) {
+			double h = hp_b0 * x + hp_b1 * flt->hp_x1 + hp_b2 * flt->hp_x2
+			         - hp_a1 * flt->hp_y1 - hp_a2 * flt->hp_y2;
+			flt->hp_x2 = flt->hp_x1;
+			flt->hp_x1 = x;
+			flt->hp_y2 = flt->hp_y1;
+			flt->hp_y1 = h;
+
+			y = lp_b0 * h + lp_b1 * flt->lp_x1 + lp_b2 * flt->lp_x2
+			  - lp_a1 * flt->lp_y1 - lp_a2 * flt->lp_y2;
+			flt->lp_x2 = flt->lp_x1;
+			flt->lp_x1 = h;
+			flt->lp_y2 = flt->lp_y1;
+			flt->lp_y1 = y;
+		}
+		if (i > 0 && ((y >= 0.0 && prev_y < 0.0) || (y < 0.0 && prev_y >= 0.0)))
+			zc++;
+		prev_y = y;
+		sum += y * y;
 	}
 	double rms = sqrt(sum / (double)n);
 	if (rms < 1e-5)
 		return -100.0;
-	return 20.0 * log10(rms);
+	double db = 20.0 * log10(rms);
+
+	/* Human voiced speech has ZCR in ~0.02..0.40 at 16 kHz; penalize pure
+	 * low-frequency rumble (<0.015) or unvoiced high-frequency fan hiss (>0.45).
+	 */
+	double zcr = (double)zc / (double)n;
+	if (zcr < 0.015 || zcr > 0.45)
+		db -= 5.0;
+	return db;
+}
+
+/* Post-wake speaker auto-ducking: temporarily attenuate active playback while
+ * capturing the spoken command after "Jarvis" wakes, then restore afterward.
+ */
+static double g_saved_sink_vol = -1.0;
+
+static void
+duck_speaker_for_command(void)
+{
+	if (g_saved_sink_vol > 0.0)
+		return;
+	FILE *fp = popen("wpctl get-volume @DEFAULT_AUDIO_SINK@ 2>/dev/null", "r");
+	if (!fp)
+		return;
+	char buf[128] = {0};
+	if (fgets(buf, sizeof(buf), fp)) {
+		if (!strstr(buf, "[MUTED]")) {
+			double v = 0.0;
+			if (sscanf(buf, "Volume: %lf", &v) == 1 && v > 0.22) {
+				g_saved_sink_vol = v;
+				double ducked = v * 0.35;
+				if (ducked < 0.12)
+					ducked = 0.12;
+				char cmd[128];
+				snprintf(cmd, sizeof(cmd),
+				         "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1 &",
+				         ducked);
+				int rc = system(cmd);
+				(void)rc;
+			}
+		}
+	}
+	pclose(fp);
+}
+
+static void
+restore_speaker_after_command(const char *spoken_cmd)
+{
+	if (g_saved_sink_vol <= 0.0)
+		return;
+	double restore_v = g_saved_sink_vol;
+	g_saved_sink_vol = -1.0;
+	/* Do not overwrite volume if the user's command itself adjusts volume/mute */
+	if (spoken_cmd && *spoken_cmd) {
+		if (strcasestr(spoken_cmd, "volume") || strcasestr(spoken_cmd, "mute") ||
+		    strcasestr(spoken_cmd, "louder") || strcasestr(spoken_cmd, "quieter"))
+			return;
+	}
+	char cmd[128];
+	snprintf(cmd, sizeof(cmd),
+	         "wpctl set-volume @DEFAULT_AUDIO_SINK@ %.2f >/dev/null 2>&1 &",
+	         restore_v);
+	int rc = system(cmd);
+	(void)rc;
 }
 
 static int
@@ -351,6 +453,8 @@ audio_thread_fn(void *arg)
 	int pw_fd = -1;
 	pid_t pw_pid = -1;
 	int16_t raw[FRAME_SAMPLES];
+	vad_biquad_t vad_flt;
+	memset(&vad_flt, 0, sizeof(vad_flt));
 
 	(void)arg;
 	while (running) {
@@ -403,7 +507,7 @@ audio_thread_fn(void *arg)
 			continue;
 		}
 
-		double db = calc_frame_db(raw, FRAME_SAMPLES);
+		double db = calc_frame_db(raw, FRAME_SAMPLES, &vad_flt);
 
 		pthread_mutex_lock(&g_audio.mtx);
 		int slot = (int)(g_audio.total_frames % RING_FRAMES);
@@ -767,16 +871,78 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 		int n_seg = whisper_full_n_segments(ctx);
 		int valid_seg = 0;
 		float nsp_limit = is_wake ? 0.72f : 0.58f;
+		whisper_token eot_id = whisper_token_eot(ctx);
 		char prev_seg[1024] = {0};
 		for (int i = 0; i < n_seg; i++) {
 			float nsp = whisper_full_get_segment_no_speech_prob(ctx, i);
 			if (nsp > nsp_limit)
 				continue;
-			const char *seg = whisper_full_get_segment_text(ctx, i);
-			if (!seg)
+
+			int n_tok = whisper_full_n_tokens(ctx, i);
+			float sum_p = 0.0f;
+			int word_toks = 0;
+			int end_tok = n_tok;
+
+			/* Inspect token probabilities and prune low-confidence trailing
+			 * noise tokens (e.g. "on online", "you") caused by ambient/fan noise
+			 * at the tail of an utterance.
+			 */
+			for (int j = 0; j < n_tok; j++) {
+				whisper_token_data td = whisper_full_get_token_data(ctx, i, j);
+				const char *tt = whisper_full_get_token_text(ctx, i, j);
+				if (td.id >= eot_id || !tt || !*tt)
+					continue;
+				if (tt[0] == '[' && tt[strlen(tt) - 1] == ']')
+					continue;
+				sum_p += td.p;
+				word_toks++;
+			}
+			if (word_toks > 0 && (sum_p / (float)word_toks) < (is_wake ? 0.25f : 0.34f))
 				continue;
-			char seg_clean[1024];
-			snprintf(seg_clean, sizeof(seg_clean), "%s", seg);
+
+			if (!is_wake && word_toks >= 2) {
+				while (end_tok > 1) {
+					whisper_token_data td = whisper_full_get_token_data(ctx, i, end_tok - 1);
+					const char *tt = whisper_full_get_token_text(ctx, i, end_tok - 1);
+					if (td.id >= eot_id || !tt || !*tt) {
+						end_tok--;
+						continue;
+					}
+					int has_alnum = 0;
+					for (const char *c = tt; *c; c++) {
+						if (isalnum((unsigned char)*c)) {
+							has_alnum = 1;
+							break;
+						}
+					}
+					if (!has_alnum) {
+						end_tok--;
+						continue;
+					}
+					if (td.p < 0.28f) {
+						end_tok--;
+						continue;
+					}
+					break;
+				}
+			}
+
+			char seg_clean[1024] = {0};
+			if (!is_wake && end_tok < n_tok && end_tok > 0) {
+				for (int j = 0; j < end_tok; j++) {
+					whisper_token_data td = whisper_full_get_token_data(ctx, i, j);
+					if (td.id >= eot_id)
+						continue;
+					const char *tt = whisper_full_get_token_text(ctx, i, j);
+					if (tt && *tt)
+						strncat(seg_clean, tt, sizeof(seg_clean) - strlen(seg_clean) - 1);
+				}
+			} else {
+				const char *seg = whisper_full_get_segment_text(ctx, i);
+				if (!seg)
+					continue;
+				snprintf(seg_clean, sizeof(seg_clean), "%s", seg);
+			}
 			trim_inplace(seg_clean);
 			if (is_hallucination(seg_clean))
 				continue;
@@ -788,8 +954,22 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 				strncat(out_text, " ", out_sz - strlen(out_text) - 1);
 			strncat(out_text, seg_clean, out_sz - strlen(out_text) - 1);
 		}
-		if (out_all_silent && valid_seg == 0)
-			*out_all_silent = 1;
+		if (valid_seg == 0) {
+			if (out_all_silent)
+				*out_all_silent = 1;
+			/* Instant noise-floor recalibration when Whisper confirms the captured
+			 * slice contained no speech (e.g. sudden laptop cooling fan spin-up).
+			 */
+			pthread_mutex_lock(&g_audio.mtx);
+			int last_slot = (int)((g_audio.total_frames > 0 ? g_audio.total_frames - 1 : 0) % RING_FRAMES);
+			double cur_db = g_audio.db[last_slot];
+			if (cur_db > g_audio.noise_floor_db && cur_db < -22.0) {
+				g_audio.noise_floor_db = 0.55 * g_audio.noise_floor_db + 0.45 * cur_db;
+				if (g_audio.noise_floor_db > -25.0)
+					g_audio.noise_floor_db = -25.0;
+			}
+			pthread_mutex_unlock(&g_audio.mtx);
+		}
 	}
 	trim_inplace(out_text);
 	collapse_repetitions(out_text);
@@ -1539,6 +1719,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 		if (wake_confirmed && waiting_post_wake) {
 			if (now_ms() >= post_wake_deadline_ms) {
+				restore_speaker_after_command(NULL);
 				decode_reset_session();
 				audio_release(WARM_HOLD_MS);
 				free(wake_pcm);
@@ -1602,9 +1783,10 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					}
 
 					if (wmatch == 1 && !cont_wake_check) {
-						/* User spoke ONLY "Jarvis" and paused: play chime and wait for command */
+						/* User spoke ONLY "Jarvis" and paused: play chime, duck speaker, and wait for command */
 						wake_confirmed = 1;
 						chime_played = 1;
+						duck_speaker_for_command();
 						play_chime_async(chime_wav);
 						waiting_post_wake = 1;
 						in_speech = 0;
@@ -1692,7 +1874,8 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					if (wm == 2 && stripped[0]) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", stripped);
 					} else if (wm == 1 || (!chime_played && voiced_frames <= 38)) {
-						/* User spoke ONLY "Jarvis" and paused: play chime and wait for command */
+						/* User spoke ONLY "Jarvis" and paused: play chime, duck speaker, and wait for command */
+						duck_speaker_for_command();
 						if (!chime_played)
 							play_chime_async(chime_wav);
 						chime_played = 1;
@@ -1724,6 +1907,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	}
 
 	if (g_cancel_req) {
+		restore_speaker_after_command(NULL);
 		decode_reset_session();
 		audio_release(g_preempt_cli >= 0 ? WARM_HOLD_MS : 2000L);
 		free(wake_pcm);
@@ -1731,6 +1915,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 		return;
 	}
 
+	restore_speaker_after_command(live_cmd);
 	audio_release(WARM_HOLD_MS);
 	free(wake_pcm);
 

@@ -108,8 +108,32 @@ class TestLayer3GoalPrimitives(unittest.TestCase):
         self.assertTrue(dwm_act.is_media_query("low fee Dragon Ball music"))
         self.assertTrue(dwm_act.is_media_query("lofi hip hop beats"))
         self.assertTrue(dwm_act.is_media_query("miles davis jazz"))
+        self.assertTrue(dwm_act.is_media_query("miles davis"))
         self.assertFalse(dwm_act.is_media_query("github"))
         self.assertFalse(dwm_act.is_media_query("firefox"))
+        self.assertFalse(dwm_act.is_media_query("new terminal"))
+
+    def test_score_yt_video_renderer(self):
+        q_tok = {"miles", "davis"}
+        short_vr = {
+            "videoId": "short123456",
+            "title": {"runs": [{"text": "Miles Davis Interview Explains Jazz"}]},
+            "ownerText": {"runs": [{"text": "Random Clips"}]},
+            "lengthText": {"simpleText": "0:48"},
+            "navigationEndpoint": {"commandMetadata": {"webCommandMetadata": {"url": "/shorts/short123456"}}},
+        }
+        album_vr = {
+            "videoId": "album123456",
+            "title": {"runs": [{"text": "Miles Davis - Kind of Blue (Full Album)"}]},
+            "ownerText": {"runs": [{"text": "Miles Davis - Topic"}]},
+            "lengthText": {"simpleText": "45:44"},
+            "navigationEndpoint": {"commandMetadata": {"webCommandMetadata": {"url": "/watch?v=album123456"}}},
+        }
+        s_short, _ = dwm_act._score_yt_video_renderer(short_vr, q_tok, 0)
+        s_album, vid_album = dwm_act._score_yt_video_renderer(album_vr, q_tok, 1)
+        self.assertEqual(vid_album, "album123456")
+        self.assertGreater(s_album, 80.0)
+        self.assertLess(s_short, 0.0)
 
     def test_ensure_playback_escalation_mpris(self):
         # Simulate audio initially paused with an MPRIS player, then playing after mpris_control("Play")
@@ -177,6 +201,14 @@ class TestLayer4AurenRouter(unittest.TestCase):
         r3 = self._dry_run("put on some jazz")
         self.assertIn("intent=play_target", r3)
         self.assertIn('cmd=play "jazz"', r3)
+
+        r3b = self._dry_run("open up some miles davis")
+        self.assertIn("intent=play_target", r3b)
+        self.assertIn('cmd=play "miles davis"', r3b)
+
+        r3c = self._dry_run("open up a new terminal")
+        self.assertIn("intent=open_terminal", r3c)
+        self.assertIn("cmd=sh st", r3c)
 
         r4 = self._dry_run("pause the music")
         self.assertIn("intent=media_pause", r4)

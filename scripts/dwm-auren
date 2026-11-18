@@ -414,8 +414,14 @@ def promote_intent(iid, arg_val):
             if "without audio" in arg_low or "silent" in arg_low or "only" in arg_low:
                 return "record_silent"
             return "record_start"
-        if dwm_act is not None and dwm_act.is_media_query(arg_val, use_inference=False):
+        if arg_low.startswith(("some ", "a bit of ", "a little ")):
             return "play_target"
+        if dwm_act is not None:
+            # First check if arg_val matches a known desktop window/tab/app/site lexically
+            best_t = dwm_act.resolve_semantic_target(arg_val, use_inference=False)
+            if not (best_t and best_t.get("score", 0.0) >= 0.75):
+                if dwm_act.is_media_query(arg_val):
+                    return "play_target"
     elif iid == "focus_target":
         if arg_low in ("terminal", "st", "xterm", "shell", "console", "term"):
             return "focus_terminal"
@@ -434,6 +440,11 @@ def strip_leading_fillers(s):
 
 def strip_arg_determiner(iid, arg_val):
     if iid in ("play_target", "open_target", "focus_target", "pull_target"):
+        low_full = arg_val.strip().lower()
+        for phrase_det in ("a bit of ", "a little bit of ", "a little "):
+            if low_full.startswith(phrase_det) and len(arg_val.strip()) > len(phrase_det):
+                arg_val = arg_val.strip()[len(phrase_det):].strip()
+                break
         words = arg_val.split()
         while len(words) >= 2 and words[0].lower() in ("up", "on", "some", "the", "a", "an", "my", "to"):
             words.pop(0)
