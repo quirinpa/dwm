@@ -1535,19 +1535,19 @@ def do_play(target: str) -> str:
             playing = ensure_playback_started(is_youtube=False)
             return f"focus:{best['label']}[{'playing' if playing else 'focused'}]"
         if kind == "place":
-            subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             _focus_firefox_window()
             wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
             is_yt = "youtube.com" in best["ref"].lower()
             playing = ensure_playback_started(is_youtube=is_yt)
             return f"play:{best['label']}[{'playing' if playing else 'opened'}]"
         if kind == "app":
-            subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(best["ref"].split(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             wait_window_focused(best["title"], timeout=2.0)
             return f"open:{best['label']}"
 
     watch_url = resolve_youtube_url(t)
-    subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(["firefox", "--new-tab", watch_url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     _focus_firefox_window()
     wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
     playing = ensure_playback_started(is_youtube=("youtube.com" in watch_url))
@@ -1563,7 +1563,7 @@ def do_focus(target: str, allow_open: bool = False) -> str:
 
     t_norm = norm_text(t)
     if allow_open and t_norm in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term"):
-        subprocess.Popen(["st"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["st"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
         wait_window_focused("st-256color", timeout=1.5)
         return "open:st"
 
@@ -2015,28 +2015,44 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
             "pi_reset": ["dwm-jarvis-pi", "reset"],
         }
         if act in sys_map:
-            subprocess.Popen(sys_map[act], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(sys_map[act], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             time.sleep(0.08)
             return f"sys:{act}"
 
     if op in ("help", "howto", "instructions"):
         q = arg.strip("\"'")
         if q:
-            subprocess.run(["dwm-help", "ask", q], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            subprocess.Popen(["dwm-help", "ask", q], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             return f"help:{q}"
-        subprocess.Popen(["dwm-help", "show"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.Popen(["dwm-help", "show"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
         return "help:show"
 
     if op == "sh":
         if arg:
-            subprocess.run(["/bin/sh", "-c", arg], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            time.sleep(0.08)
+            a_strip = arg.strip()
+            proc = subprocess.Popen(
+                ["/bin/sh", "-c", a_strip],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+            if a_strip == "st" or a_strip.startswith("st "):
+                wait_window_focused("st-256color", timeout=1.2)
+            elif a_strip == "xterm" or a_strip.startswith("xterm "):
+                wait_window_focused("xterm", timeout=1.2)
+            else:
+                try:
+                    proc.wait(timeout=0.35)
+                except subprocess.TimeoutExpired:
+                    pass
             return arg
 
     if op == "pi":
         if arg:
             expanded = expand_selection_pronouns(arg, for_pi=True)
-            subprocess.Popen(["dwm-jarvis-pi", "send", expanded], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.Popen(["dwm-jarvis-pi", "send", expanded], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             return f"pi:{expanded[:60]}"
 
     if op in ("wait_sec", "sleep_sec"):

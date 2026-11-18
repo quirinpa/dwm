@@ -249,7 +249,7 @@ jarvis_loop() {
     printf 'jarvis\n' > "$STATE_FILE"
     refresh_bar
 
-    trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT"; restore_idle_state; exit 0' INT TERM
+    trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT" "$ACTING_PID_FILE"; restore_idle_state; exit 0' INT TERM
 
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
         printf 'jarvis\n' > "$STATE_FILE"

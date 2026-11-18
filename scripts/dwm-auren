@@ -891,7 +891,7 @@ EOF
             printf '%s\n' "$$" > "/tmp/dwm-acting-$USER.pid"
             refresh_bar
             if [ -S "$JARVISD_SOCK" ] && command -v nc >/dev/null 2>&1; then
-                printf 'ACT_EXEC\t%s\n' "$cmd" | nc -w 30 -N -U "$JARVISD_SOCK" >/dev/null 2>&1
+                printf 'ACT_EXEC\t%s\n' "$cmd" | nc -w 8 -N -U "$JARVISD_SOCK" >/dev/null 2>&1
                 rc=$?
             else
                 /home/quirinpa/.local/bin/dwm-act exec "$cmd"
@@ -906,12 +906,12 @@ EOF
             notify_auren "  Jarvis → ${intent} (${score})" "“${query}”\n▸ ${cmd}"
             printf '%s\n' "$$" > "/tmp/dwm-acting-$USER.pid"
             refresh_bar
-            /bin/sh -c "$cmd"
-            rc=$?
+            setsid /bin/sh -c "$cmd" </dev/null >/dev/null 2>&1 &
+            sleep 0.12
             play_done_earcon
             rm -f "/tmp/dwm-acting-$USER.pid"
             refresh_bar
-            exit "$rc"
+            exit 0
             ;;
         *)
             notify_auren "  Low Confidence" "“${query}”"

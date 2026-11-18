@@ -1542,6 +1542,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				decode_reset_session();
 				audio_release(WARM_HOLD_MS);
 				free(wake_pcm);
+				write_state_file(state_file, "jarvis", NULL, NULL);
 				write_all(cli, "TIMEOUT\n", 8);
 				return;
 			}
@@ -1740,6 +1741,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 		snprintf(reply, sizeof(reply), "CMD|%s\n", live_cmd);
 		write_all(cli, reply, strlen(reply));
 	} else {
+		write_state_file(state_file, "jarvis", NULL, NULL);
 		write_all(cli, "EMPTY\n", 6);
 	}
 }
