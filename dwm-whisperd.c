@@ -68,14 +68,8 @@ static struct {
 	.pw_open        = 0
 };
 
-static const char *WAKE_INITIAL_PROMPT = "Jarvis.";
-static const char *CMD_INITIAL_PROMPT =
-	"Go to workspace 1, 2, 3, 4, 5, and then focus browser, firefox, ghostty, WhatsApp. "
-	"Move window to workspace 1, 2, 3, 4, 5. Move the other window to workspace 2, 3, 4. "
-	"Pull firefox here, pull terminal here, search Google for this, ask pi to explain this, scratch that, undo. "
-	"Open a new tab, close tab, next tab, type, press enter, escape, tab, control c, "
-	"click, double click, right click, scroll down, scroll up, "
-	"mute volume, volume up, volume down, toggle fullscreen, close window, show pi, stop pi, reset pi.";
+static const char *WAKE_INITIAL_PROMPT = NULL;
+static const char *CMD_INITIAL_PROMPT  = NULL;
 
 /* Non-blocking background Whisper decode worker for ctx_main */
 static struct {
@@ -655,6 +649,30 @@ collapse_repetitions(char *s)
 		}
 	}
 
+	/* Strip trailing truncated prefix repetition (e.g. "open up miles davis open up miles") */
+	for (int k = 6; k >= 2; k--) {
+		if (n_words >= 2 * k + 1) {
+			int tail_match = 1;
+			for (int j = 0; j < k; j++) {
+				const char *a = words[j];
+				const char *b = words[n_words - k + j];
+				size_t la = strlen(a), lb = strlen(b);
+				while (la > 0 && ispunct((unsigned char)a[la - 1]))
+					la--;
+				while (lb > 0 && ispunct((unsigned char)b[lb - 1]))
+					lb--;
+				if (la == 0 || la != lb || strncasecmp(a, b, la) != 0) {
+					tail_match = 0;
+					break;
+				}
+			}
+			if (tail_match) {
+				n_words -= k;
+				break;
+			}
+		}
+	}
+
 	s[0] = '\0';
 	for (int i = 0; i < n_words; i++) {
 		if (i > 0)
@@ -716,9 +734,9 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 
 	struct whisper_full_params wparams = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
 	wparams.n_threads        = n_threads;
-	wparams.single_segment   = false;
+	wparams.single_segment   = true;
 	wparams.no_context       = true;
-	wparams.no_timestamps    = false;
+	wparams.no_timestamps    = true;
 	wparams.suppress_blank   = true;
 	wparams.suppress_nst     = true;
 	wparams.temperature      = 0.0f;
@@ -748,7 +766,7 @@ run_whisper_slice(struct whisper_context *ctx, int n_threads, const float *pcm, 
 		char prev_seg[1024] = {0};
 		for (int i = 0; i < n_seg; i++) {
 			float nsp = whisper_full_get_segment_no_speech_prob(ctx, i);
-			if (nsp > 0.72f)
+			if (nsp > 0.55f)
 				continue;
 			const char *seg = whisper_full_get_segment_text(ctx, i);
 			if (!seg)
@@ -1421,24 +1439,22 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	int64_t speech_start_f = scan_f;
 	int64_t last_voiced_f = scan_f;
 
-	int is_followup_window = (followup_ms > 0) ? 1 : 0;
-	int wake_confirmed = is_followup_window;
-	int waiting_post_wake = is_followup_window;
-	int chime_played = is_followup_window;
+	(void)followup_ms;
+	int is_followup_window = 0;
+	int wake_confirmed = 0;
+	int waiting_post_wake = 0;
+	int chime_played = 0;
 	int non_jarvis_utter = 0;
 	int post_change_frames = 0;
 	int unchanged_decodes = 0;
-	long post_wake_deadline_ms = is_followup_window ? (now_ms() + (long)followup_ms) : 0;
-	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 4) : 0;
-	int64_t wake_end_f = chime_ignore_until_f;
+	long post_wake_deadline_ms = 0;
+	int64_t chime_ignore_until_f = 0;
+	int64_t wake_end_f = 0;
 	int64_t cmd_start_f = scan_f;
 	int64_t decoded_wake_voiced_f = -1;
 	int64_t decoded_cmd_voiced_f = -1;
 	int64_t final_submitted_voiced_f = -1;
 	char live_cmd[4096] = {0};
-
-	if (is_followup_window)
-		write_state_file(state_file, "jarvis-cmd", NULL, NULL);
 
 	if (cmd_silence_ms < 360)
 		cmd_silence_ms = 360;
@@ -1484,12 +1500,12 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 							unchanged_decodes++;
 							decoded_cmd_voiced_f = res_vf;
 							if (unchanged_decodes >= 1 &&
-							    (silence_frames >= 12 || post_change_frames >= 30)) {
+							    (silence_frames >= 10 || post_change_frames >= 25)) {
 								stop_from_decode = 1;
 							}
 						}
 					}
-				} else if (all_sil && live_cmd[0] != '\0' && post_change_frames >= 18) {
+				} else if (all_sil && live_cmd[0] != '\0' && post_change_frames >= 15) {
 					stop_from_decode = 1;
 				}
 			} else {
@@ -1501,8 +1517,8 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 		int64_t avail_f = g_audio.total_frames;
 		double nf_db = g_audio.noise_floor_db;
 		double eff_start_db = thresh_db;
-		if (nf_db + 7.5 > eff_start_db)
-			eff_start_db = nf_db + 7.5;
+		if (nf_db + 8.5 > eff_start_db)
+			eff_start_db = nf_db + 8.5;
 		if (eff_start_db > -18.0)
 			eff_start_db = -18.0;
 
@@ -1563,10 +1579,10 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				else if (db > eff_start_db - 6.0)
 					peak_speech_db = 0.992 * peak_speech_db + 0.008 * db;
 
-				double eff_keep_db = eff_start_db - 3.0;
-				double peak_rel_db = peak_speech_db - 16.0;
-				if (peak_rel_db > -28.0)
-					peak_rel_db = -28.0;
+				double eff_keep_db = eff_start_db - 2.5;
+				double peak_rel_db = peak_speech_db - 13.0;
+				if (peak_rel_db > -26.0)
+					peak_rel_db = -26.0;
 				if (voiced_frames >= 5 && peak_rel_db > eff_keep_db)
 					eff_keep_db = peak_rel_db;
 
@@ -1577,7 +1593,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				} else {
 					silence_frames++;
 				}
-				if (live_cmd[0] != '\0' && db < peak_speech_db - 8.5)
+				if (live_cmd[0] != '\0' && db < peak_speech_db - 8.0)
 					post_change_frames++;
 				else if (db >= peak_speech_db - 5.0)
 					post_change_frames = 0;
@@ -1588,18 +1604,6 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 		if (wake_confirmed && waiting_post_wake) {
 			if (now_ms() >= post_wake_deadline_ms) {
-				if (is_followup_window) {
-					is_followup_window = 0;
-					wake_confirmed = 0;
-					waiting_post_wake = 0;
-					chime_played = 0;
-					in_speech = 0;
-					consec_voiced = 0;
-					voiced_frames = 0;
-					silence_frames = 0;
-					write_state_file(state_file, "jarvis", NULL, NULL);
-					continue;
-				}
 				decode_reset_session();
 				audio_release(WARM_HOLD_MS);
 				free(wake_pcm);
@@ -1616,7 +1620,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 			int64_t utter_f = scan_f - speech_start_f;
 
 			if (non_jarvis_utter) {
-				if (silence_frames >= 10 || utter_f > 250) {
+				if (silence_frames >= 10 || utter_f > 200) {
 					in_speech = 0;
 					consec_voiced = 0;
 					voiced_frames = 0;
@@ -1629,12 +1633,12 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				continue;
 			}
 
-			int pause_wake_check = (silence_frames >= 4 && voiced_frames >= 5 &&
+			int pause_wake_check = (silence_frames >= 7 && voiced_frames >= 5 &&
 			                        last_voiced_f > decoded_wake_voiced_f);
-			int mid_wake_check   = (utter_f >= 30 && decoded_wake_voiced_f < 0);
+			int cont_wake_check  = (utter_f >= 35 && decoded_wake_voiced_f < 0);
 
-			if (pause_wake_check || mid_wake_check) {
-				int64_t end_f = mid_wake_check ? (speech_start_f + 34) : (last_voiced_f + 4);
+			if (pause_wake_check || cont_wake_check) {
+				int64_t end_f = cont_wake_check ? (speech_start_f + 38) : (last_voiced_f + 5);
 				if (end_f > scan_f)
 					end_f = scan_f;
 				int64_t snap_voiced_f = last_voiced_f;
@@ -1643,19 +1647,21 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				if (n_samp >= 2400) {
 					char heard[1024];
 					char inline_cmd[1024];
+					int w_tok = cont_wake_check ? 10 : 28;
 					run_whisper_slice(ctx_wake, n_threads, wake_pcm, n_samp,
-					                  "en", WAKE_INITIAL_PROMPT, 8, 1, 1, 0,
+					                  "en", WAKE_INITIAL_PROMPT, w_tok, 1, 0, 0,
 					                  heard, sizeof(heard), NULL);
 					decoded_wake_voiced_f = snap_voiced_f;
 
 					int wmatch = match_wake_prefix(heard, wake_word,
 					                               inline_cmd, sizeof(inline_cmd));
-					if (wmatch == 0 && utter_f <= 80 &&
+					if (wmatch == 0 && utter_f <= 65 &&
 					    contains_wake_word(heard, wake_word)) {
 						wmatch = 1;
 					}
-					if (wmatch > 0) {
-						/* Strictly two-stage: play beep & reset audio buffer */
+
+					if (wmatch == 1 && !cont_wake_check) {
+						/* User spoke ONLY "Jarvis" and paused: play chime and wait for command */
 						wake_confirmed = 1;
 						chime_played = 1;
 						play_chime_async(chime_wav);
@@ -1666,15 +1672,30 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						silence_frames = 0;
 						pthread_mutex_lock(&g_audio.mtx);
 						g_audio.in_speech_hint = 0;
-						chime_ignore_until_f = g_audio.total_frames + 10;
+						chime_ignore_until_f = g_audio.total_frames + 11;
 						pthread_mutex_unlock(&g_audio.mtx);
 						wake_end_f = chime_ignore_until_f;
-						post_wake_deadline_ms = now_ms() + 7000L;
+						post_wake_deadline_ms = now_ms() + 4500L;
 						write_state_file(state_file, "jarvis-cmd", NULL, NULL);
 						notify_osd_async("  Jarvis Listening...",
-						                 "Speak your command now.", 6000);
+						                 "Speak your command now.", 4000);
 						continue;
-					} else if (mid_wake_check || utter_f > 75) {
+					} else if (wmatch >= 1) {
+						/* User is speaking a continuous one-shot "Jarvis <command>" utterance:
+						 * Keep the ENTIRE utterance buffer intact from speech_start_f (do NOT reset
+						 * or cut off audio, and do NOT play chime mid-speech).
+						 */
+						wake_confirmed = 1;
+						waiting_post_wake = 0;
+						chime_played = 0;
+						cmd_start_f = speech_start_f;
+						if (wmatch == 2 && inline_cmd[0] != '\0') {
+							snprintf(live_cmd, sizeof(live_cmd), "%s", inline_cmd);
+							decoded_cmd_voiced_f = snap_voiced_f;
+							write_state_file(state_file, "cmd", live_cmd,
+							                 "  Jarvis Command (Live)...");
+						}
+					} else if (cont_wake_check || utter_f > 65) {
 						non_jarvis_utter = 1;
 					}
 				}

@@ -191,6 +191,11 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("status=ACT", r6)
         self.assertIn("view 2 ; wm fullscreen", r6)
 
+        r6b = self._dry_run("open a new tab, press enter, press")
+        self.assertIn("status=ACT", r6b)
+        self.assertIn("key ctrl+t ; key Return", r6b)
+        self.assertNotIn('open "new tab', r6b)
+
     def test_recording_and_demo_chains(self):
         r7 = self._dry_run("start recording my screen and audio")
         self.assertIn("intent=record_start", r7)

@@ -424,9 +424,20 @@ def strip_leading_fillers(s):
 def strip_arg_determiner(iid, arg_val):
     if iid in ("play_target", "open_target", "focus_target", "pull_target"):
         words = arg_val.split()
-        if len(words) >= 2 and words[0].lower() in ("some", "the", "a", "an", "my"):
-            return " ".join(words[1:])
+        while len(words) >= 2 and words[0].lower() in ("up", "on", "some", "the", "a", "an", "my", "to"):
+            words.pop(0)
+        return " ".join(words)
     return arg_val
+
+NON_DICTATION_PARAM_IIDS = {
+    "open_target", "play_target", "focus_target", "pull_target",
+    "click_target", "rclick_target", "dclick_target", "search_web",
+    "wm_how_to", "wait_sec",
+}
+INVALID_BARE_ARGS = {
+    "up", "on", "to", "a", "an", "the", "my", "some", "it",
+    "press", "open", "switch", "go", "click", "move", "and", "then",
+}
 
 def match_param_template(clause):
     """Zero-inference match of a clause against configurable {arg} templates in intents.conf."""
@@ -446,10 +457,14 @@ def match_param_template(clause):
             raw_arg = cand[start:end].strip()
             if not raw_arg:
                 continue
+            if iid in NON_DICTATION_PARAM_IIDS and ("," in raw_arg or ";" in raw_arg):
+                continue
             iid_resolved, arg_val = resolve_payload_and_target(iid, raw_arg)
             if not arg_val:
                 continue
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            if clean_phrase(arg_val) in INVALID_BARE_ARGS:
+                continue
             iid_resolved = promote_intent(iid_resolved, arg_val)
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
@@ -514,9 +529,13 @@ def match_lexical_frame(clause):
                 best_hit = (iid, sim, arg_raw)
     if best_hit:
         iid, sim, arg_raw = best_hit
+        if iid in NON_DICTATION_PARAM_IIDS and ("," in arg_raw or ";" in arg_raw):
+            return None
         iid_resolved, arg_val = resolve_payload_and_target(iid, arg_raw)
         if arg_val:
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            if clean_phrase(arg_val) in INVALID_BARE_ARGS:
+                return None
             iid_resolved = promote_intent(iid_resolved, arg_val)
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
@@ -720,9 +739,11 @@ def evaluate_query(raw_query, use_inference=None):
     if len(sub_parts) > 1:
         matched_steps = []
         min_sim = 1.0
-        for p in sub_parts:
+        for idx, p in enumerate(sub_parts):
             m = match_single_clause(p, use_inference=use_inference)
             if not m:
+                if idx == len(sub_parts) - 1 and matched_steps and len(p.split()) <= 1:
+                    continue
                 matched_steps = []
                 break
             matched_steps.append(m[2])
@@ -884,12 +905,6 @@ EOF
             exit "$rc"
             ;;
         *)
-            word_count=$(printf '%s\n' "$query" | wc -w | tr -d ' ')
-            alnum_len=$(printf '%s' "$query" | tr -cd '[:alnum:]' | wc -c | tr -d ' ')
-            if [ "${word_count:-0}" -ge 2 ] && [ "${alnum_len:-0}" -ge 6 ]; then
-                play_done_earcon
-                exec /home/quirinpa/.local/bin/dwm-jarvis-pi send "$query"
-            fi
             notify_auren "  Low Confidence" "“${query}”"
             return 1
             ;;

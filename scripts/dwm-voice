@@ -243,16 +243,12 @@ jarvis_loop() {
 
     trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT"; restore_idle_state; exit 0' INT TERM
 
-    next_followup_ms=0
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
-        if [ "${next_followup_ms:-0}" -le 0 ]; then
-            printf 'jarvis\n' > "$STATE_FILE"
-            refresh_bar
-        fi
+        printf 'jarvis\n' > "$STATE_FILE"
+        refresh_bar
 
-        thresh_db=$(get_xres "dwm.voice.threshold_db" "-36")
-        cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "650")
-        followup_cfg=$(get_xres "dwm.voice.followup_ms" "3800")
+        thresh_db=$(get_xres "dwm.voice.threshold_db" "-32")
+        cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "500")
         wake_word=$(get_wake_word)
         lang_mode=$(get_lang_mode)
         port=$(get_srv_port)
@@ -260,7 +256,7 @@ jarvis_loop() {
         ensure_whisper_server
         rm -f "$JARVIS_OUT"
 
-        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|${next_followup_ms}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
+        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|0" </dev/null > "$JARVIS_OUT" 2>/dev/null &
         jvad_pid=$!
         printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
         wait "$jvad_pid"
@@ -269,7 +265,6 @@ jarvis_loop() {
 
         if [ "$rc" -eq 130 ]; then
             rm -f "$JARVIS_OUT"
-            next_followup_ms=0
             sleep 0.15
             continue
         fi
@@ -283,21 +278,18 @@ jarvis_loop() {
                 setsid "$0" lockdown </dev/null >/dev/null 2>&1 &
                 exit 0
             fi
-            (
-                printf '%s\n' "$$" > "$ACTING_PID_FILE"
-                refresh_bar
-                /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
-                rm -f "$ACTING_PID_FILE"
-                refresh_bar
-            ) </dev/null >/dev/null 2>&1 &
-            next_followup_ms="$followup_cfg"
+            printf '%s\n' "$$" > "$ACTING_PID_FILE"
+            refresh_bar
+            /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
+            rm -f "$ACTING_PID_FILE"
+            printf 'jarvis\n' > "$STATE_FILE"
+            refresh_bar
+            sleep 0.25
         elif [ "$rc" -eq 2 ]; then
-            next_followup_ms=0
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
             notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
         else
-            next_followup_ms=0
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
         fi
@@ -310,6 +302,10 @@ jarvis_stop_quiet() {
     if [ -f "$JARVIS_VAD_PID" ]; then
         jvad=$(cat "$JARVIS_VAD_PID" 2>/dev/null)
         [ -n "$jvad" ] && kill -USR1 "$jvad" 2>/dev/null || true
+    fi
+    if [ -f "$ACTING_PID_FILE" ]; then
+        apid=$(cat "$ACTING_PID_FILE" 2>/dev/null)
+        [ -n "$apid" ] && kill "$apid" 2>/dev/null || true
     fi
     if [ -f "$JARVIS_PID_FILE" ]; then
         jpid=$(cat "$JARVIS_PID_FILE" 2>/dev/null)

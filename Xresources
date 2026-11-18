@@ -116,9 +116,10 @@ dwm.auren.inference:            false
 dwm.auren.llm_fallback:         false
 dwm.voice.auto_kbd_lang:        false
 dwm.voice.auto_stop:            true
-dwm.voice.silence_ms:           520
-dwm.voice.cmd_silence_ms:       650
-dwm.voice.threshold_db:         -36
+dwm.voice.silence_ms:           480
+dwm.voice.cmd_silence_ms:       500
+dwm.voice.followup_ms:          0
+dwm.voice.threshold_db:         -32
 dwm.voice.wake_word:            jarvis
 dwm.voice.jarvis_autostart:     true
 dwm.voice.server_port:          8178

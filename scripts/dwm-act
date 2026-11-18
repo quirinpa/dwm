@@ -1213,7 +1213,7 @@ def wait_window_focused(target_id_or_class: str, timeout: float = 2.0) -> bool:
     return bool(wait_until(_check, timeout=timeout, interval=0.08, initial_delay=0.03))
 
 
-def wait_page_ready(prev_title: str = "", target_hint: str = "", timeout: float = 5.5) -> dict:
+def wait_page_ready(prev_title: str = "", target_hint: str = "", timeout: float = 2.2) -> dict:
     """Wait until browser/window title transitions away from placeholder/prev_title and settles."""
     hint_words = {w for w in norm_text(target_hint).split() if len(w) >= 3}
     placeholders = {
@@ -1481,42 +1481,28 @@ def resolve_youtube_url(query: str) -> str:
 
 
 def ensure_playback_started(is_youtube: bool = True) -> bool:
-    """Layer 3 Post-Condition Enforcer: Verify audio is playing; escalate through MPRIS -> key -> viewport click."""
+    """Layer 3 Post-Condition Enforcer: Verify audio is playing; escalate through MPRIS -> player key without mouse warping."""
     # 1. Check if browser already started playing automatically once the page loaded
-    if wait_audio_playing(timeout=1.6):
+    if wait_audio_playing(timeout=0.8):
         return True
 
     # 2. Escalation A: If an MPRIS player exists in Paused/Stopped state, send D-Bus Play (idempotent)
     audio = get_audio_state()
-    if any(p["status"] != "Playing" for p in audio.get("mpris_players", [])):
-        if mpris_control("Play") and wait_audio_playing(timeout=1.4):
+    mpris_list = audio.get("mpris_players", [])
+    if any(p["status"] != "Playing" for p in mpris_list):
+        if mpris_control("Play") and wait_audio_playing(timeout=0.8):
             return True
 
-    # 3. Escalation B: Ensure browser has focus and send player play key ('k' for YouTube, 'space' otherwise)
-    _focus_firefox_window()
-    time.sleep(0.35)
-    if get_audio_state().get("playing"):
-        return True
-    run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
-    play_key = "k" if is_youtube else "space"
-    run_cmd(["xdotool", "key", "--clearmodifiers", play_key])
-    if wait_audio_playing(timeout=1.8):
-        return True
-
-    # 4. Escalation C: Click the primary video player viewport (or visible Play button) to satisfy Firefox autoplay gesture
-    wx, wy, ww, wh = get_win_geometry()
-    atspi_play = query_atspi_elements("play")
-    if atspi_play and atspi_play[3] >= 0.80:
-        px, py = atspi_play[0], atspi_play[1]
-    else:
-        px, py = wx + int(ww * 0.38), wy + int(wh * 0.45)
-    run_cmd(["xdotool", "mousemove", "--sync", str(px), str(py), "click", "1"])
-    if wait_audio_playing(timeout=1.8):
-        return True
-
-    # Final attempt: try MPRIS Play once more after the viewport click registered the media element
-    if mpris_control("Play") and wait_audio_playing(timeout=1.0):
-        return True
+    # 3. Escalation B: Only if no MPRIS player is active yet, send player play key ('k' for YouTube, 'space' otherwise)
+    if not mpris_list:
+        _focus_firefox_window()
+        if get_audio_state().get("playing"):
+            return True
+        run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
+        play_key = "k" if is_youtube else "space"
+        run_cmd(["xdotool", "key", "--clearmodifiers", play_key])
+        if wait_audio_playing(timeout=0.9):
+            return True
 
     return get_audio_state().get("playing", False)
 
@@ -1551,19 +1537,19 @@ def do_play(target: str) -> str:
         if kind == "place":
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             _focus_firefox_window()
-            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=5.5)
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
             is_yt = "youtube.com" in best["ref"].lower()
             playing = ensure_playback_started(is_youtube=is_yt)
             return f"play:{best['label']}[{'playing' if playing else 'opened'}]"
         if kind == "app":
             subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            wait_window_focused(best["title"], timeout=2.5)
+            wait_window_focused(best["title"], timeout=2.0)
             return f"open:{best['label']}"
 
     watch_url = resolve_youtube_url(t)
     subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _focus_firefox_window()
-    wait_page_ready(prev_title=prev_title, target_hint=t, timeout=5.5)
+    wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
     playing = ensure_playback_started(is_youtube=("youtube.com" in watch_url))
     state_tag = "playing" if playing else "loaded"
     return f"play:{watch_url}[{state_tag}]"
@@ -1588,22 +1574,22 @@ def do_focus(target: str, allow_open: bool = False) -> str:
             prev_title = _get_firefox_title()
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             _focus_firefox_window()
-            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=4.5)
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.0)
             return f"open:{best['label']}->{best['ref']}"
         if kind == "app" and allow_open:
             subprocess.Popen(best["ref"].split(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            wait_window_focused(best["title"], timeout=2.5)
+            wait_window_focused(best["title"], timeout=2.0)
             return f"open:{best['label']}"
 
     if allow_open:
-        if is_media_query(t):
-            return do_play(t)
-        prev_title = _get_firefox_title()
-        url = resolve_web_url(t)
-        subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        _focus_firefox_window()
-        wait_page_ready(prev_title=prev_title, target_hint=t, timeout=4.5)
-        return f"open:web({t})->{url}"
+        if "." in t and " " not in t:
+            prev_title = _get_firefox_title()
+            url = t if t.startswith(("http://", "https://")) else f"https://{t}"
+            subprocess.Popen(["firefox", "--new-tab", url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            _focus_firefox_window()
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.0)
+            return f"open:web({t})->{url}"
+        return do_play(t)
 
     run_cmd(["dwm-msg", "focus-class", t])
     wait_window_focused(t, timeout=1.0)
