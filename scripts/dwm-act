@@ -113,9 +113,16 @@ PRONOUN_EXACT = {
 }
 
 
+def _unquote(s: str) -> str:
+    s = (s or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        return s[1:-1]
+    return s.strip('"')
+
+
 def expand_selection_pronouns(text: str, for_pi: bool = False) -> str:
     """Substitute X11 selection pronouns ('this', 'selection', 'clipboard') with live X11 selection."""
-    t_clean = (text or "").strip().strip("\"'")
+    t_clean = _unquote(text)
     if not t_clean:
         return t_clean
     t_low = t_clean.lower()
@@ -1730,6 +1737,7 @@ def do_focus(target: str, allow_open: bool = False) -> str:
     if allow_open and t_norm in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term"):
         subprocess.Popen(["st"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
         wait_window_focused("st-256color", timeout=1.5)
+        time.sleep(0.12)
         return "open:st"
 
     best = resolve_semantic_target(t)
@@ -2031,7 +2039,7 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         return f"type+Enter_other({other['class']}) “{text}”"
 
     if op in ("type", "write", "input", "dictate"):
-        text = expand_selection_pronouns(arg.strip("\"'"))
+        text = expand_selection_pronouns(_unquote(arg))
         if text:
             ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
@@ -2040,7 +2048,7 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         return f"type “{text}”"
 
     if op in ("type_enter", "submit"):
-        text = expand_selection_pronouns(arg.strip("\"'"))
+        text = expand_selection_pronouns(_unquote(arg))
         if text:
             ensure_input_focused()
             run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
@@ -2205,8 +2213,10 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
             )
             if a_strip == "st" or a_strip.startswith("st "):
                 wait_window_focused("st-256color", timeout=1.2)
+                time.sleep(0.12)
             elif a_strip == "xterm" or a_strip.startswith("xterm "):
                 wait_window_focused("xterm", timeout=1.2)
+                time.sleep(0.12)
             else:
                 try:
                     proc.wait(timeout=0.35)

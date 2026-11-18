@@ -267,6 +267,21 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("intent=del_word@browser", out_word_browser)
         self.assertIn("cmd=key ctrl+BackSpace", out_word_browser)
 
+        out_ls_home = subprocess.check_output(
+            [AUREN_PATH, "--infer", "dry-run", "list the files in my home directory"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=ls_home@terminal", out_ls_home)
+        self.assertIn('cmd=type_enter "ls -la ~"', out_ls_home)
+
+        out_chain = subprocess.check_output(
+            [AUREN_PATH, "--infer", "dry-run", "open up a new terminal and list the files in my home directory"],
+            text=True, env=env_browser, timeout=6.0
+        ).strip()
+        self.assertIn("status=ACT", out_chain)
+        self.assertIn('cmd=sh st ; type_enter "ls -la ~"', out_chain)
+
+        self.assertEqual(dwm_act._unquote('"find . -name \'*.c\'"'), "find . -name '*.c'")
+
     def test_learned_intent_persistence_and_undo_eviction(self):
         learned_path = os.path.expanduser("~/.config/dwm/intents.learned.conf")
         last_learned_json = f"/tmp/dwm-last-learned-{os.environ.get('USER', 'user')}.json"

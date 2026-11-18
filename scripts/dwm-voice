@@ -132,6 +132,26 @@ get_wake_word() {
     get_xres "dwm.voice.wake_word" "jarvis" | tr '[:upper:]' '[:lower:]'
 }
 
+get_followup_ms() {
+    if [ -f "$CONF_DIR/followup_ms" ]; then
+        fms=$(cat "$CONF_DIR/followup_ms" 2>/dev/null | tr -d '[:space:]')
+        if [ -n "$fms" ]; then
+            printf '%s' "$fms"
+            return
+        fi
+    fi
+    get_xres "dwm.voice.followup_ms" "8000"
+}
+
+is_speaker_playing() {
+    if command -v pactl >/dev/null 2>&1; then
+        if pactl list sink-inputs 2>/dev/null | grep -q "Corked: no"; then
+            return 0
+        fi
+    fi
+    return 1
+}
+
 dmenu_voice() {
     prompt="$1"
     lines="$2"
@@ -251,6 +271,8 @@ jarvis_loop() {
 
     trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT" "$ACTING_PID_FILE"; restore_idle_state; exit 0' INT TERM
 
+    next_followup=0
+
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
         printf 'jarvis\n' > "$STATE_FILE"
         refresh_bar
@@ -260,16 +282,24 @@ jarvis_loop() {
         wake_word=$(get_wake_word)
         lang_mode=$(get_lang_mode)
         port=$(get_srv_port)
+        fcfg=$(get_followup_ms)
+
+        if [ "$fcfg" = "3600000" ] && ! is_speaker_playing; then
+            next_followup=3600000
+        elif is_speaker_playing; then
+            next_followup=0
+        fi
 
         ensure_whisper_server
         rm -f "$JARVIS_OUT"
 
-        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|0" </dev/null > "$JARVIS_OUT" 2>/dev/null &
+        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|${next_followup}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
         jvad_pid=$!
         printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
         wait "$jvad_pid"
         rc=$?
         rm -f "$JARVIS_VAD_PID"
+        next_followup=0
 
         if [ "$rc" -eq 130 ]; then
             rm -f "$JARVIS_OUT"
@@ -289,10 +319,14 @@ jarvis_loop() {
             printf '%s\n' "$$" > "$ACTING_PID_FILE"
             refresh_bar
             /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
+            act_rc=$?
             rm -f "$ACTING_PID_FILE"
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
-            sleep 0.25
+            if [ "$act_rc" -eq 0 ] && ! is_speaker_playing; then
+                next_followup="$fcfg"
+            fi
+            sleep 0.20
         elif [ "$rc" -eq 2 ]; then
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
@@ -371,14 +405,20 @@ voice_menu() {
     lang=$(get_lang)
     model=$(basename "$(get_model)")
     llm_mode=$(/home/quirinpa/.local/bin/dwm-auren llm-mode 2>/dev/null || echo "auto")
+    fms=$(get_followup_ms)
+    case "$fms" in
+        0) f_label="Strict Wake-Word (0s)" ;;
+        3600000) f_label="Wake-Free Continuous" ;;
+        *) f_label="Follow-Up Window ($(( fms / 1000 ))s)" ;;
+    esac
     if is_jarvis_running; then
         j_status="ON (Yellow)"
     else
         j_status="OFF / Lockdown (Silver)"
     fi
 
-    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🤖  Jarvis LLM Inference Mode [current: %s]\n🧹  Clear Learned Voice Shortcuts (intents.learned.conf)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$llm_mode" "$lang" "$model" | \
-        dmenu_voice "Jarvis:" 11 "#f9e2af")
+    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n🎙  Jarvis Wake / Follow-Up Mode [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🤖  Jarvis LLM Inference Mode [current: %s]\n🧹  Clear Learned Voice Shortcuts (intents.learned.conf)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$f_label" "$llm_mode" "$lang" "$model" | \
+        dmenu_voice "Jarvis:" 12 "#f9e2af")
 
     case "$choice" in
         *"Toggle Jarvis Listener"*)
@@ -386,6 +426,19 @@ voice_menu() {
                 jarvis_stop
             else
                 jarvis_start
+            fi
+            ;;
+        *"Jarvis Wake / Follow-Up Mode"*)
+            fchoice=$(printf "8000     (8s Follow-Up Window — no need to repeat “Jarvis” after a command)\n15000    (15s Follow-Up Window — extended conversational window)\n3600000  (Wake-Free Mode — speak commands directly without saying “Jarvis”)\n0        (Strict Wake-Word — always require saying “Jarvis”)\n" | \
+                dmenu_voice "Wake Mode:" 4 "#f9e2af")
+            if [ -n "$fchoice" ]; then
+                new_fms=$(printf '%s\n' "$fchoice" | awk '{print $1}')
+                printf '%s' "$new_fms" > "$CONF_DIR/followup_ms"
+                if is_jarvis_running; then
+                    jarvis_stop_quiet
+                    jarvis_start
+                fi
+                notify_voice "voice" 2800 "🎙  Jarvis Wake Mode" "Follow-up window set to: ${new_fms} ms"
             fi
             ;;
         *"Jarvis Lockdown"*)

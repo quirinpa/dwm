@@ -617,6 +617,21 @@ INVALID_BARE_ARGS = {
 def scope_matches(rule_scope, active_scope):
     return rule_scope in ("any", active_scope)
 
+FILESYSTEM_NAV_WORDS = {"directory", "folder", "path", "parent", "home", "cwd", "pwd", "dot"}
+HELP_QUESTION_PREFIXES = ("how ", "what ", "where ", "which ", "instructions ", "tell me how", "help ")
+
+def _is_valid_param_hit(iid_resolved, clause_low, arg_val, active_scope="any"):
+    base_iid = iid_resolved.split("@", 1)[0]
+    arg_clean = clean_phrase(arg_val)
+    arg_words = set(arg_clean.split())
+    if base_iid == "wm_how_to":
+        if not clause_low.startswith(HELP_QUESTION_PREFIXES):
+            return False
+    if base_iid in ("focus_target", "open_target"):
+        if arg_words & FILESYSTEM_NAV_WORDS or "/" in arg_val or "~" in arg_val:
+            return False
+    return True
+
 def match_param_template(clause, active_scope="any"):
     """Zero-inference match of a clause against configurable {arg} templates in intents.conf."""
     for cand in (clause.strip().strip(",.!?;:"), strip_leading_fillers(clause)):
@@ -647,6 +662,8 @@ def match_param_template(clause, active_scope="any"):
             if clean_phrase(arg_val) in INVALID_BARE_ARGS:
                 continue
             iid_resolved = promote_intent(iid_resolved, arg_val)
+            if not _is_valid_param_hit(iid_resolved, c_low, arg_val, active_scope):
+                continue
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
             cmd_tmpl = commands.get(iid_resolved, commands[iid])
@@ -676,6 +693,7 @@ def match_static_fast(clause, active_scope="any"):
 
     best_iid = ""
     best_sim = -1.0
+    q_core_set = set(core_tokens(c_clean))
     for iid, scope, ex in static_exemplars:
         if not scope_matches(scope, active_scope):
             continue
@@ -686,6 +704,10 @@ def match_static_fast(clause, active_scope="any"):
         ex_digits = {w for w in ex_words if w.isdigit()}
         if q_digits != ex_digits:
             continue
+        if scope == "terminal":
+            ex_core_set = set(core_tokens(ex_clean))
+            if q_core_set - ex_core_set:
+                continue
         sim = lexical_similarity(c_clean, ex_clean)
         if scope == active_scope and active_scope != "any":
             sim = min(0.99, sim + 0.02)
@@ -726,6 +748,8 @@ def match_lexical_frame(clause, active_scope="any"):
             if clean_phrase(arg_val) in INVALID_BARE_ARGS:
                 return None
             iid_resolved = promote_intent(iid_resolved, arg_val)
+            if not _is_valid_param_hit(iid_resolved, cand.lower(), arg_val, active_scope):
+                return None
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
             cmd_tmpl = commands.get(iid_resolved, commands[iid])
@@ -748,6 +772,7 @@ def match_static_embedding(clause, active_scope="any"):
 
     best_iid = ""
     best_sim = -1.0
+    q_core_set = set(core_tokens(c_clean))
     for iid, scope, ex in scoped_exs:
         ex_words = ex.lower().split()
         if len(q_words) > len(ex_words) + 3:
@@ -755,6 +780,10 @@ def match_static_embedding(clause, active_scope="any"):
         ex_digits = {w for w in ex_words if w.isdigit()}
         if q_digits != ex_digits:
             continue
+        if scope == "terminal":
+            ex_core_set = set(core_tokens(ex))
+            if q_core_set - ex_core_set:
+                continue
         ex_vec = vec_map.get(ex)
         if not ex_vec:
             continue
@@ -768,15 +797,25 @@ def match_static_embedding(clause, active_scope="any"):
     return None
 
 def match_semantic_frame_embedding(clause, active_scope="any"):
-    """Opt-in bge-base embedding match for verb frames."""
+    """Opt-in bge-base embedding match for verb frames (embeds pure verb prefixes without {arg} inflation)."""
+    if active_scope == "terminal":
+        # In terminal context, let novel imperative shell commands fall through to Tier 2 LLM shell synthesis
+        return None
     c_clean = strip_leading_fillers(clause)
     words = c_clean.split()
     if len(words) < 2 or not param_frames:
         return None
+    excluded_base = {"wm_how_to", "type_text", "type_enter", "type_other", "type_enter_other", "run_cmd"}
     splits = []
-    for k in range(1, min(5, len(words))):
-        splits.append((k, " ".join(words[:k]).lower() + " {arg}", " ".join(words[k:])))
-    frame_tmpls = [(iid, scope, f"{pre} {{arg}}") for iid, scope, pre in param_frames if scope_matches(scope, active_scope)]
+    for k in range(1, min(4, len(words))):
+        splits.append((k, " ".join(words[:k]).lower(), " ".join(words[k:])))
+    frame_tmpls = [
+        (iid, scope, pre)
+        for iid, scope, pre in param_frames
+        if scope_matches(scope, active_scope) and iid.split("@", 1)[0] not in excluded_base
+    ]
+    if not frame_tmpls:
+        return None
     ensure_embedded([fs for _, fs, _ in splits] + [tf for _, _, tf in frame_tmpls])
     best_adj = -1.0
     best_hit = None
@@ -790,7 +829,7 @@ def match_semantic_frame_embedding(clause, active_scope="any"):
                 continue
             sim = dot_vec(f_vec, t_vec)
             adj = sim + 0.012 * k
-            if sim >= 0.80 and adj > best_adj:
+            if sim >= 0.86 and adj > best_adj:
                 best_adj = adj
                 best_hit = (iid, sim, arg_raw)
     if best_hit:
@@ -798,7 +837,11 @@ def match_semantic_frame_embedding(clause, active_scope="any"):
         iid_resolved, arg_val = resolve_payload_and_target(iid, arg_raw)
         if arg_val:
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
+            if clean_phrase(arg_val) in INVALID_BARE_ARGS:
+                return None
             iid_resolved = promote_intent(iid_resolved, arg_val)
+            if not _is_valid_param_hit(iid_resolved, c_clean.lower(), arg_val, active_scope):
+                return None
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
             cmd_tmpl = commands.get(iid_resolved, commands[iid])
@@ -850,18 +893,21 @@ def match_single_clause(clause, active_scope="any", use_inference=False):
         if sf_emb:
             return sf_emb
 
-    # 5. Direct desktop target match (lexical by default; embedding only if use_inference=True)
-    try:
-        if dwm_act is not None:
-            best_t = dwm_act.resolve_semantic_target(c_clean, use_inference=use_inference) or {}
-        else:
-            res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=2.0).strip()
-            best_t = json.loads(res_raw) if res_raw else {}
-        t_score = float(best_t.get("score", 0.0))
-        if t_score >= 0.78:
-            return f"target:{best_t.get('kind', 'env')}", min(t_score, 0.99), f'open "{c_clean}"'
-    except Exception:
-        pass
+    # 5. Direct desktop target match (only for short bare app/window names <= 3 words, never sentences)
+    SHELL_SENTENCE_VERBS = {"list", "show", "find", "check", "count", "go", "change", "create", "make", "delete", "remove", "run", "execute", "print", "display", "what", "where", "how"}
+    c_words = clean_phrase(c_clean).split()
+    if 1 <= len(c_words) <= 3 and c_words[0] not in SHELL_SENTENCE_VERBS:
+        try:
+            if dwm_act is not None:
+                best_t = dwm_act.resolve_semantic_target(c_clean, use_inference=use_inference) or {}
+            else:
+                res_raw = subprocess.check_output(["dwm-act", "resolve", c_clean], text=True, timeout=2.0).strip()
+                best_t = json.loads(res_raw) if res_raw else {}
+            t_score = float(best_t.get("score", 0.0))
+            if t_score >= 0.78:
+                return f"target:{best_t.get('kind', 'env')}", min(t_score, 0.99), f'open "{c_clean}"'
+        except Exception:
+            pass
     return None
 
 def split_clauses_semantic(raw_q, active_scope="any"):
@@ -924,8 +970,16 @@ LLM_SYSTEM_PROMPT = (
     "Output ONLY the DSL command (one line, or semicolon-separated steps). No markdown, no explanation.\n"
     "Valid ops: key <X11_combo> | type \"<text>\" | type_enter \"<text>\" | focus \"<target>\" | open \"<target>\" | "
     "play \"<query>\" | click \"<target>\" | scroll <up|down> <N> | view <1..5> | tag <1..5> | "
-    "wm <fullscreen|float|zoom|close|next|prev> | media <play|pause|next|prev> | undo | NONE\n"
-    "Reference shortcuts by focused window kind:\n"
+    "wm <fullscreen|float|zoom|close|next|prev> | media <play|pause|next|prev> | sh <cmd> | undo | NONE\n"
+    "Reference rules by focused window kind:\n"
+    "- [terminal] When the user asks to perform a shell, file, directory, git, process, or CLI task in the terminal, output: type_enter \"<shell_command>\"\n"
+    "  Examples in [terminal]:\n"
+    "  • list the files in my home directory -> type_enter \"ls -la ~\"\n"
+    "  • list files in downloads -> type_enter \"ls -la ~/Downloads\"\n"
+    "  • go to my downloads folder -> type_enter \"cd ~/Downloads\"\n"
+    "  • find all python files here -> type_enter \"find . -name '*.py'\"\n"
+    "  • count lines of code -> type_enter \"wc -l *\"\n"
+    "  • show largest files -> type_enter \"du -sh * | sort -h\"\n"
     "- [terminal] clear/erase/wipe line -> key ctrl+u\n"
     "- [terminal] delete/erase/wipe previous/last word -> key ctrl+w\n"
     "- [terminal] delete to end of line -> key ctrl+k\n"
@@ -941,7 +995,8 @@ LLM_SYSTEM_PROMPT = (
     "- [browser] mute/silence/unmute tab -> key ctrl+m\n"
     "- [browser] zoom in -> key ctrl+plus | zoom out -> key ctrl+minus | reset zoom -> key ctrl+0\n"
     "- [browser] go back -> key alt+Left | go forward -> key alt+Right\n"
-    "If the request is gibberish or unrelated to desktop control, output NONE."
+    "- If the user asks to open a new terminal AND run a command in it, output: sh st ; type_enter \"<shell_command>\"\n"
+    "If the request is gibberish or unrelated to desktop/terminal control, output NONE."
 )
 
 def sanitize_llm_dsl(raw_text):
@@ -971,7 +1026,11 @@ def sanitize_llm_dsl(raw_text):
                 arg = dwm_act.normalize_key_combo(arg)
             steps.append(f"key {arg}")
         elif op in ("type", "type_enter", "type_other", "type_enter_other", "open", "focus", "play", "search", "click", "right_click", "double_click", "pull", "pi"):
-            arg_clean = arg.strip("\"'")
+            arg_clean = arg.strip()
+            if len(arg_clean) >= 2 and arg_clean[0] == arg_clean[-1] and arg_clean[0] in ('"', "'"):
+                arg_clean = arg_clean[1:-1]
+            else:
+                arg_clean = arg_clean.strip('"')
             if arg_clean:
                 steps.append(f'{op} "{arg_clean}"')
         else:
@@ -1120,7 +1179,7 @@ def infer_via_local(query_str, active_scope, cls_str, title_str, model_id="qwen-
                 "model": model_id,
                 "session_id": f"jarvis-{model_id}",
                 "temperature": 0.0,
-                "max_tokens": 20,
+                "max_tokens": 48,
                 "messages": [
                     {"role": "system", "content": LLM_SYSTEM_PROMPT},
                     {"role": "user", "content": user_prompt},
@@ -1139,22 +1198,28 @@ def infer_via_local(query_str, active_scope, cls_str, title_str, model_id="qwen-
         pass
     return "", ""
 
+DESTRUCTIVE_SHELL_TOKENS = {"rm", "sudo", "dd", "mkfs", "reboot", "poweroff", "shutdown", "kill", "pkill", "killall", "chmod", "chown"}
+
 def record_learned_intent(active_scope, phrase_raw, dsl_cmd):
-    """Persist a newly inferred static shortcut (e.g. key/wm/media) into intents.learned.conf
+    """Persist a newly inferred static shortcut or safe @terminal shell command into intents.learned.conf
     so subsequent invocations resolve in <1ms via Tier 0."""
     p_clean = clean_phrase(phrase_raw)
-    if not p_clean or len(p_clean.split()) > 8:
+    if not p_clean or len(p_clean.split()) > 10:
         return
-    # Only auto-cache deterministic non-destructive shortcuts (key, wm, media, scroll)
     steps = [s.strip() for s in dsl_cmd.split(";") if s.strip()]
-    if not steps or not all(s.split()[0] in ("key", "wm", "media", "scroll") for s in steps):
+    if len(steps) != 1:
+        return
+    op = steps[0].split()[0]
+    if op == "type_enter" and active_scope == "terminal":
+        sh_words = set(clean_phrase(steps[0][len("type_enter"):]).split())
+        if sh_words & DESTRUCTIVE_SHELL_TOKENS:
+            return
+    elif op not in ("key", "wm", "media", "scroll"):
         return
     scope_tag = f"@{active_scope}" if active_scope in ("terminal", "browser", "editor") else ""
-    slug = "_".join(p_clean.split()[:4])
+    slug = "_".join(p_clean.split()[:5])
     learned_id = f"learned_{slug}{scope_tag}"
-    act_cmd = f"dwm-act {dsl_cmd}" if len(steps) == 1 else f"dwm-act exec \"{dsl_cmd}\""
-    if len(steps) > 1:
-        return
+    act_cmd = f"dwm-act {dsl_cmd}"
     try:
         os.makedirs(os.path.dirname(learned_path), exist_ok=True)
         existing = _load_conf_file(learned_path)
@@ -1216,13 +1281,18 @@ def evaluate_query(raw_query, use_inference=None, override_scope=None):
         iid, sim, dsl = whole_hit
         return f"ACT\t{sim:.2f}\t{iid}\t{dsl}"
 
-    # 2. Check multi-clause sequence
+    # 2. Check multi-clause sequence (with cross-clause context scope propagation)
     sub_parts = split_clauses_semantic(q_trimmed, active_scope=active_scope)
     if len(sub_parts) > 1:
         matched_steps = []
         min_sim = 1.0
+        clause_scope = active_scope
         for idx, p in enumerate(sub_parts):
-            m = match_single_clause(p, active_scope=active_scope, use_inference=use_inference)
+            m = match_single_clause(p, active_scope=clause_scope, use_inference=use_inference)
+            if not m:
+                inf_m = infer_fallback(p, clause_scope, cls_str, title_str)
+                if inf_m:
+                    m = (inf_m[2], inf_m[1], inf_m[3])
             if not m:
                 if idx == len(sub_parts) - 1 and matched_steps and len(p.split()) <= 1:
                     continue
@@ -1231,6 +1301,12 @@ def evaluate_query(raw_query, use_inference=None, override_scope=None):
             matched_steps.append(m[2])
             if m[1] < min_sim:
                 min_sim = m[1]
+            step_iid = m[0].split("@", 1)[0]
+            step_dsl = m[2].strip().lower()
+            if step_iid in ("open_terminal", "focus_terminal") or step_dsl in ("sh st", "sh xterm", 'open "st"', 'open "terminal"', 'focus "st-256color"'):
+                clause_scope = "terminal"
+            elif step_iid in ("focus_browser", "new_tab", "search_web", "play_target") or "firefox" in step_dsl:
+                clause_scope = "browser"
         if matched_steps:
             return f"ACT\t{min_sim:.2f}\tsequence\t{' ; '.join(matched_steps)}"
 

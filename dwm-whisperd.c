@@ -1581,14 +1581,14 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	int64_t speech_start_f = scan_f;
 	int64_t last_voiced_f = scan_f;
 
-	(void)followup_ms;
-	int wake_confirmed = 0;
-	int waiting_post_wake = 0;
-	int chime_played = 0;
+	int is_followup_window = (followup_ms > 0) ? 1 : 0;
+	int wake_confirmed = is_followup_window;
+	int waiting_post_wake = is_followup_window;
+	int chime_played = is_followup_window;
 	int non_jarvis_utter = 0;
-	long post_wake_deadline_ms = 0;
-	int64_t chime_ignore_until_f = 0;
-	int64_t wake_end_f = 0;
+	long post_wake_deadline_ms = is_followup_window ? (now_ms() + (long)followup_ms) : 0;
+	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 6) : 0;
+	int64_t wake_end_f = chime_ignore_until_f;
 	int64_t cmd_start_f = scan_f;
 	int64_t decoded_wake_voiced_f = -1;
 	int64_t decoded_cmd_voiced_f = -1;
@@ -1598,7 +1598,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 		cmd_silence_ms = 360;
 
 	while (running && !g_stop_req && !g_cancel_req) {
-		poll_control_socket(srv, cli, !wake_confirmed);
+		poll_control_socket(srv, cli, !wake_confirmed || waiting_post_wake);
 		if (g_stop_req || g_cancel_req)
 			break;
 
@@ -1719,6 +1719,14 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 		if (wake_confirmed && waiting_post_wake) {
 			if (now_ms() >= post_wake_deadline_ms) {
+				if (is_followup_window) {
+					is_followup_window = 0;
+					wake_confirmed = 0;
+					waiting_post_wake = 0;
+					chime_played = 0;
+					write_state_file(state_file, "jarvis", NULL, NULL);
+					continue;
+				}
 				restore_speaker_after_command(NULL);
 				decode_reset_session();
 				audio_release(WARM_HOLD_MS);
