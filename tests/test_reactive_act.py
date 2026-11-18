@@ -55,6 +55,25 @@ class TestLayer1Sensors(unittest.TestCase):
             self.assertEqual(st["sink_inputs"], 0)
             self.assertEqual(st["mpris_players"][0]["status"], "Paused")
 
+        # Case 3: Discord WEBRTC VoiceEngine (Corked: no) + Firefox (Corked: yes, Paused) must NOT report playing
+        def fake_run_discord_idle(args, timeout=4.0, input_bytes=None):
+            if args[:2] == ["pactl", "list"]:
+                return (
+                    "Sink Input #2752\n\tCorked: no\n\tapplication.name = \"WEBRTC VoiceEngine\"\n\tapplication.process.binary = \"Discord\"\n"
+                    "Sink Input #10661\n\tCorked: yes\n\tapplication.name = \"Firefox\"\n"
+                )
+            if "ListNames" in args[-1]:
+                return "(['org.mpris.MediaPlayer2.firefox.instance_1'],)"
+            if "PlaybackStatus" in args:
+                return "(<'Paused'>,)"
+            return ""
+
+        with patch.object(dwm_act, "run_cmd", side_effect=fake_run_discord_idle):
+            st = dwm_act.get_audio_state()
+            self.assertFalse(st["playing"])
+            self.assertEqual(st["sink_inputs"], 0)
+            self.assertEqual(st["mpris_players"][0]["status"], "Paused")
+
     def test_live_observe_snapshot(self):
         obs = dwm_act.observe(include_ocr=False)
         self.assertIn("focused", obs)
@@ -175,6 +194,32 @@ class TestLayer3GoalPrimitives(unittest.TestCase):
             ok = dwm_act.ensure_playback_started(is_youtube=True)
             self.assertTrue(ok)
             self.assertTrue(key_k_sent[0])
+
+        # Also verify that on a newly opened YouTube tab (new_tab=True), 'k' is still pressed
+        # even when a stale Paused MPRIS player from an older background tab exists!
+        key_k_new_tab = [False]
+        mpris_called_early = [False]
+
+        def fake_run_new_tab(args, timeout=4.0, input_bytes=None):
+            if args[:2] == ["xdotool", "key"] and args[-1] == "k":
+                key_k_new_tab[0] = True
+            return ""
+
+        def fake_mpris_new_tab(action="Play", target_bus=None):
+            if not key_k_new_tab[0]:
+                mpris_called_early[0] = True
+            return False
+
+        stale_mpris = [{"bus": "org.mpris.MediaPlayer2.firefox.instance_1", "status": "Paused"}]
+        with patch.object(dwm_act, "get_audio_state", side_effect=lambda: {"playing": key_k_new_tab[0], "sink_inputs": 1 if key_k_new_tab[0] else 0, "mpris_players": stale_mpris}), \
+             patch.object(dwm_act, "run_cmd", side_effect=fake_run_new_tab), \
+             patch.object(dwm_act, "mpris_control", side_effect=fake_mpris_new_tab), \
+             patch.object(dwm_act, "_focus_firefox_window", return_value=True), \
+             patch.object(dwm_act, "wait_audio_playing", side_effect=lambda timeout=1.0: key_k_new_tab[0]):
+            ok = dwm_act.ensure_playback_started(is_youtube=True, new_tab=True)
+            self.assertTrue(ok)
+            self.assertTrue(key_k_new_tab[0])
+            self.assertFalse(mpris_called_early[0])
 
     def test_do_focus_delegates_unmatched_media_to_do_play(self):
         with patch.object(dwm_act, "resolve_semantic_target", return_value={"kind": "place", "score": 0.45, "label": "weak"}), \

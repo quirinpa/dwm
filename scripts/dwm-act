@@ -298,6 +298,20 @@ def get_mouse_location():
     return 800, 450
 
 
+NON_MEDIA_SINK_HINTS = (
+    "webrtc voiceengine",
+    "discord",
+    "pw-play",
+    "paplay",
+    "aplay",
+    "canberra",
+    "speech-dispatcher",
+    "espeak",
+    "piper",
+    "sox",
+)
+
+
 def get_audio_state():
     """Layer 1 Sensor: Inspect PipeWire/PulseAudio sink-inputs and D-Bus MPRIS media players."""
     sink_out = run_cmd(["pactl", "list", "sink-inputs"], timeout=1.5)
@@ -306,6 +320,9 @@ def get_audio_state():
         if not block.strip():
             continue
         if "Corked: no" in block:
+            block_low = block.lower()
+            if any(h in block_low for h in NON_MEDIA_SINK_HINTS):
+                continue
             uncorked_streams += 1
 
     mpris_players = []
@@ -1652,29 +1669,46 @@ def resolve_youtube_url(query: str) -> str:
     return watch_url
 
 
-def ensure_playback_started(is_youtube: bool = True) -> bool:
-    """Layer 3 Post-Condition Enforcer: Verify audio is playing; escalate through MPRIS -> player key without mouse warping."""
+def ensure_playback_started(is_youtube: bool = True, new_tab: bool = False) -> bool:
+    """Layer 3 Post-Condition Enforcer: Verify audio is playing; escalate through MPRIS / player key without mouse warping."""
     # 1. Check if browser already started playing automatically once the page loaded
-    if wait_audio_playing(timeout=0.8):
+    if wait_audio_playing(timeout=1.1 if new_tab else 0.8):
         return True
 
-    # 2. Escalation A: If an MPRIS player exists in Paused/Stopped state, send D-Bus Play (idempotent)
     audio = get_audio_state()
     mpris_list = audio.get("mpris_players", [])
-    if any(p["status"] != "Playing" for p in mpris_list):
+
+    # 2. For an existing tab/player (new_tab=False), try D-Bus MPRIS Play first (idempotent).
+    #    For a newly opened tab (new_tab=True), skip initial MPRIS Play because an existing
+    #    Firefox MPRIS session belongs to an older background tab until the new tab starts playing.
+    if not new_tab and any(p["status"] != "Playing" for p in mpris_list):
         if mpris_control("Play") and wait_audio_playing(timeout=0.8):
             return True
 
-    # 3. Escalation B: Only if no MPRIS player is active yet, send player play key ('k' for YouTube, 'space' otherwise)
-    if not mpris_list:
+    # 3. Escalation to player shortcut ('k' for YouTube, 'space' otherwise).
+    #    Always run when audio is not yet playing (even if a stale/paused MPRIS entry exists),
+    #    with up to 2 attempts on newly opened tabs in case YouTube's <video> JS is still hydrating.
+    attempts = 2 if (is_youtube and new_tab) else 1
+    play_key = "k" if is_youtube else "space"
+    for attempt in range(attempts):
         _focus_firefox_window()
         if get_audio_state().get("playing"):
             return True
+        if attempt > 0:
+            time.sleep(0.55)
+            if get_audio_state().get("playing"):
+                return True
         run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
-        play_key = "k" if is_youtube else "space"
         run_cmd(["xdotool", "key", "--clearmodifiers", play_key])
-        if wait_audio_playing(timeout=0.9):
+        if wait_audio_playing(timeout=1.0):
             return True
+
+    # 4. Final fallback: if a new tab mounted its MPRIS session in Paused state, send D-Bus Play
+    if new_tab:
+        audio = get_audio_state()
+        if any(p["status"] != "Playing" for p in audio.get("mpris_players", [])):
+            if mpris_control("Play") and wait_audio_playing(timeout=0.8):
+                return True
 
     return get_audio_state().get("playing", False)
 
@@ -1699,19 +1733,19 @@ def do_play(target: str) -> str:
         if kind == "tab":
             res = _focus_firefox_tab(int(best["ref"]), best["label"])
             is_yt = "youtube.com" in best.get("url", "").lower()
-            playing = ensure_playback_started(is_youtube=is_yt)
+            playing = ensure_playback_started(is_youtube=is_yt, new_tab=False)
             return f"{res}[{'playing' if playing else 'focused'}]"
         if kind == "win":
             run_cmd(["dwm-msg", "focus-win", best["ref"]])
             wait_window_focused(best["ref"], timeout=1.2)
-            playing = ensure_playback_started(is_youtube=False)
+            playing = ensure_playback_started(is_youtube=False, new_tab=False)
             return f"focus:{best['label']}[{'playing' if playing else 'focused'}]"
         if kind == "place":
             subprocess.Popen(["firefox", "--new-tab", best["ref"]], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
             _focus_firefox_window()
-            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
+            wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.5)
             is_yt = "youtube.com" in best["ref"].lower()
-            playing = ensure_playback_started(is_youtube=is_yt)
+            playing = ensure_playback_started(is_youtube=is_yt, new_tab=True)
             return f"play:{best['label']}[{'playing' if playing else 'opened'}]"
         if kind == "app":
             subprocess.Popen(best["ref"].split(), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
@@ -1721,8 +1755,8 @@ def do_play(target: str) -> str:
     watch_url = resolve_youtube_url(t)
     subprocess.Popen(["firefox", "--new-tab", watch_url], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     _focus_firefox_window()
-    wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.2)
-    playing = ensure_playback_started(is_youtube=("youtube.com" in watch_url))
+    wait_page_ready(prev_title=prev_title, target_hint=t, timeout=2.5)
+    playing = ensure_playback_started(is_youtube=("youtube.com" in watch_url), new_tab=True)
     state_tag = "playing" if playing else "loaded"
     return f"play:{watch_url}[{state_tag}]"
 
