@@ -94,7 +94,7 @@ notify_auren() {
     title="$1"
     body="$2"
     if command -v notify-send >/dev/null 2>&1; then
-        notify-send -t 3500 -h string:x-dunst-stack-tag:voice "$title" "$body" 2>/dev/null || true
+        notify-send -t 3500 -h string:x-dunst-stack-tag:voice "$title" "$body" >/dev/null 2>&1 &
     fi
 }
 
@@ -218,28 +218,47 @@ play_done_earcon() {
 
 run_auren_python() {
     mode_or_query="$1"
-    python3 - "$CONF_FILE" "$LEARNED_CONF_FILE" "$MODE_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$AUREN_INFERENCE" "$AUREN_LLM_MODE" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
-import sys, os, json, math, time, base64, socket, subprocess, urllib.parse, urllib.request, importlib.util, importlib.machinery
+    if [ "$mode_or_query" = "--daemon" ]; then
+        set -- exec python3
+    else
+        set -- python3
+    fi
+    "$@" - "$CONF_FILE" "$LEARNED_CONF_FILE" "$MODE_FILE" "$CACHE_FILE" "$AUREN_URL" "$AUREN_MODEL" "$AUREN_THRESHOLD" "$AUREN_INFERENCE" "$AUREN_LLM_MODE" "$mode_or_query" "$JARVISD_SOCK" << 'PYEOF'
+import sys, os, re, json, math, time, shutil, base64, socket, subprocess, urllib.parse, urllib.request, importlib.util, importlib.machinery
 
 conf_path, learned_path, mode_path, cache_path, sys1_url, embed_model, thresh_s, infer_s, llm_mode_default, raw_query, sock_path = sys.argv[1:12]
 thresh = float(thresh_s)
 infer_default = infer_s.strip().lower() in ("1", "true", "yes", "on")
 base_url = sys1_url.split("/v1/")[0] if "/v1/" in sys1_url else sys1_url.rstrip("/")
+if not base_url.startswith(("http://", "https://")):
+    base_url = "http://127.0.0.1:4242"
 embed_url = base_url + "/v1/embeddings"
 local_chat_url = base_url + "/v1/chat/completions"
 
 dwm_act = None
-try:
-    act_path = os.path.expanduser("~/.local/bin/dwm-act")
-    if not os.path.exists(act_path):
-        act_path = os.path.join(os.path.dirname(os.path.abspath(conf_path)), "dwm-act")
-    if os.path.exists(act_path):
+act_mtime = 0.0
+act_path = os.path.expanduser("~/.local/bin/dwm-act")
+if not os.path.exists(act_path):
+    act_path = os.path.join(os.path.dirname(os.path.abspath(conf_path)), "dwm-act")
+
+def reload_dwm_act_if_needed():
+    global dwm_act, act_mtime
+    try:
+        if not os.path.exists(act_path):
+            return
+        mt = os.path.getmtime(act_path)
+        if dwm_act is not None and mt == act_mtime:
+            return
+        act_mtime = mt
         loader = importlib.machinery.SourceFileLoader("dwm_act", act_path)
         spec = importlib.util.spec_from_loader("dwm_act", loader)
-        dwm_act = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(dwm_act)
-except Exception:
-    dwm_act = None
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        dwm_act = mod
+    except Exception:
+        pass
+
+reload_dwm_act_if_needed()
 
 FILLER_WORDS = {
     "please", "jarvis", "hey", "ok", "okay", "can", "could", "would", "you",
@@ -375,6 +394,7 @@ def reload_conf_if_needed():
     global conf_mtime, learned_mtime, commands, intent_scopes
     global static_exemplars, static_exact_scoped, static_core_scoped
     global param_exemplars, param_frames, span_roles, span_role_lookup
+    reload_dwm_act_if_needed()
     try:
         mt1 = os.path.getmtime(conf_path) if os.path.exists(conf_path) else 0.0
         mt2 = os.path.getmtime(learned_path) if os.path.exists(learned_path) else 0.0
@@ -550,12 +570,300 @@ def resolve_payload_and_target(iid, raw_arg):
         return resolve_payload_and_target(new_iid, payload)
     return iid, payload
 
-def promote_intent(iid, arg_val):
+CLI_PROGRAMS_MAP = {
+    "tmux": "tmux",
+    "htop": "htop",
+    "btop": "btop",
+    "top": "top",
+    "nvim": "nvim",
+    "neovim": "nvim",
+    "vim": "vim",
+    "vi": "vi",
+    "nano": "nano",
+    "lazygit": "lazygit",
+    "tig": "tig",
+    "ranger": "ranger",
+    "yazi": "yazi",
+    "lf": "lf",
+    "mc": "mc",
+    "cmus": "cmus",
+    "ncmpcpp": "ncmpcpp",
+    "ikhal": "ikhal",
+    "python": "python3",
+    "python3": "python3",
+    "ipython": "ipython",
+    "node": "node",
+    "deno": "deno",
+    "bun": "bun",
+    "bash": "bash",
+    "zsh": "zsh",
+    "fish": "fish",
+    "alsamixer": "alsamixer",
+    "pulsemixer": "pulsemixer",
+    "nmtui": "nmtui",
+    "fastfetch": "fastfetch",
+    "neofetch": "neofetch",
+    "pwd": "pwd",
+    "clear": "clear",
+    "exit": "exit",
+}
+
+def normalize_asr_phrase(raw_s):
+    """Clean Whisper ASR homophones ('least files' -> 'list files', 'T-MUX' -> 'tmux')
+    and strip trailing stuttered prefix repetitions after a period."""
+    s = (raw_s or "").strip()
+    if not s:
+        return s
+    # Strip trailing stutter after sentence period (e.g. "Open T-MUX in this terminal. Open T")
+    if ". " in s:
+        parts = [p.strip() for p in s.split(". ") if p.strip()]
+        if len(parts) >= 2:
+            first_c = clean_phrase(parts[0])
+            last_c = clean_phrase(parts[-1])
+            if first_c and last_c and len(last_c) < len(first_c) and first_c.startswith(last_c):
+                s = ". ".join(parts[:-1])
+    subs = [
+        (r"\bt[\s\-]+mux\b", "tmux"),
+        (r"\bteamux\b", "tmux"),
+        (r"\btee[\s\-]*mux\b", "tmux"),
+        (r"\bh[\s\-]+top\b", "htop"),
+        (r"\bb[\s\-]+top\b", "btop"),
+        (r"\bn[\s\-]+vim\b", "nvim"),
+        (r"\bneo[\s\-]+vim\b", "nvim"),
+        (r"\blazy[\s\-]+git\b", "lazygit"),
+        (r"\bfast[\s\-]+fetch\b", "fastfetch"),
+        (r"\bneo[\s\-]+fetch\b", "neofetch"),
+        (r"\bgit[\s\-]+hub\b", "github"),
+        (r"\b(?:least|lease|leased|lists)\s+(the\s+|all\s+|my\s+)?files\b", r"list \1files"),
+        (r"\blist\s+file\b", "list files"),
+    ]
+    for pat, repl in subs:
+        s = re.sub(pat, repl, s, flags=re.IGNORECASE)
+    return " ".join(s.split())
+
+TERMINAL_LOCATIVE_TAILS = (
+    "in this terminal", "in the terminal", "in terminal", "on this terminal",
+    "inside this terminal", "into this terminal", "in this shell", "in the shell",
+    "in this console", "in my terminal",
+)
+SELF_LOCATIVE_TAILS = (
+    "in this window", "in the current window", "in current window",
+    "on this window", "in active window", "right here", "in here", "here", "right now",
+)
+
+def strip_self_locative(clause, active_scope="any"):
+    """Strip trailing self-locative suffixes ('in this terminal', 'here') and return
+    (stripped_clause, effective_scope, explicit_terminal_locative)."""
+    c = clause.strip().strip(",.!?;:")
+    c_low = c.lower()
+    for tail in TERMINAL_LOCATIVE_TAILS:
+        if c_low.endswith(" " + tail):
+            stripped = c[:len(c) - len(tail)].strip().strip(",.!?;:")
+            if stripped:
+                return stripped, "terminal", True
+    for tail in SELF_LOCATIVE_TAILS:
+        if c_low.endswith(" " + tail):
+            stripped = c[:len(c) - len(tail)].strip().strip(",.!?;:")
+            if stripped:
+                return stripped, active_scope, False
+    return c, active_scope, False
+
+SPOKEN_DIR_MAP = {
+    "": "",
+    "here": "",
+    "this": "",
+    "current": "",
+    "home": "~",
+    "tilde": "~",
+    "parent": "..",
+    "up": "..",
+    "one level up": "..",
+    "dot dot": "..",
+    "..": "..",
+    "previous": "-",
+    "back": "-",
+    "-": "-",
+    "root": "/",
+    "slash": "/",
+    "tmp": "/tmp",
+    "temp": "/tmp",
+    "temporary": "/tmp",
+    "downloads": "~/Downloads",
+    "download": "~/Downloads",
+    "documents": "~/Documents",
+    "document": "~/Documents",
+    "docs": "~/Documents",
+    "desktop": "~/Desktop",
+    "pictures": "~/Pictures",
+    "photos": "~/Pictures",
+    "images": "~/Pictures",
+    "videos": "~/Videos",
+    "movies": "~/Videos",
+    "music": "~/Music",
+    "config": "~/.config",
+    "dot config": "~/.config",
+    "local": "~/.local",
+    "dot local": "~/.local",
+    "cache": "~/.cache",
+    "dot cache": "~/.cache",
+    "dwm": "~/.local/src/dwm",
+    "dwm source": "~/.local/src/dwm",
+    "site": "~/site",
+}
+
+def _resolve_spoken_dir(raw_dir):
+    d_tokens = [
+        t for t in clean_phrase(raw_dir).split()
+        if t not in ("my", "the", "a", "an", "in", "to", "into", "inside", "of", "on", "folder", "directory", "dir", "path")
+    ]
+    d_key = " ".join(d_tokens)
+    if d_key in SPOKEN_DIR_MAP:
+        return SPOKEN_DIR_MAP[d_key]
+    if len(d_tokens) == 1 and d_tokens[0].isalnum():
+        cand_name = d_tokens[0]
+        home_dir = os.path.expanduser("~")
+        try:
+            for entry in os.listdir(home_dir):
+                if entry.lower() == cand_name.lower() and os.path.isdir(os.path.join(home_dir, entry)):
+                    return f"~/{entry}"
+        except Exception:
+            pass
+    return None
+
+FIND_EXT_MAP = {
+    "c": "*.c",
+    "header": "*.h",
+    "headers": "*.h",
+    "h": "*.h",
+    "python": "*.py",
+    "py": "*.py",
+    "javascript": "*.js",
+    "js": "*.js",
+    "typescript": "*.ts",
+    "ts": "*.ts",
+    "rust": "*.rs",
+    "rs": "*.rs",
+    "markdown": "*.md",
+    "md": "*.md",
+    "json": "*.json",
+    "shell": "*.sh",
+    "bash": "*.sh",
+    "sh": "*.sh",
+    "text": "*.txt",
+    "txt": "*.txt",
+    "log": "*.log",
+    "pdf": "*.pdf",
+    "mp4": "*.mp4",
+    "video": "*.mp4",
+}
+
+def synthesize_terminal_shell_fast(clause, active_scope="any", explicit_term=False):
+    """<0.5ms deterministic Tier-0 @terminal shell synthesizer for CLI tools, ls, cd, find, mkdir, git."""
+    if active_scope != "terminal" and not explicit_term:
+        return None
+    cand = strip_leading_fillers(clause)
+    c_clean = clean_phrase(cand)
+    if not c_clean:
+        return None
+    words = c_clean.split()
+
+    # 1. Bare or "open/start/run/launch [up] <cli_program>"
+    cli_cand = c_clean
+    if words[0] in ("open", "start", "run", "launch", "execute"):
+        rest = words[1:]
+        while rest and rest[0] in ("up", "a", "an", "the", "new"):
+            rest.pop(0)
+        cli_cand = " ".join(rest)
+    if cli_cand in CLI_PROGRAMS_MAP:
+        cmd_bin = CLI_PROGRAMS_MAP[cli_cand]
+        iid = f"open_{cli_cand}@terminal" if f"open_{cli_cand}@terminal" in commands else "fast_cli@terminal"
+        return iid, 1.00, f'type_enter "{cmd_bin}"'
+    if explicit_term and words[0] in ("open", "start", "run", "launch", "execute") and len(cli_cand.split()) == 1:
+        if shutil.which(cli_cand):
+            return "fast_cli@terminal", 0.98, f'type_enter "{cli_cand}"'
+
+    # 2. Listing files: "list/show [all] [the] [hidden] files [in <dir>]"
+    if words[0] in ("list", "show", "display") and ("files" in words or "directory" in words or "folder" in words or "contents" in words):
+        if any(w in words for w in ("largest", "biggest", "heaviest")):
+            return "ls_largest@terminal", 0.99, 'type_enter "du -sh * 2>/dev/null | sort -h"'
+        if any(w in words for w in ("newest", "recent", "latest")):
+            return "ls_recent@terminal", 0.99, 'type_enter "ls -lat | head -n 20"'
+        if "in" in words:
+            idx = words.index("in")
+            rdir = _resolve_spoken_dir(" ".join(words[idx + 1:]))
+            if rdir is not None:
+                if rdir in ("", "."):
+                    return "ls_cwd@terminal", 1.00, 'type_enter "ls -la"'
+                if rdir == "~":
+                    return "ls_home@terminal", 1.00, 'type_enter "ls -la ~"'
+                return "ls_dir@terminal", 0.99, f'type_enter "ls -la {rdir}"'
+        else:
+            tail_words = [w for w in words[1:] if w not in ("all", "the", "my", "hidden", "files", "file", "contents", "content")]
+            rdir = _resolve_spoken_dir(" ".join(tail_words))
+            if rdir is not None:
+                if rdir in ("", "."):
+                    return "ls_cwd@terminal", 1.00, 'type_enter "ls -la"'
+                if rdir == "~":
+                    return "ls_home@terminal", 1.00, 'type_enter "ls -la ~"'
+                return "ls_dir@terminal", 0.99, f'type_enter "ls -la {rdir}"'
+
+    # 3. Changing directories: "go to / cd to / change directory to / open <dir> folder"
+    cd_target_raw = None
+    if words[0] == "cd":
+        cd_target_raw = " ".join(words[1:])
+    elif words[:2] in (["go", "to"], ["change", "to"], ["navigate", "to"]):
+        cd_target_raw = " ".join(words[2:])
+    elif words[:3] in (["change", "directory", "to"], ["change", "folder", "to"]):
+        cd_target_raw = " ".join(words[3:])
+    elif words[0] in ("open", "enter") and words[-1] in ("folder", "directory"):
+        cd_target_raw = " ".join(words[1:-1])
+    if cd_target_raw is not None:
+        rdir = _resolve_spoken_dir(cd_target_raw)
+        if rdir is not None and rdir != "":
+            if rdir == "~":
+                return "cd_home@terminal", 1.00, 'type_enter "cd ~"'
+            if rdir == "..":
+                return "cd_up@terminal", 1.00, 'type_enter "cd .."'
+            return "cd_dir@terminal", 0.99, f'type_enter "cd {rdir}"'
+
+    # 4. Finding files: "find [all] [the] <type> files [in <dir>|here]"
+    if words[0] in ("find", "locate") and "files" in words:
+        f_idx = words.index("files")
+        mid = [w for w in words[1:f_idx] if w not in ("all", "the", "my")]
+        if len(mid) == 1 and mid[0] in FIND_EXT_MAP:
+            pat = FIND_EXT_MAP[mid[0]]
+            after = words[f_idx + 1:]
+            rdir = "."
+            if after:
+                resolved = _resolve_spoken_dir(" ".join(after))
+                if resolved is None:
+                    return None
+                rdir = resolved if resolved else "."
+            return "find_ext@terminal", 0.99, f'type_enter "find {rdir} -name \'{pat}\'"'
+
+    # 5. Creating directories: "create/make [a] [new] folder/directory [called|named] <name>"
+    if words[0] in ("create", "make") and ("folder" in words or "directory" in words):
+        kw = "folder" if "folder" in words else "directory"
+        after = [w for w in words[words.index(kw) + 1:] if w not in ("called", "named")]
+        if len(after) == 1 and after[0].isalnum():
+            return "mkdir@terminal", 0.99, f'type_enter "mkdir -p {after[0]}"'
+
+    return None
+
+def promote_intent(iid, arg_val, active_scope="any"):
     base_iid = iid.split("@", 1)[0]
     arg_low = clean_phrase(arg_val)
     if base_iid == "open_target":
         if arg_low in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term", "new term", "term online", "new term online"):
             return "open_terminal"
+        if arg_low in ("window", "new window"):
+            if active_scope == "browser" and "new_win@browser" in commands:
+                return "new_win@browser"
+            return "open_terminal"
+        if active_scope == "terminal" and arg_low in CLI_PROGRAMS_MAP:
+            cand_iid = f"open_{arg_low}@terminal"
+            if cand_iid in commands:
+                return cand_iid
         if arg_low in ("new tab", "tab", "browser tab", "new browser tab"):
             return "new_tab"
         if "record" in arg_low and "screen" in arg_low:
@@ -619,11 +927,21 @@ def scope_matches(rule_scope, active_scope):
 
 FILESYSTEM_NAV_WORDS = {"directory", "folder", "path", "parent", "home", "cwd", "pwd", "dot"}
 HELP_QUESTION_PREFIXES = ("how ", "what ", "where ", "which ", "instructions ", "tell me how", "help ")
+CLAUSE_JOIN_VERBS = (
+    " and then ", " then ", " and open ", " and list ", " and show ", " and find ",
+    " and run ", " and start ", " and launch ", " and go ", " and cd ", " and check ",
+    " and switch ", " and focus ", " and play ", " and type ", " and write ",
+    " and press ", " and wait ", " and stop ", " and close ", " and create ", " and make ",
+)
 
 def _is_valid_param_hit(iid_resolved, clause_low, arg_val, active_scope="any"):
     base_iid = iid_resolved.split("@", 1)[0]
     arg_clean = clean_phrase(arg_val)
+    arg_low_pad = f" {arg_clean} "
     arg_words = set(arg_clean.split())
+    if base_iid in NON_DICTATION_PARAM_IIDS:
+        if any(jv in arg_low_pad for jv in CLAUSE_JOIN_VERBS):
+            return False
     if base_iid == "wm_how_to":
         if not clause_low.startswith(HELP_QUESTION_PREFIXES):
             return False
@@ -661,7 +979,9 @@ def match_param_template(clause, active_scope="any"):
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             if clean_phrase(arg_val) in INVALID_BARE_ARGS:
                 continue
-            iid_resolved = promote_intent(iid_resolved, arg_val)
+            if not _is_valid_param_hit(iid_resolved, c_low, arg_val, active_scope):
+                continue
+            iid_resolved = promote_intent(iid_resolved, arg_val, active_scope=active_scope)
             if not _is_valid_param_hit(iid_resolved, c_low, arg_val, active_scope):
                 continue
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
@@ -747,7 +1067,9 @@ def match_lexical_frame(clause, active_scope="any"):
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             if clean_phrase(arg_val) in INVALID_BARE_ARGS:
                 return None
-            iid_resolved = promote_intent(iid_resolved, arg_val)
+            if not _is_valid_param_hit(iid_resolved, cand.lower(), arg_val, active_scope):
+                return None
+            iid_resolved = promote_intent(iid_resolved, arg_val, active_scope=active_scope)
             if not _is_valid_param_hit(iid_resolved, cand.lower(), arg_val, active_scope):
                 return None
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
@@ -839,7 +1161,7 @@ def match_semantic_frame_embedding(clause, active_scope="any"):
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
             if clean_phrase(arg_val) in INVALID_BARE_ARGS:
                 return None
-            iid_resolved = promote_intent(iid_resolved, arg_val)
+            iid_resolved = promote_intent(iid_resolved, arg_val, active_scope=active_scope)
             if not _is_valid_param_hit(iid_resolved, c_clean.lower(), arg_val, active_scope):
                 return None
             arg_val = strip_arg_determiner(iid_resolved, arg_val)
@@ -851,45 +1173,57 @@ def match_semantic_frame_embedding(clause, active_scope="any"):
 
 def match_single_clause(clause, active_scope="any", use_inference=False):
     """Resolve a single clause via zero-inference tiers first, then opt-in bge-base embeddings."""
-    c_clean = clause.strip().strip(",.!?;:")
-    if not c_clean:
+    c_raw = normalize_asr_phrase(clause).strip().strip(",.!?;:")
+    if not c_raw:
         return None
+    c_stripped, eff_scope, explicit_term = strip_self_locative(c_raw, active_scope=active_scope)
+    c_clean = c_stripped if c_stripped else c_raw
+
     # 1. Parametric templates that have BOTH prefix and suffix (0 inference)
     for iid, scope, ex, pre, suf in param_exemplars:
-        if not scope_matches(scope, active_scope):
+        if not scope_matches(scope, eff_scope):
             continue
-        if pre and suf and c_clean.lower().startswith(pre + " ") and c_clean.lower().endswith(" " + suf):
-            raw_arg = c_clean[len(pre):len(c_clean) - len(suf)].strip()
+        if pre and suf and c_raw.lower().startswith(pre + " ") and c_raw.lower().endswith(" " + suf):
+            raw_arg = c_raw[len(pre):len(c_raw) - len(suf)].strip()
             iid_res, arg_val = resolve_payload_and_target(iid, raw_arg)
             if arg_val:
                 arg_val = strip_arg_determiner(iid_res, arg_val)
-                iid_res = promote_intent(iid_res, arg_val)
+                iid_res = promote_intent(iid_res, arg_val, active_scope=eff_scope)
                 arg_val = normalize_intent_arg(iid_res, arg_val)
                 cmd_tmpl = commands.get(iid_res, commands[iid])
                 return iid_res, 0.99, cmd_to_dsl(cmd_tmpl.replace("{arg}", arg_val))
 
     # 2. Priority to exact/core static commands (>= 0.98) before parametric prefix templates
-    st_fast = match_static_fast(c_clean, active_scope=active_scope)
+    st_fast = match_static_fast(c_clean, active_scope=eff_scope)
+    if not st_fast and c_clean != c_raw:
+        st_fast = match_static_fast(c_raw, active_scope=eff_scope)
     if st_fast and st_fast[1] >= 0.98:
         return st_fast
 
-    pm = match_param_template(c_clean, active_scope=active_scope)
+    # 2b. Fast <0.5ms deterministic @terminal shell grammar (CLI tools, ls, cd, find, mkdir)
+    sh_fast = synthesize_terminal_shell_fast(c_clean, active_scope=eff_scope, explicit_term=explicit_term)
+    if sh_fast:
+        return sh_fast
+
+    pm = match_param_template(c_raw, active_scope=eff_scope)
+    if not pm and c_clean != c_raw:
+        pm = match_param_template(c_clean, active_scope=eff_scope)
     if pm:
         return pm
     if st_fast:
         return st_fast
 
     # 3. Zero-inference lexical verb frame match
-    lf = match_lexical_frame(c_clean, active_scope=active_scope)
+    lf = match_lexical_frame(c_clean, active_scope=eff_scope)
     if lf:
         return lf
 
     # 4. Opt-in neural embedding fallback (bge-base)
     if use_inference:
-        st_emb = match_static_embedding(c_clean, active_scope=active_scope)
+        st_emb = match_static_embedding(c_clean, active_scope=eff_scope)
         if st_emb:
             return st_emb
-        sf_emb = match_semantic_frame_embedding(c_clean, active_scope=active_scope)
+        sf_emb = match_semantic_frame_embedding(c_clean, active_scope=eff_scope)
         if sf_emb:
             return sf_emb
 
@@ -1266,7 +1600,7 @@ def evaluate_query(raw_query, use_inference=None, override_scope=None):
     if use_inference is None:
         use_inference = infer_default
     reload_conf_if_needed()
-    q_trimmed = raw_query.strip().strip(",.!?;:")
+    q_trimmed = normalize_asr_phrase(raw_query).strip().strip(",.!?;:")
     if not q_trimmed:
         return "LOW\t0.00\tnone\t"
 
@@ -1303,7 +1637,7 @@ def evaluate_query(raw_query, use_inference=None, override_scope=None):
                 min_sim = m[1]
             step_iid = m[0].split("@", 1)[0]
             step_dsl = m[2].strip().lower()
-            if step_iid in ("open_terminal", "focus_terminal") or step_dsl in ("sh st", "sh xterm", 'open "st"', 'open "terminal"', 'focus "st-256color"'):
+            if step_iid in ("open_terminal", "focus_terminal", "new_win") or step_dsl in ("sh st", "sh xterm", 'open "st"', 'open "terminal"', 'focus "st-256color"'):
                 clause_scope = "terminal"
             elif step_iid in ("focus_browser", "new_tab", "search_web", "play_target") or "firefox" in step_dsl:
                 clause_scope = "browser"

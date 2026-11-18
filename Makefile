@@ -56,10 +56,10 @@ install: all
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1
-	@if [ -f "/tmp/dwm-auren-daemon-$$USER.pid" ]; then \
-		kill "$$(cat "/tmp/dwm-auren-daemon-$$USER.pid" 2>/dev/null)" 2>/dev/null || true; \
-		rm -f "/tmp/dwm-auren-daemon-$$USER.pid" "/tmp/dwm-auren-$$USER.sock" 2>/dev/null || true; \
-	fi
+	@DISPLAY=$${DISPLAY:-:0} xrdb -nocpp -merge $(HOME)/.Xresources 2>/dev/null || true
+	@rm -f "/tmp/dwm-auren-xres-$$USER.env" "/tmp/dwm-voice-xres-$$USER.env" 2>/dev/null || true
+	@pkill -f "python3 - .*intents\.conf" 2>/dev/null || true
+	@rm -f "/tmp/dwm-auren-daemon-$$USER.pid" "/tmp/dwm-auren-$$USER.sock" 2>/dev/null || true
 	@if pgrep -x dwm >/dev/null 2>&1; then \
 		kill -HUP $$(pgrep -x dwm | head -n 1) 2>/dev/null || true; \
 		DISPLAY=$${DISPLAY:-:0} xprop -root -f _DWM_RELOAD 8s -set _DWM_RELOAD 1 2>/dev/null || true; \

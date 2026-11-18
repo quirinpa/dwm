@@ -268,13 +268,43 @@ class TestLayer4AurenRouter(unittest.TestCase):
         self.assertIn("cmd=key ctrl+BackSpace", out_word_browser)
 
         out_ls_home = subprocess.check_output(
-            [AUREN_PATH, "--infer", "dry-run", "list the files in my home directory"], text=True, env=env_term, timeout=6.0
+            [AUREN_PATH, "dry-run", "list the files in my home directory"], text=True, env=env_term, timeout=6.0
         ).strip()
         self.assertIn("intent=ls_home@terminal", out_ls_home)
         self.assertIn('cmd=type_enter "ls -la ~"', out_ls_home)
 
+        out_asr_ls = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "least files in this terminal"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=ls_cwd@terminal", out_asr_ls)
+        self.assertIn('cmd=type_enter "ls -la"', out_asr_ls)
+
+        out_asr_tmux = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "Open T-MUX in this terminal. Open T"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=open_tmux@terminal", out_asr_tmux)
+        self.assertIn('cmd=type_enter "tmux"', out_asr_tmux)
+
+        out_win_term = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "Open up a new window."], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=new_win@terminal", out_win_term)
+        self.assertIn("cmd=sh st", out_win_term)
+
+        out_win_browser = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "Open up a new window."], text=True, env=env_browser, timeout=6.0
+        ).strip()
+        self.assertIn("intent=new_win@browser", out_win_browser)
+        self.assertIn("cmd=key ctrl+n", out_win_browser)
+
+        out_find = subprocess.check_output(
+            [AUREN_PATH, "dry-run", "find all python files in my home directory"], text=True, env=env_term, timeout=6.0
+        ).strip()
+        self.assertIn("intent=find_ext@terminal", out_find)
+        self.assertIn('cmd=type_enter "find ~ -name \'*.py\'"', out_find)
+
         out_chain = subprocess.check_output(
-            [AUREN_PATH, "--infer", "dry-run", "open up a new terminal and list the files in my home directory"],
+            [AUREN_PATH, "dry-run", "open up a new terminal and list the files in my home directory"],
             text=True, env=env_browser, timeout=6.0
         ).strip()
         self.assertIn("status=ACT", out_chain)

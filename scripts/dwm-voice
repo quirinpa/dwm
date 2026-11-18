@@ -144,8 +144,8 @@ get_followup_ms() {
 }
 
 is_speaker_playing() {
-    if command -v pactl >/dev/null 2>&1; then
-        if pactl list sink-inputs 2>/dev/null | grep -q "Corked: no"; then
+    if command -v playerctl >/dev/null 2>&1; then
+        if playerctl status 2>/dev/null | grep -qi '^Playing$'; then
             return 0
         fi
     fi
@@ -274,21 +274,27 @@ jarvis_loop() {
     next_followup=0
 
     while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
-        printf 'jarvis\n' > "$STATE_FILE"
-        refresh_bar
-
         thresh_db=$(get_xres "dwm.voice.threshold_db" "-35")
-        cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "500")
+        cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "420")
         wake_word=$(get_wake_word)
         lang_mode=$(get_lang_mode)
         port=$(get_srv_port)
         fcfg=$(get_followup_ms)
 
-        if [ "$fcfg" = "3600000" ] && ! is_speaker_playing; then
-            next_followup=3600000
-        elif is_speaker_playing; then
-            next_followup=0
+        if [ "$fcfg" = "3600000" ]; then
+            if is_speaker_playing; then
+                next_followup=0
+            else
+                next_followup=3600000
+            fi
         fi
+
+        if [ "${next_followup:-0}" -gt 0 ] 2>/dev/null; then
+            printf 'jarvis-cmd\n' > "$STATE_FILE"
+        else
+            printf 'jarvis\n' > "$STATE_FILE"
+        fi
+        refresh_bar
 
         ensure_whisper_server
         rm -f "$JARVIS_OUT"
@@ -299,11 +305,12 @@ jarvis_loop() {
         wait "$jvad_pid"
         rc=$?
         rm -f "$JARVIS_VAD_PID"
+        was_followup="$next_followup"
         next_followup=0
 
         if [ "$rc" -eq 130 ]; then
             rm -f "$JARVIS_OUT"
-            sleep 0.15
+            sleep 0.10
             continue
         fi
 
@@ -321,20 +328,19 @@ jarvis_loop() {
             /home/quirinpa/.local/bin/dwm-auren query "$cmd_text" </dev/null >/dev/null 2>&1
             act_rc=$?
             rm -f "$ACTING_PID_FILE"
-            printf 'jarvis\n' > "$STATE_FILE"
-            refresh_bar
-            if [ "$act_rc" -eq 0 ] && ! is_speaker_playing; then
+            if [ "$act_rc" -eq 0 ]; then
                 next_followup="$fcfg"
             fi
-            sleep 0.20
         elif [ "$rc" -eq 2 ]; then
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
-            notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
+            if [ "${was_followup:-0}" -le 0 ] 2>/dev/null; then
+                notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
+            fi
         else
             printf 'jarvis\n' > "$STATE_FILE"
             refresh_bar
-            sleep 0.25
+            sleep 0.15
         fi
     done
 }

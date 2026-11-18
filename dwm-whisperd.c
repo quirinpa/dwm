@@ -68,8 +68,12 @@ static struct {
 	.pw_open        = 0
 };
 
-static const char *WAKE_INITIAL_PROMPT = "Jarvis.";
-static const char *CMD_INITIAL_PROMPT  = NULL;
+static const char *WAKE_INITIAL_PROMPT =
+	"Jarvis, open up a new terminal, open a new window, list files, home directory, downloads, "
+	"documents, tmux, nvim, htop, btop, git status, workspace, browser, Firefox, play music, record screen.";
+static const char *CMD_INITIAL_PROMPT =
+	"open up a new terminal, open a new window, list files, home directory, downloads, "
+	"documents, tmux, nvim, htop, btop, git status, workspace, browser, Firefox, play music, record screen.";
 
 /* Non-blocking background Whisper decode worker for ctx_main */
 static struct {
@@ -753,8 +757,10 @@ collapse_repetitions(char *s)
 		}
 	}
 
-	/* Strip trailing truncated prefix repetition (e.g. "open up miles davis open up miles") */
-	for (int k = 6; k >= 2; k--) {
+	/* Strip trailing truncated prefix repetition (e.g. "open up miles davis open up miles"
+	 * or "Open T-MUX in this terminal. Open T").
+	 */
+	for (int k = 6; k >= 1; k--) {
 		if (n_words >= 2 * k + 1) {
 			int tail_match = 1;
 			for (int j = 0; j < k; j++) {
@@ -765,12 +771,28 @@ collapse_repetitions(char *s)
 					la--;
 				while (lb > 0 && ispunct((unsigned char)b[lb - 1]))
 					lb--;
-				if (la == 0 || la != lb || strncasecmp(a, b, la) != 0) {
+				if (la == 0 || lb == 0) {
+					tail_match = 0;
+					break;
+				}
+				if (j == k - 1 && k >= 2 && lb < la) {
+					if (strncasecmp(a, b, lb) != 0) {
+						tail_match = 0;
+						break;
+					}
+				} else if (la != lb || strncasecmp(a, b, la) != 0) {
 					tail_match = 0;
 					break;
 				}
 			}
 			if (tail_match) {
+				/* For k == 1, only strip if preceded by sentence punctuation */
+				if (k == 1) {
+					const char *prev_w = words[n_words - 2];
+					size_t pl = strlen(prev_w);
+					if (pl == 0 || (prev_w[pl - 1] != '.' && prev_w[pl - 1] != '!' && prev_w[pl - 1] != '?'))
+						continue;
+				}
 				n_words -= k;
 				break;
 			}
@@ -1087,6 +1109,10 @@ decode_force_submit_final(int64_t start_f, int64_t end_f, int64_t voiced_f,
 		g_dec.abort_flag = 1;
 		while (g_dec.busy)
 			pthread_cond_wait(&g_dec.cond, &g_dec.mtx);
+	} else if (!g_dec.has_job && g_dec.has_result &&
+	           !g_dec.result_is_partial && g_dec.result_voiced_f >= voiced_f - 1) {
+		pthread_mutex_unlock(&g_dec.mtx);
+		return;
 	}
 	g_dec.has_job = 0;
 	g_dec.has_result = 0;
@@ -1587,12 +1613,16 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	int chime_played = is_followup_window;
 	int non_jarvis_utter = 0;
 	long post_wake_deadline_ms = is_followup_window ? (now_ms() + (long)followup_ms) : 0;
-	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 6) : 0;
+	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 3) : 0;
 	int64_t wake_end_f = chime_ignore_until_f;
 	int64_t cmd_start_f = scan_f;
 	int64_t decoded_wake_voiced_f = -1;
 	int64_t decoded_cmd_voiced_f = -1;
+	int decoded_cmd_is_final = 0;
 	char live_cmd[4096] = {0};
+
+	if (is_followup_window)
+		write_state_file(state_file, "jarvis-cmd", NULL, NULL);
 
 	if (cmd_silence_ms < 360)
 		cmd_silence_ms = 360;
@@ -1604,7 +1634,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 		wait_next_audio_frame(scan_f + 1, 20);
 
-		/* Pick up any completed non-blocking partial preview decode */
+		/* Pick up any completed non-blocking preview or speculative final decode */
 		if (wake_confirmed && !waiting_post_wake) {
 			pthread_mutex_lock(&g_dec.mtx);
 			if (g_dec.has_result) {
@@ -1612,6 +1642,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				char raw_res[4096];
 				snprintf(raw_res, sizeof(raw_res), "%s", g_dec.result_text);
 				int64_t res_vf = g_dec.result_voiced_f;
+				int res_part = g_dec.result_is_partial;
 				pthread_mutex_unlock(&g_dec.mtx);
 
 				if (raw_res[0] != '\0') {
@@ -1625,10 +1656,14 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						candidate = raw_res;
 
 					decoded_cmd_voiced_f = res_vf;
-					if (candidate && *candidate && strcmp(live_cmd, candidate) != 0) {
-						snprintf(live_cmd, sizeof(live_cmd), "%s", candidate);
-						write_state_file(state_file, "cmd", live_cmd,
-						                 "  Jarvis Command (Live)...");
+					if (candidate && *candidate) {
+						if (!res_part && res_vf >= last_voiced_f)
+							decoded_cmd_is_final = 1;
+						if (strcmp(live_cmd, candidate) != 0) {
+							snprintf(live_cmd, sizeof(live_cmd), "%s", candidate);
+							write_state_file(state_file, "cmd", live_cmd,
+							                 "  Jarvis Command (Live)...");
+						}
 					}
 				}
 			} else {
@@ -1656,7 +1691,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 			if (wake_confirmed && waiting_post_wake) {
 				if (db >= eff_start_db) {
 					consec_voiced++;
-					if (consec_voiced >= 2) {
+					if (consec_voiced >= 3) {
 						waiting_post_wake = 0;
 						in_speech = 1;
 						g_audio.in_speech_hint = 1;
@@ -1668,6 +1703,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 							cmd_start_f = wake_end_f;
 						last_voiced_f = scan_f;
 						decoded_cmd_voiced_f = -1;
+						decoded_cmd_is_final = 0;
 					}
 				} else {
 					consec_voiced = 0;
@@ -1688,6 +1724,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						cmd_start_f = speech_start_f;
 						last_voiced_f = scan_f;
 						decoded_wake_voiced_f = -1;
+						decoded_cmd_is_final = 0;
 					}
 				} else {
 					consec_voiced = 0;
@@ -1709,6 +1746,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					voiced_frames++;
 					silence_frames = 0;
 					last_voiced_f = scan_f;
+					decoded_cmd_is_final = 0;
 				} else {
 					silence_frames++;
 				}
@@ -1820,6 +1858,8 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						if (wmatch == 2 && inline_cmd[0] != '\0') {
 							snprintf(live_cmd, sizeof(live_cmd), "%s", inline_cmd);
 							decoded_cmd_voiced_f = snap_voiced_f;
+							if (!cont_wake_check && snap_voiced_f >= last_voiced_f)
+								decoded_cmd_is_final = 1;
 							write_state_file(state_file, "cmd", live_cmd,
 							                 "  Jarvis Command (Live)...");
 						}
@@ -1858,9 +1898,38 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					decode_try_submit(cmd_start_f, end_f, last_voiced_f,
 					                  lang, eff_prompt, 64, 1);
 				}
+			} else if (silence_frames >= 6 && voiced_frames >= 8 &&
+			           (!decoded_cmd_is_final || last_voiced_f > decoded_cmd_voiced_f)) {
+				/* Speculative 0ms silence decode: start authoritative decode at 120ms of silence
+				 * so it is already complete by the time cmd_silence_ms (420ms) elapses.
+				 */
+				int64_t end_f = last_voiced_f + 8;
+				if (end_f > scan_f)
+					end_f = scan_f;
+				decode_try_submit(cmd_start_f, end_f, last_voiced_f,
+				                  lang, eff_prompt, 64, 0);
 			}
 
 			if ((silence_frames * FRAME_MS) >= cmd_silence_ms || cmd_len_f >= 600) {
+				if (voiced_frames < 8 && live_cmd[0] == '\0') {
+					if (now_ms() < post_wake_deadline_ms) {
+						waiting_post_wake = 1;
+						in_speech = 0;
+						consec_voiced = 0;
+						voiced_frames = 0;
+						silence_frames = 0;
+						pthread_mutex_lock(&g_audio.mtx);
+						g_audio.in_speech_hint = 0;
+						pthread_mutex_unlock(&g_audio.mtx);
+						continue;
+					}
+					break;
+				}
+
+				if (decoded_cmd_is_final && decoded_cmd_voiced_f >= last_voiced_f && live_cmd[0] != '\0') {
+					break;
+				}
+
 				int64_t end_f = last_voiced_f + 12;
 				decode_force_submit_final(cmd_start_f, end_f, last_voiced_f,
 				                          lang, eff_prompt, 64);
@@ -1881,7 +1950,8 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					                           stripped, sizeof(stripped));
 					if (wm == 2 && stripped[0]) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", stripped);
-					} else if (wm == 1 || (!chime_played && voiced_frames <= 38)) {
+					} else if (wm == 1 || (!chime_played && live_cmd[0] == '\0' && voiced_frames <= 32 &&
+					                       contains_wake_word(final_raw, wake_word))) {
 						/* User spoke ONLY "Jarvis" and paused: play chime, duck speaker, and wait for command */
 						duck_speaker_for_command();
 						if (!chime_played)
@@ -1893,6 +1963,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						voiced_frames = 0;
 						silence_frames = 0;
 						live_cmd[0] = '\0';
+						decoded_cmd_is_final = 0;
 						pthread_mutex_lock(&g_audio.mtx);
 						g_audio.in_speech_hint = 0;
 						chime_ignore_until_f = g_audio.total_frames + 7;
@@ -1908,6 +1979,18 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					} else {
 						live_cmd[0] = '\0';
 					}
+				}
+				if (live_cmd[0] == '\0' && now_ms() < post_wake_deadline_ms) {
+					waiting_post_wake = 1;
+					in_speech = 0;
+					consec_voiced = 0;
+					voiced_frames = 0;
+					silence_frames = 0;
+					decoded_cmd_is_final = 0;
+					pthread_mutex_lock(&g_audio.mtx);
+					g_audio.in_speech_hint = 0;
+					pthread_mutex_unlock(&g_audio.mtx);
+					continue;
 				}
 				break;
 			}

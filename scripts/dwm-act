@@ -1727,6 +1727,55 @@ def do_play(target: str) -> str:
     return f"play:{watch_url}[{state_tag}]"
 
 
+def _spawn_and_focus_terminal(cmd_str: str = "st", wait_shell: bool = True) -> str:
+    """Spawn a new terminal window, wait for a newly mapped X11 window ID to be focused, and wait for shell startup."""
+    prev_foc = get_focused()
+    prev_id = prev_foc["id"].lower() if prev_foc else ""
+    term_cls = "xterm" if cmd_str.startswith("xterm") else "st-256color"
+    proc = subprocess.Popen(
+        ["/bin/sh", "-c", cmd_str],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+        close_fds=True,
+    )
+
+    def _new_term_focused():
+        foc = get_focused()
+        if not foc:
+            return False
+        cid = foc["id"].lower()
+        ccls = foc["class"].lower()
+        return term_cls in ccls and (not prev_id or cid != prev_id)
+
+    if not wait_until(_new_term_focused, timeout=1.2, interval=0.04, initial_delay=0.03):
+        wait_window_focused(term_cls, timeout=0.6)
+
+    if wait_shell:
+        # Wait briefly for interactive shell (.bashrc) subshells to settle before typing
+        t_end = time.time() + 0.65
+        idle_hits = 0
+        time.sleep(0.08)
+        while time.time() < t_end:
+            try:
+                r1 = subprocess.run(["pgrep", "-P", str(proc.pid)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=0.15)
+                pids = r1.stdout.split()
+                if pids:
+                    sh_pid = pids[-1]
+                    r2 = subprocess.run(["pgrep", "-P", sh_pid], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=0.15)
+                    if r2.returncode != 0:
+                        idle_hits += 1
+                        if idle_hits >= 2:
+                            break
+                    else:
+                        idle_hits = 0
+            except Exception:
+                break
+            time.sleep(0.035)
+    return f"open:{cmd_str}"
+
+
 def do_focus(target: str, allow_open: bool = False) -> str:
     """Layer 3 Closed-Loop Focus/Open: Resolve window/tab/site/app or delegate media/web queries."""
     t = target.strip().strip("\"'")
@@ -1735,10 +1784,7 @@ def do_focus(target: str, allow_open: bool = False) -> str:
 
     t_norm = norm_text(t)
     if allow_open and t_norm in ("terminal", "new terminal", "st", "xterm", "shell", "console", "term"):
-        subprocess.Popen(["st"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
-        wait_window_focused("st-256color", timeout=1.5)
-        time.sleep(0.12)
-        return "open:st"
+        return _spawn_and_focus_terminal("st", wait_shell=True)
 
     best = resolve_semantic_target(t)
     if best and best["score"] >= 0.72:
@@ -2042,20 +2088,18 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
         text = expand_selection_pronouns(_unquote(arg))
         if text:
             ensure_input_focused()
-            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
-            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
-            time.sleep(0.06)
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "2", "--", text])
+            time.sleep(0.03)
         return f"type “{text}”"
 
     if op in ("type_enter", "submit"):
         text = expand_selection_pronouns(_unquote(arg))
         if text:
             ensure_input_focused()
-            run_cmd(["xdotool", "keyup", "Super_L", "Super_R", "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"])
-            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "8", "--", text])
-            time.sleep(0.05)
+            run_cmd(["xdotool", "type", "--clearmodifiers", "--delay", "2", "--", text])
+            time.sleep(0.02)
         run_cmd(["xdotool", "key", "--clearmodifiers", "Return"])
-        time.sleep(0.07)
+        time.sleep(0.04)
         return f"type+Enter “{text}”"
 
     if op in ("media", "player", "mpris"):
@@ -2203,6 +2247,9 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
     if op == "sh":
         if arg:
             a_strip = arg.strip()
+            if a_strip == "st" or a_strip.startswith("st ") or a_strip == "xterm" or a_strip.startswith("xterm "):
+                _spawn_and_focus_terminal(a_strip, wait_shell=in_chain)
+                return arg
             proc = subprocess.Popen(
                 ["/bin/sh", "-c", a_strip],
                 stdin=subprocess.DEVNULL,
@@ -2211,17 +2258,10 @@ def _execute_step_inner(op: str, arg: str, in_chain: bool = False) -> str:
                 start_new_session=True,
                 close_fds=True,
             )
-            if a_strip == "st" or a_strip.startswith("st "):
-                wait_window_focused("st-256color", timeout=1.2)
-                time.sleep(0.12)
-            elif a_strip == "xterm" or a_strip.startswith("xterm "):
-                wait_window_focused("xterm", timeout=1.2)
-                time.sleep(0.12)
-            else:
-                try:
-                    proc.wait(timeout=0.35)
-                except subprocess.TimeoutExpired:
-                    pass
+            try:
+                proc.wait(timeout=0.35)
+            except subprocess.TimeoutExpired:
+                pass
             return arg
 
     if op == "pi":
