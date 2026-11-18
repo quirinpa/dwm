@@ -1376,11 +1376,29 @@ LLM_SYSTEM_PROMPT = (
     "If the request is gibberish or unrelated to desktop/terminal control, output NONE."
 )
 
+def _split_dsl_chunks(raw_text):
+    chunks, curr, in_q = [], [], None
+    for ch in raw_text:
+        if ch in ('"', "'"):
+            if in_q == ch:
+                in_q = None
+            elif in_q is None:
+                in_q = ch
+            curr.append(ch)
+        elif ch in (";", "\n") and in_q is None:
+            chunks.append("".join(curr))
+            curr = []
+        else:
+            curr.append(ch)
+    if curr:
+        chunks.append("".join(curr))
+    return chunks
+
 def sanitize_llm_dsl(raw_text):
     if not raw_text:
         return ""
     steps = []
-    for chunk in raw_text.replace(";", "\n").splitlines():
+    for chunk in _split_dsl_chunks(raw_text):
         line = chunk.strip().lstrip("-*•0123456789.) ").strip("`").strip()
         if "->" in line:
             line = line.split("->")[-1].strip()
@@ -1414,134 +1432,30 @@ def sanitize_llm_dsl(raw_text):
             steps.append(f"{op} {arg}".strip())
     return " ; ".join(steps)
 
-_cached_ag_token = {"access": "", "project": "aicode-consumers", "exp": 0.0}
-
-def _get_antigravity_auth():
-    now = time.time()
-    if _cached_ag_token["access"] and now < _cached_ag_token["exp"]:
-        return _cached_ag_token["access"], _cached_ag_token["project"]
-    auth_file = os.path.expanduser("~/.pi/agent/auth.json")
-    if not os.path.exists(auth_file):
-        return "", ""
+def infer_via_cloud(query_str, active_scope, cls_str, title_str, model="fast"):
+    """Zero-RAM Cloud inference via axil-auren /v1/chat/completions (fast or smart alias)."""
+    user_prompt = f"Context: [{active_scope}] app={cls_str} title={title_str!r}\nCommand: {query_str} ->"
     try:
-        with open(auth_file, "r", encoding="utf-8") as f:
-            auth = json.load(f)
-        ag = auth.get("antigravity", {})
-        access = ag.get("access", "")
-        refresh = ag.get("refresh", "").split("|")[0]
-        proj = ag.get("projectId", "aicode-consumers")
-        exp_ms = float(ag.get("expires", 0))
-        if access and exp_ms > (now + 120) * 1000:
-            _cached_ag_token.update({"access": access, "project": proj, "exp": now + 300})
-            return access, proj
-        if not refresh:
-            return access, proj
-        cid = os.environ.get("DWM_AG_CLIENT_ID", "")
-        csec = os.environ.get("DWM_AG_CLIENT_SECRET", "")
-        if not cid or not csec:
-            return access, proj
-        form = urllib.parse.urlencode({
-            "client_id": cid,
-            "client_secret": csec,
-            "refresh_token": refresh,
-            "grant_type": "refresh_token",
-        }).encode()
         req = urllib.request.Request(
-            "https://oauth2.googleapis.com/token",
-            data=form,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            local_chat_url,
+            data=json.dumps({
+                "model": model,
+                "temperature": 0.0,
+                "max_tokens": 96,
+                "messages": [
+                    {"role": "system", "content": LLM_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_prompt},
+                ],
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=3.5) as r:
-            td = json.loads(r.read().decode())
-        new_tok = td.get("access_token", "")
-        if new_tok:
-            ag["access"] = new_tok
-            ag["expires"] = int((now + int(td.get("expires_in", 3600))) * 1000)
-            with open(auth_file, "w", encoding="utf-8") as wf:
-                json.dump(auth, wf, indent=2)
-            _cached_ag_token.update({"access": new_tok, "project": proj, "exp": now + 1800})
-            return new_tok, proj
-    except Exception:
-        pass
-    return "", ""
-
-def infer_via_cloud(query_str, active_scope, cls_str, title_str):
-    """Zero-RAM Cloud Flash inference via Antigravity gemini-3-flash (~650ms) with Kilo fallback."""
-    user_prompt = f"Context: [{active_scope}] app={cls_str} title={title_str!r}\nCommand: {query_str} ->"
-    tok, proj = _get_antigravity_auth()
-    if tok:
-        ua = "antigravity/cli/1.5.5 (aidev_client; os_type=linux; arch=amd64; cl=982146307; auth_method=consumer)"
-        for attempt in range(2):
-            try:
-                req = urllib.request.Request(
-                    "https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent",
-                    data=json.dumps({
-                        "project": proj or "aicode-consumers",
-                        "model": "gemini-3-flash",
-                        "request": {
-                            "systemInstruction": {"parts": [{"text": LLM_SYSTEM_PROMPT}]},
-                            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 96},
-                        },
-                    }).encode("utf-8"),
-                    headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json", "User-Agent": ua},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=4.5) as r:
-                    res = json.loads(r.read().decode("utf-8"))
-                parts = res.get("response", {}).get("candidates", [{}])[0].get("content", {}).get("parts", [])
-                txt = "".join(p.get("text", "") for p in parts if not p.get("thought")).strip()
-                dsl = sanitize_llm_dsl(txt)
-                if dsl:
-                    return dsl, "cloud-flash"
-                break
-            except urllib.error.HTTPError as he:
-                if he.code == 401 and attempt == 0:
-                    _cached_ag_token["exp"] = 0.0
-                    # Force token refresh by expiring auth.json entry
-                    try:
-                        auth_file = os.path.expanduser("~/.pi/agent/auth.json")
-                        with open(auth_file, "r", encoding="utf-8") as f:
-                            a = json.load(f)
-                        if "antigravity" in a:
-                            a["antigravity"]["expires"] = 0
-                            with open(auth_file, "w", encoding="utf-8") as wf:
-                                json.dump(a, wf, indent=2)
-                    except Exception:
-                        pass
-                    tok, proj = _get_antigravity_auth()
-                    continue
-                break
-            except Exception:
-                break
-
-    # Fallback to Kilo OpenRouter free endpoint if Antigravity is unavailable
-    try:
-        auth_file = os.path.expanduser("~/.pi/agent/auth.json")
-        with open(auth_file, "r", encoding="utf-8") as f:
-            ktok = json.load(f).get("kilo", {}).get("access", "")
-        if ktok:
-            req = urllib.request.Request(
-                "https://api.kilo.ai/api/openrouter/chat/completions",
-                data=json.dumps({
-                    "model": "kilo-auto/free",
-                    "temperature": 0.0,
-                    "max_tokens": 36,
-                    "messages": [
-                        {"role": "system", "content": LLM_SYSTEM_PROMPT},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                }).encode("utf-8"),
-                headers={"Authorization": f"Bearer {ktok}", "Content-Type": "application/json", "User-Agent": "Kilo-Code/4.0.0"},
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=5.0) as r:
-                res = json.loads(r.read().decode("utf-8"))
-            txt = res["choices"][0]["message"]["content"].strip()
-            dsl = sanitize_llm_dsl(txt)
-            if dsl:
-                return dsl, "cloud-kilo"
+        with urllib.request.urlopen(req, timeout=5.0) as r:
+            res = json.loads(r.read().decode("utf-8"))
+        txt = res["choices"][0]["message"]["content"].strip()
+        dsl = sanitize_llm_dsl(txt)
+        if dsl:
+            return dsl, f"cloud-{model}"
     except Exception:
         pass
     return "", ""
@@ -1620,16 +1534,18 @@ def infer_fallback(query_str, active_scope, cls_str, title_str):
         return None
 
     dsl, provider = "", ""
-    if mode == "cloud":
-        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str)
+    if mode in ("cloud", "fast"):
+        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str, model="fast")
+    elif mode == "smart":
+        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str, model="smart")
     elif mode in ("local", "local-1.5b"):
         dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-local")
     elif mode == "local-0.5b":
         dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-0.5b")
     elif mode == "pi":
         return "ACT", 0.90, "pi-escalation", f'pi "{query_str}"'
-    else:  # "auto": try zero-RAM cloud-flash first, then local GGUF if resident
-        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str)
+    else:  # "auto": try zero-RAM cloud-fast first, then local GGUF if resident
+        dsl, provider = infer_via_cloud(query_str, active_scope, cls_str, title_str, model="fast")
         if not dsl:
             dsl, provider = infer_via_local(query_str, active_scope, cls_str, title_str, "qwen-local")
 
@@ -1911,7 +1827,7 @@ case "${1:-dmenu}" in
         fi
         mode=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')
         case "$mode" in
-            auto|cloud|local|local-1.5b|local-0.5b|pi|off)
+            auto|cloud|fast|smart|local|local-1.5b|local-0.5b|pi|off)
                 mkdir -p "$HOME/.config/dwm"
                 printf '%s\n' "$mode" > "$MODE_FILE"
                 case "$mode" in
@@ -1927,7 +1843,7 @@ case "${1:-dmenu}" in
                 exit 0
                 ;;
             *)
-                printf 'Usage: dwm-auren llm-mode [auto|cloud|local|local-0.5b|pi|off]\n' >&2
+                printf 'Usage: dwm-auren llm-mode [auto|cloud|fast|smart|local|local-0.5b|pi|off]\n' >&2
                 exit 1
                 ;;
         esac
