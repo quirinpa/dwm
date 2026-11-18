@@ -229,7 +229,20 @@ def answer_query(raw_query: str):
             "⌨  Toggle Listener On ⇄ Off:  Mod + v  (or Left-Click )\n"
             "⌨  Lock Screen (slock):       Mod + s  (or Mod + Shift + l)\n"
             "⌨  Jarvis Settings Menu:      Mod + Shift + v  (or Right-Click )\n"
-            "  Voice Lockdown:            “Jarvis, lockdown” (stops mic + locks screen)",
+            "  Voice Lockdown:            “Jarvis, lockdown” (stops mic + locks screen)\n"
+            "  Voice Undo:                “Jarvis, undo” (reverts action + evicts learned shortcut)",
+        ),
+        (
+            "Jarvis Context-Scoped & Self-Learning Shortcuts",
+            (
+                ["context", "scope", "scoped", "learned", "learning", "llm", "inference", "infer", "clear line", "delete word", "shortcut", "shortcuts"],
+                ["terminal", "browser", "llm", "learned", "jarvis", "inference", "mode", "line", "word", ""],
+            ),
+            "  Same phrase adapts to active window (@terminal vs @browser):\n"
+            "   • “Jarvis, clear the line”       -> Ctrl+U (term) | Ctrl+A BackSpace (browser)\n"
+            "   • “Jarvis, delete previous word” -> Ctrl+W (term) | Ctrl+BackSpace (browser)\n"
+            "🤖 Novel commands infer via LLM (Mod+Shift+v -> LLM Inference Mode) &\n"
+            "   auto-save to ~/.config/dwm/intents.learned.conf (“Jarvis, undo” evicts).",
         ),
         (
             "Jarvis Pi Coding Session (tmux)",
@@ -326,8 +339,9 @@ def run_gui():
             ("Mod + p",             "App Launcher (dmenu)"),
             ("Mod + a",             "Jarvis Semantic Command Bar"),
             ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Off (Silver)"),
-            ("Mod + Shift + v",     "Jarvis Menu (Pi, Lang, Model, Lockdown)"),
-            ("“Jarvis, <cmd>”",     "Speak any desktop, browser, or Pi action"),
+            ("Mod + Shift + v",     "Jarvis Menu (Pi, LLM Mode, Lang, Lockdown)"),
+            ("“Jarvis, <cmd>”",     "Context-Aware Voice (@terminal / @browser)"),
+            ("“Jarvis, undo”",      "Revert Last Action & Evict Learned Rule"),
             ("“Jarvis, lockdown”",  "Turn Jarvis Off + Lock Screen (slock)"),
             ("“Jarvis, how do I…”", "Ask for Window Manager Instructions"),
             ("Mod + Space",         "Toggle Keyboard Layout (US ⇄ PT)"),
