@@ -977,6 +977,11 @@ def _is_valid_param_hit(iid_resolved, clause_low, arg_val, active_scope="any"):
     if base_iid in ("focus_target", "open_target", "play_target"):
         if arg_words & FILESYSTEM_NAV_WORDS or "/" in arg_val or "~" in arg_val:
             return False
+        # Reject "the other window", "the last window" etc. - these are handled by focus_other/open_other
+        if base_iid == "focus_target" and arg_clean in ("the other window", "the last window", "other window", "last window", "previous window"):
+            return False
+        if base_iid == "open_target" and arg_clean in ("the other window", "the last window", "other window", "last window", "previous window"):
+            return False
     return True
 
 def match_param_template(clause, active_scope="any"):
@@ -1017,7 +1022,16 @@ def match_param_template(clause, active_scope="any"):
             arg_val = normalize_intent_arg(iid_resolved, arg_val)
             cmd_tmpl = commands.get(iid_resolved, commands[iid])
             cmd_filled = cmd_tmpl.replace("{arg}", arg_val)
-            return iid_resolved, 0.99, cmd_to_dsl(cmd_filled)
+            # Compute confidence based on arg ambiguity - low confidence for ambiguous args
+            # so inference (bge-base/LLM) can resolve them properly
+            arg_clean = clean_phrase(arg_val)
+            ambiguous_args = {"the other window", "the last window", "other window", "last window", "previous window", "the other", "the last", "other", "last", "previous"}
+            base_conf = 0.99
+            if arg_clean in ambiguous_args:
+                base_conf = 0.55  # Low confidence - let inference disambiguate
+            elif arg_clean.startswith("the ") and len(arg_clean.split()) <= 3:
+                base_conf = 0.70  # Medium confidence for short "the X" args
+            return iid_resolved, base_conf, cmd_to_dsl(cmd_filled)
     return None
 
 def match_static_fast(clause, active_scope="any"):
