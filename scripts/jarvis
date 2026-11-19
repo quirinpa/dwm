@@ -323,9 +323,7 @@ def execute_utterance(
     status = "OK" if success else "FAIL"
 
     if not quiet:
-        if op == "answer_question":
-            notify_desktop(f"  Jarvis ({source})", output or error, timeout=8000)
-        else:
+        if op != "answer_question":
             notify_desktop(f"  Jarvis → {op} ({source})", f"“{utterance}”\n▸ {output or error}")
         if success:
             play_done_earcon()

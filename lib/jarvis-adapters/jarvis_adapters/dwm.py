@@ -932,40 +932,21 @@ class DwmAdapter(Adapter):
             cut = clean_text[:260].rfind(". ")
             clean_text = (clean_text[: cut + 1] if cut > 60 else clean_text[:260]).strip()
 
-        # Primary: Human-grade neural TTS daemon (Kokoro-82M / Piper ONNX) with automatic mic mute protection
+        # Human-grade neural TTS daemon (Kokoro-82M / Piper ONNX) with automatic mic mute protection.
+        # Note: Robotic espeak-ng / spd-say fallback has been permanently removed.
         dwm_tts_bin = os.path.expanduser("~/.local/bin/dwm-tts")
         if os.path.exists(dwm_tts_bin):
             try:
-                res = subprocess.run(
+                subprocess.run(
                     [dwm_tts_bin, "speak", clean_text],
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    timeout=25.0,
+                    timeout=60.0,
                     check=False,
                 )
-                if res.returncode == 0:
-                    return
             except Exception:
                 pass
-
-        # Fallback: spd-say with mic mute guard
-        try:
-            self._run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1"], timeout=0.4)
-            self._run(["spd-say", "-C"], timeout=0.4)
-            subprocess.run(
-                ["spd-say", "-o", "espeak-ng", "-r", "12", "-w", clean_text],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=12.0,
-                check=False,
-            )
-            time.sleep(0.25)
-        except Exception:
-            pass
-        finally:
-            self._run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "0"], timeout=0.4)
 
     def confirm_action(self, description: str) -> bool:
         """Ask the user for confirmation via dmenu before running a destructive command."""

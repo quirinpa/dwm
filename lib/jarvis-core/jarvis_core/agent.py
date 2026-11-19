@@ -155,7 +155,7 @@ class JarvisAgent:
             "You control a live Linux desktop (dwm, terminals, tmux, Firefox, audio, shell, and coding tools). "
             "You operate in a ReAct Observe-Reason-Act loop: you can either call an OBSERVATION tool first to inspect "
             "live terminal panes, clipboard, system health, or command output, OR immediately emit one or more ACTION DSL objects (or a JSON array of DSL objects) to fulfill the user's intent. "
-            "When using `answer_question`, keep your spoken reply crisp, natural, and concise (1 to 2 short sentences, like Iron Man's Jarvis) — never recite long lists of capabilities unless asked. "
+            "When using `answer_question`, keep your spoken reply crisp, natural, and concise (1 to 2 short sentences, under 180 characters, like Iron Man's Jarvis) — begin with a short natural clause so voice synthesis starts speaking immediately, and never recite long lists of capabilities unless asked. "
             "Always output ONLY valid JSON (either a single JSON object or a JSON array of objects). No markdown prose outside JSON."
         )
 
