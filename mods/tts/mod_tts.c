@@ -377,22 +377,55 @@ static float *load_kokoro_voice_npy(const char *zip_path, const char *voice_name
 	while (fread(hdr, 1, 30, fp) == 30) {
 		if (hdr[0] != 'P' || hdr[1] != 'K' || hdr[2] != 3 || hdr[3] != 4) break;
 		uint16_t method = (uint16_t)hdr[8] | ((uint16_t)hdr[9] << 8);
-		uint32_t comp_sz = (uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) |
-		                   ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24);
+		uint32_t comp_sz32 = (uint32_t)hdr[18] | ((uint32_t)hdr[19] << 8) |
+		                     ((uint32_t)hdr[20] << 16) | ((uint32_t)hdr[21] << 24);
+		uint32_t uncomp_sz32 = (uint32_t)hdr[22] | ((uint32_t)hdr[23] << 8) |
+		                       ((uint32_t)hdr[24] << 16) | ((uint32_t)hdr[25] << 24);
 		uint16_t fname_len = (uint16_t)hdr[26] | ((uint16_t)hdr[27] << 8);
 		uint16_t extra_len = (uint16_t)hdr[28] | ((uint16_t)hdr[29] << 8);
 
 		char fname[128] = {0};
 		if (fname_len >= sizeof(fname)) {
-			fseek(fp, (long)fname_len + (long)extra_len + (long)comp_sz, SEEK_CUR);
-			continue;
+			fseek(fp, (long)fname_len, SEEK_CUR);
+		} else {
+			if (fread(fname, 1, fname_len, fp) != fname_len) break;
+			fname[fname_len] = '\0';
 		}
-		if (fread(fname, 1, fname_len, fp) != fname_len) break;
-		fname[fname_len] = '\0';
-		fseek(fp, (long)extra_len, SEEK_CUR);
+
+		uint64_t real_comp_sz = comp_sz32;
+		if (extra_len > 0) {
+			uint8_t extra[512];
+			if (extra_len <= sizeof(extra)) {
+				if (fread(extra, 1, extra_len, fp) != extra_len) break;
+				if (comp_sz32 == 0xFFFFFFFFU || uncomp_sz32 == 0xFFFFFFFFU) {
+					size_t pos = 0;
+					while (pos + 4 <= extra_len) {
+						uint16_t etag = (uint16_t)extra[pos] | ((uint16_t)extra[pos + 1] << 8);
+						uint16_t esz  = (uint16_t)extra[pos + 2] | ((uint16_t)extra[pos + 3] << 8);
+						pos += 4;
+						if (etag == 0x0001 && pos + esz <= extra_len) {
+							size_t fpos = pos;
+							if (uncomp_sz32 == 0xFFFFFFFFU && fpos + 8 <= pos + esz)
+								fpos += 8;
+							if (comp_sz32 == 0xFFFFFFFFU && fpos + 8 <= pos + esz) {
+								uint64_t c64 = 0;
+								for (int b = 0; b < 8; b++)
+									c64 |= ((uint64_t)extra[fpos + b]) << (b * 8);
+								real_comp_sz = c64;
+							}
+							break;
+						}
+						pos += esz;
+					}
+				}
+			} else {
+				fseek(fp, (long)extra_len, SEEK_CUR);
+			}
+		}
 
 		long data_start = ftell(fp);
-		if (method == 0 && fname_len == target_len && strcmp(fname, target_entry) == 0 && comp_sz >= 128 + KOKORO_STYLE_ROWS * KOKORO_STYLE_DIM * 4) {
+		if (method == 0 && fname_len == target_len && strcmp(fname, target_entry) == 0 &&
+		    real_comp_sz >= (uint64_t)(128 + KOKORO_STYLE_ROWS * KOKORO_STYLE_DIM * 4)) {
 			uint8_t npy_hdr[128];
 			if (fread(npy_hdr, 1, 10, fp) == 10 && memcmp(npy_hdr, "\x93NUMPY", 6) == 0) {
 				uint16_t hlen = (uint16_t)npy_hdr[8] | ((uint16_t)npy_hdr[9] << 8);
@@ -409,7 +442,8 @@ static float *load_kokoro_voice_npy(const char *zip_path, const char *voice_name
 			}
 			break;
 		}
-		fseek(fp, data_start + (long)comp_sz, SEEK_SET);
+		if (fseek(fp, data_start + (long)real_comp_sz, SEEK_SET) != 0)
+			break;
 	}
 	fclose(fp);
 	return NULL;
@@ -591,10 +625,20 @@ static bool tts_engine_ensure_loaded(const char *voice)
 		}
 	}
 
-	/* 2. Lazy dlopen libonnxruntime.so.1.23 */
+	/* 2. Lazy dlopen libonnxruntime.so.1.23 (suppress stderr duplicate ONNX schema chatter) */
 	if (!g_tts.ort_dl) {
+		int saved_stderr = dup(STDERR_FILENO);
+		int devnull = open("/dev/null", O_WRONLY);
+		if (devnull >= 0) {
+			dup2(devnull, STDERR_FILENO);
+			close(devnull);
+		}
 		g_tts.ort_dl = dlopen("libonnxruntime.so.1.23", RTLD_LAZY | RTLD_LOCAL);
 		if (!g_tts.ort_dl) g_tts.ort_dl = dlopen("libonnxruntime.so", RTLD_LAZY | RTLD_LOCAL);
+		if (saved_stderr >= 0) {
+			dup2(saved_stderr, STDERR_FILENO);
+			close(saved_stderr);
+		}
 		if (!g_tts.ort_dl) {
 			tts_engine_unload();
 			return false;

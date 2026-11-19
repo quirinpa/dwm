@@ -2281,6 +2281,28 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		return 0;
 	}
 
+	if (strcmp(op, "tts_control") == 0) {
+		res->handled = true;
+		const char *act = dsl->args.action[0] ? dsl->args.action : "on";
+		bool turn_on = (strcasecmp(act, "off") != 0 && strcasecmp(act, "0") != 0 && strcasecmp(act, "disable") != 0);
+		const char *home = getenv("HOME");
+		if (home && *home) {
+			char dir[512], path[512];
+			snprintf(dir, sizeof(dir), "%s/.config/dwm-voice", home);
+			mkdir(dir, 0755);
+			snprintf(path, sizeof(path), "%s/tts_enabled", dir);
+			FILE *fp = fopen(path, "w");
+			if (fp) {
+				fprintf(fp, "%s\n", turn_on ? "1" : "0");
+				fclose(fp);
+			}
+		}
+		res->success = true;
+		snprintf(res->output, sizeof(res->output), "%s",
+		         turn_on ? "Voice enabled. At your service." : "Voice disabled.");
+		return 0;
+	}
+
 	if (strcmp(op, "answer_question") == 0) {
 		res->handled = true;
 		const char *ans = dsl->args.answer[0] ? dsl->args.answer :

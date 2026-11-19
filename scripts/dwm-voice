@@ -125,7 +125,7 @@ get_model() {
 }
 
 get_srv_port() {
-    get_xres "dwm.voice.server_port" "8178"
+    get_xres "dwm.voice.server_port" "8179"
 }
 
 get_wake_word() {
@@ -477,6 +477,7 @@ case "${1:-toggle}" in
             printf 'bm_daniel\n' > "$CONF_DIR/tts_voice"
         fi
         notify_voice "voice" 2500 "🗣  Jarvis Neural Voice ON" "Voice: $(cat "$CONF_DIR/tts_voice" 2>/dev/null)"
+        dwm-whisperd -p "$(get_srv_port)" -c "TTS_SPEAK|At your service." >/dev/null 2>&1 &
         ;;
     tts-off)
         printf '0\n' > "$CONF_DIR/tts_enabled"

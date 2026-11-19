@@ -123,4 +123,4 @@ dwm.voice.followup_ms:          8000
 dwm.voice.threshold_db:         -35
 dwm.voice.wake_word:            jarvis
 dwm.voice.jarvis_autostart:     true
-dwm.voice.server_port:          8178
+dwm.voice.server_port:          8179
