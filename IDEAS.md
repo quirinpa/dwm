@@ -1,50 +1,78 @@
-# Future Improvement Ideas for dwm + Jarvis + Auren
+# Future Improvement Ideas & Optimization Roadmap for dwm + Jarvis + Auren
 
-This document captures architectural and UX ideas for evolving the **dwm + Jarvis + Auren** voice-driven desktop environment.
-
----
-
-## 1. [IMPLEMENTED] Zero-Fork Persistent Daemon for `dwm-auren` & `dwm-act` (Latency: ~150ms → ~13ms)
-- **Implemented**: `dwm-auren daemon` listens on `/tmp/dwm-auren-$USER.sock` with `intents.conf`, cached embeddings (`~/.cache/dwm-auren-embeddings.json`), and `dwm-act` dynamically imported in-process.
-- **Result**: ~13ms average intent classification and action dispatch over Unix socket (`EVAL` / `ACT_EXEC`), eliminating Python and subprocess startup overhead.
+This document tracks the implemented milestones and the concrete engineering plan for the next phase of **dwm + Jarvis + Auren** optimizations.
 
 ---
 
-## 2. [IMPLEMENTED: Earcons] Local Neural TTS & Subtle Audio Earcons (Eyes-Free Feedback)
-Visual feedback via Dunst notifications and the status bar robot icon (`Yellow` / `Red` / `Silver`) requires looking at the top bar.
-- **Subtle Two-Tone Earcons (Implemented)**: Synthesizes and plays a crisp ascending wake chime (`587 Hz → 880 Hz`, `/tmp/dwm-voice-chime-$USER.wav`) when transitioning from `Yellow → Red` and a soft descending completion chime (`659 Hz → 523 Hz`, `/tmp/dwm-voice-done-$USER.wav`) when an action completes.
-- **Ultra-Fast Local TTS (`piper` or `espeak-ng`)**: Optionally speak concise answers aloud in ~50ms when answering questions via `dwm-help ask` or reporting system status (battery, network, time).
+## Completed Milestones
+
+1. **[IMPLEMENTED] 3-Layer Jarvis v2 Architecture + ReAct Agent Loop (`1e083bc`, `ce9ad86`)**
+   - Deterministic Tier-0 solver (`jarvis_core/solver.py`), Tier-1a local `bge-base` embedding cache, and Tier-1b multi-turn ReAct agent (`jarvis_core/agent.py`) over `axil-auren` (`:4242`).
+   - Persistent `UserMemoryStore` (`~/.config/jarvis/memories.json`) and rolling `SessionJournal` (`/tmp/jarvis-$USER.session.json`).
+
+2. **[IMPLEMENTED] 4x–8x Inference & Observation Latency Optimization (`80b57ef`)**
+   - `DwmAdapter.observe()` cut from `~170ms` cold / `~135ms` warm to `~19ms` cold / `0.0ms` warm (350ms TTL cache, active-only tmux pane capture, `/proc/<pid>/cmdline` fast path, mtime-cached Firefox sessionstore, zero-subprocess `_get_fast_system_health`).
+   - Eliminated `kilo-auto/free` hidden reasoning token exhaustion (`~17.1s` → `~1.9s`).
+   - Unified `/home/quirinpa/.local/src/dwm` and `~/.local/{bin,lib}` via symlinks as a single source of truth.
+
+3. **[IMPLEMENTED] Pipelined Clause-Streaming Neural TTS & Removal of `espeak-ng` Fallback (`f1973a8`)**
+   - Permanently removed the robotic `spd-say` / `espeak-ng` fallback from `DwmAdapter._speak_tts`.
+   - Added `split_tts_segments` + pipelined `pw-cat -p --raw` PCM streaming to `dwm-tts`, cutting Kokoro-82M Time-To-First-Audio (TTFA) from `~11.5s` to `~1.2s` and tuning ONNX Runtime (`intra_op_num_threads=3`, `allow_spinning=0`) for Intel hybrid P/E cores.
 
 ---
 
-## 3. [IMPLEMENTED] Short Conversational Follow-Up Window & Voice Undo ("Scratch that")
-- **Conversational Follow-Up Window (Implemented)**: `dwm-whisperd` accepts an 8th parameter `followup_ms` (default `3800` ms via `dwm.voice.followup_ms`) in `JARVIS_WAIT`. After executing a command, Jarvis stays in active command-listening mode (`Red` icon) for 3.8 seconds so follow-up commands can be spoken naturally without repeating *"Jarvis"*, then transitions back to wake-word standby (`Yellow` icon) automatically if silent.
-- **Voice Undo (Implemented)**: `dwm-act` snapshots window tags, active workspace, and focused window to `/tmp/dwm-undo-$USER.json` before mutating actions; saying *"Scratch that"* or *"Undo"* restores the prior window/workspace state.
+## Next Phase Implementation Plan (Prioritized)
+
+### Priority 1: True End-to-End LLM → TTS Token-to-Clause Streaming (Target: Sub-1.5s Voice Response)
+
+**Problem**: Even with pipelined clause-streaming inside `dwm-tts`, `JarvisAgent` currently waits for the HTTP response from `axil-auren` to complete in full (`~1.8s–2.2s`) before sending the text to `dwm-tts`.
+
+**Architecture & Implementation Steps**:
+1. **Multi-Turn Streaming Socket Protocol in `dwm-tts` (`scripts/dwm-tts`)**:
+   - Extend the `dwm-tts` Unix socket server (`/tmp/dwm-tts-$USER.sock`) to accept streaming session packets or newline-delimited `STREAM_CHUNK|<voice>|<clause>` / `STREAM_END` messages over a persistent connection, queueing clauses directly into the active `NeuralTTSEngine` synthesis worker thread while `pw-cat` keeps the single audio stream open.
+2. **SSE Streaming Client in `AurenLLMBackend` (`lib/jarvis-adapters/jarvis_adapters/inference.py`)**:
+   - Add `_post_chat_messages_stream(messages, on_answer_clause=...)` using `"stream": true` against `http://127.0.0.1:4242/v1/chat/completions`.
+   - Incrementally parse the incoming JSON stream: as soon as `"op": "answer_question"` and `"answer": "` are detected in the delta stream, buffer characters until the first clause boundary (`~25–36 chars` at a punctuation mark or conjunction) and immediately dispatch `STREAM_CHUNK` to `dwm-tts`.
+3. **Overlap LLM Generation with Kokoro Synthesis (`lib/jarvis-core/jarvis_core/agent.py`)**:
+   - Clause 0 begins synthesizing in Kokoro while the LLM is still generating Clause 1+, cutting total end-to-end latency from user silence to spoken voice by ~40–50%.
 
 ---
 
-## 4. [IMPLEMENTED] Separate Privacy Toggle (`Mod+v`) vs. Voice Lockdown (`"Jarvis, lockdown"`) + `Mod+s` Lock
-1. **Silent / Privacy Mode (`Mod+v`)**: Toggles the Jarvis microphone listener Off (`Silver`) and On (`Yellow`) without locking the screen.
-2. **Immediate Screen Lock (`Mod+s` / `Mod+Shift+l`)**: Locks the X11 screen via `slock`.
-3. **Voice Lockdown (`"Jarvis, lockdown"`)**: Turns the Jarvis microphone listener Off (`Silver`) and locks the X11 screen (`slock`).
+### Priority 2: Instant Voice Interruption / "Barge-In" & Cancellation
+
+**Problem**: When Jarvis is speaking a multi-sentence explanation, the user cannot easily cut him off mid-sentence without waiting for `dwm-tts` playback to finish.
+
+**Architecture & Implementation Steps**:
+1. **Non-Blocking / Asynchronous Daemon Dispatch in `dwm-tts` (`scripts/dwm-tts`)**:
+   - Move `engine.stream_speak()` into a dedicated playback worker thread inside `dwm-tts daemon` with a shared `cancel_event = threading.Event()` and an active `self.current_player: Optional[subprocess.Popen]` reference so the Unix socket accept loop never blocks during playback.
+   - Support an instant `INTERRUPT` (or `CANCEL`) command on `/tmp/dwm-tts-$USER.sock` (and automatically interrupt any previous speech if a new `SPEAK` request arrives).
+   - When `INTERRUPT` is received: set `cancel_event`, drain `pcm_queue`, terminate `self.current_player` (`pw-cat`/`aplay`) immediately (`< 10ms`), and unmute the microphone (`set_mic_mute(False)`).
+2. **Hotkey, CLI & Wake-Word Hook (`scripts/dwm-voice`, `scripts/dwm-tts`, `lib/jarvis-adapters/jarvis_adapters/dwm.py`)**:
+   - Add `dwm-tts interrupt` (or `dwm-tts stop-speech`).
+   - Wire `dwm-voice` (`Mod+v` or `jarvis_stop_quiet`) and any new command execution in `jarvis` to send `INTERRUPT` to `dwm-tts` first.
+   - Add a Tier-0 fast reflex in `solver.py` for `"stop talking"`, `"be quiet"`, `"shut up"`, `"quiet"`, `"cancel"` → executes `tts_interrupt`.
 
 ---
 
-## 5. [IMPLEMENTED] Context-Aware Disambiguation & Live X11 Pronouns ("this", "that", "other")
-Live desktop state (`_DWM_CUR_TAG`, `_DWM_CLIENT_TAGS`, `dwm-msg other`, `xsel`/`xclip` primary & clipboard selections) is wired into `dwm`, `dwm-msg`, `dwm-act`, and `dwm-auren`:
-- *"Jarvis, search Google for **this**"* / *"ask Pi to explain **this**"* → reads the current X11 primary/clipboard selection and opens the search in Firefox or sends it to Pi.
-- *"Jarvis, move **the other window** to workspace 4"* / *"close **the other window**"* / *"focus **the other window**"* → targets the unfocused window on the current workspace (`dwm-msg other` + `tag-win` / `close-win` / `focus-win`) without losing focus on the active window.
-- *"Jarvis, pull **Firefox** here"* → locates the workspace where the target window is open and pulls it onto the current workspace (`dwm-msg pull-win`).
+### Priority 3: Speaker-Playback Guard Against Follow-Up Window Hallucinations
+
+**Problem**: During the 8-second post-command follow-up window (`next_followup=8000`), `dwm-whisperd` listens without requiring the `"Jarvis"` wake word. If music or a YouTube video is playing over the speakers (e.g., right after `"Please open some jazz music"`), Whisper transcribes the song lyrics/audio from the speakers as a phantom voice command.
+
+**Architecture & Implementation Steps**:
+1. **Suppress Wake-Free Follow-Up When Media Audio is Playing (`scripts/dwm-voice`)**:
+   - In `jarvis_loop()` (`scripts/dwm-voice` lines 284–291), extend the `is_speaker_playing` check (via `playerctl status` and PipeWire/PulseAudio active sink-input check) to **all** follow-up modes (`next_followup > 0`), not just `3600000`.
+   - Specifically: if `media_play` just executed or `is_speaker_playing` returns true, set `next_followup=0` so Jarvis immediately returns to strict `"Jarvis"` wake-word standby (`Yellow` icon) instead of recording the music in the room.
+2. **Garbage / Lyric Hallucination Filter (`scripts/dwm-voice` / `orchestrator.py`)**:
+   - Reject low-coherence transcriptions during follow-up windows before invoking the LLM agent if they neither match a Tier-0/Tier-1a intent nor contain an imperative verb or question structure.
 
 ---
 
-## 6. Named Voice Macros & Teachable Routines
-Build on multi-step clause chaining (`then`, `and then`) with persistent user-defined voice macros:
-- *"Jarvis, remember routine demo mode: switch to workspace 2, open terminal, and start recording screen with audio."*
-- Later triggered via: *"Jarvis, start demo mode."*
+### Priority 4: Smarter Media Playback & Tab Reuse (`DwmAdapter._op_media_play`)
 
----
+**Problem**: Saying `"play some jazz music"` followed by `"play some classical music"` opens a brand-new Firefox tab each time and steals window focus even when working in a terminal.
 
-## 7. Adaptive Noise Floor & Media Playback Ducking in `dwm-whisperd`
-- **Adaptive Noise Floor**: Track an exponential moving average (EMA) of ambient room RMS energy instead of fixed thresholds so wake-word detection stays reliable across quiet rooms and high fan noise.
-- **Auto-Duck / Pause During Active Calls or Media**: Detect active WebRTC/meeting microphone streams or loud system playback via PipeWire/ALSA to prevent false wake-word triggers.
+**Architecture & Implementation Steps**:
+1. **Existing YouTube Tab Reuse or Background Audio Player**:
+   - Check `_get_firefox_open_tabs()` for an existing YouTube tab; or provide an optional lightweight background audio/mpv stream mode when the user says `"play <music> in the background"`.
+2. **Preserve Terminal Focus When Requested**:
+   - If the user is actively typing in a terminal or says `"play ... in the background"`, start playback without pulling X11 focus away from the current workspace/window.
