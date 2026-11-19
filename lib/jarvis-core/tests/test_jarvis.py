@@ -13,7 +13,7 @@ sys.path.insert(0, "/home/quirinpa/.local/lib/jarvis-adapters")
 
 from jarvis_core.ontology import SemanticOntology
 from jarvis_core.solver import CompositionalSemanticSolver, build_ir
-from jarvis_core.orchestrator import Jarvis
+from jarvis_core.orchestrator import Jarvis, is_non_speech_hallucination
 from jarvis_core.agent import is_destructive_command
 from jarvis_adapters.base import Adapter, AdapterResult
 from jarvis_adapters.inference import EmbeddingBackend, AurenLLMBackend, normalize_dsl_dict, _extract_json_payload
@@ -473,6 +473,14 @@ class TestJarvisPipeline(unittest.TestCase):
         self.assertTrue(15 <= len(c0) <= 55, f"Expected short opening clause for fast TTFA, got: '{c0}' ({len(c0)} chars)")
         self.assertIn("Quantum physics", c0)
         print(f"  [PASS] Streaming Clause 0 extraction -> '{c0}' (remainder: '{rem0}')")
+
+        # Verify single-char stutter / follow-up chime hallucinations are rejected
+        self.assertTrue(is_non_speech_hallucination("vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv"))
+        self.assertTrue(is_non_speech_hallucination("v v v v v v v"))
+        self.assertFalse(is_non_speech_hallucination("tell me more about that"))
+        j, _ = self._make_jarvis(use_llm=False)
+        res_hal = j.process("vvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvvv")
+        self.assertIn("error", res_hal)
 
 
 if __name__ == "__main__":

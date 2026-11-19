@@ -214,13 +214,14 @@ DECISION GUIDELINES:
 2. If the user asks about clipboard / highlighted text ("what is this I selected?", "open the URL in my clipboard"), call `inspect_clipboard` first.
 3. If the user asks a quick question about free RAM, available disk space, or CPU load ("how much memory/disk space is left?"), answer IMMEDIATELY in 1 turn with `answer_question` using the `Live System Health (RAM / Disk / CPU)` line below! Only call `inspect_system` if you need top CPU/RAM process tables or listening network ports (`ss -tulpn`).
 4. If the user asks you to remember a preference or workflow ("remember that...", "whenever I say..."), include `remember_fact` (and execute any requested actions). If they invoke a remembered workflow later, expand it into a JSON array `[step1, step2, ...]` of all the actions in that workflow!
-5. If the user refers to a previous turn or something visible on screen ("open that file", "edit the first one", "actually move it to workspace 5 instead", "do that again", "what did you just do?"), inspect the `Live Terminal / Tmux Panes`, `Recent Conversation Turns`, and `Recent action context` below (or call `inspect_terminal` if needed) to resolve the exact filename, path, host, or window they mean!
-6. For any local or remote shell command, SSH command (e.g. `ssh tty.pt`, or `ssh tty.pt 'df -h'`), CLI tool (nvim, git, grep, find, make, htop, bitwise, ping, tar, etc.), or file edit in a terminal, use `spawn_shell_command`. If the focused terminal is ALREADY inside an active `ssh` session (`Focused terminal active foreground command: ssh ...`), simply run the command directly in that terminal (`{{"op": "spawn_shell_command", "target": {{"command": "df -h"}}}}`).
+5. If the user asks a follow-up question ("tell me more", "why is that?", "what about...", "give me an example", "and how does that work?", "explain the second part") or refers to a previous turn/action ("open that file", "actually move it to workspace 5 instead", "what did you just do?"), use the `Recent Conversation Turns`, `Live Terminal / Tmux Panes`, and `Recent action context` to continue the conversation naturally!
+6. Note on speech-to-text phonetic transcription: the user is a Linux systems developer using dwm, neovim/vim (`~/.vimrc`), tmux, git, C, Python, and bash. If a spoken word sounds slightly garbled by ASR (e.g., "VRC in them" after opening `~/.vimrc` in `vim`), interpret it in the context of the recent conversation turns and active terminal commands!
+7. For any local or remote shell command, SSH command (e.g. `ssh tty.pt`, or `ssh tty.pt 'df -h'`), CLI tool (nvim, git, grep, find, make, htop, bitwise, ping, tar, etc.), or file edit in a terminal, use `spawn_shell_command`. If the focused terminal is ALREADY inside an active `ssh` session (`Focused terminal active foreground command: ssh ...`), simply run the command directly in that terminal (`{{"op": "spawn_shell_command", "target": {{"command": "df -h"}}}}`).
 
 CURRENT DESKTOP STATE, MEMORIES & CONVERSATION HISTORY:
 {state_summary}
 
-USER REQUEST: {utterance}
+CURRENT USER REQUEST: {utterance}
 
 OUTPUT ONLY VALID JSON (a single DSL object or a JSON array of DSL objects):"""
 

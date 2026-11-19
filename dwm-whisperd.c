@@ -818,13 +818,45 @@ is_hallucination(const char *s)
 		return 1;
 
 	int has_alpha = 0;
+	int alnum_cnt = 0;
+	char first_alnum = '\0';
+	int same_char_cnt = 0;
+	int max_char_run = 0;
+	int cur_char_run = 0;
+	char prev_alnum = '\0';
+
 	for (const char *p = s; *p; p++) {
-		if (isalpha((unsigned char)*p) || ((unsigned char)*p >= 0xC0)) {
+		unsigned char uc = (unsigned char)*p;
+		if (isalpha(uc) || (uc >= 0xC0))
 			has_alpha = 1;
-			break;
+		if (isalnum(uc)) {
+			char lc = (char)tolower(uc);
+			alnum_cnt++;
+			if (first_alnum == '\0')
+				first_alnum = lc;
+			if (lc == first_alnum)
+				same_char_cnt++;
+			if (lc == prev_alnum) {
+				cur_char_run++;
+				if (cur_char_run > max_char_run)
+					max_char_run = cur_char_run;
+			} else {
+				prev_alnum = lc;
+				cur_char_run = 1;
+				if (max_char_run < 1)
+					max_char_run = 1;
+			}
 		}
 	}
-	if (!has_alpha)
+	if (!has_alpha || alnum_cnt < 2)
+		return 1;
+
+	/* Reject single-character stutter / motor-hum hallucinations like
+	 * "vvvvvvvvvvvvvvvvvv" or "aaaaaa..." or "m m m m m".
+	 */
+	if (max_char_run >= 4)
+		return 1;
+	if (alnum_cnt >= 3 && same_char_cnt * 10 >= alnum_cnt * 8)
 		return 1;
 
 	if (strcasecmp(s, "you") == 0 || strcasecmp(s, "you.") == 0 ||
@@ -832,7 +864,10 @@ is_hallucination(const char *s)
 	    strcasecmp(s, "thanks for watching!") == 0 || strcasecmp(s, "thanks for watching.") == 0 ||
 	    strcasecmp(s, "obrigado.") == 0 || strcasecmp(s, "obrigado") == 0 ||
 	    strcasecmp(s, "legenda") == 0 || strcasecmp(s, "legendas") == 0 ||
-	    strcasecmp(s, "subtitles") == 0 || strcasecmp(s, "the") == 0)
+	    strcasecmp(s, "subtitles") == 0 || strcasecmp(s, "the") == 0 ||
+	    strcasecmp(s, "bye.") == 0 || strcasecmp(s, "bye") == 0 ||
+	    strcasecmp(s, "hmm") == 0 || strcasecmp(s, "uh") == 0 ||
+	    strcasecmp(s, "um") == 0 || strcasecmp(s, "ah") == 0)
 		return 1;
 	return 0;
 }
@@ -1474,14 +1509,14 @@ handle_stream(int srv, int cli, const char *mode, const char *lang,
 				if (db > peak_speech_db)
 					peak_speech_db = db;
 
-				/* Hysteresis keep threshold: always below eff_start_db so unstressed
-				 * trailing syllables (e.g. "-minal" in "terminal") are never clipped.
-				 */
+				/* Hysteresis & peak-relative keep threshold */
 				double eff_keep_db = eff_start_db - 3.5;
 				if (nf_db + 4.5 > eff_keep_db)
 					eff_keep_db = nf_db + 4.5;
-				if (eff_keep_db > eff_start_db - 2.0)
-					eff_keep_db = eff_start_db - 2.0;
+				if (peak_speech_db - 13.5 > eff_keep_db)
+					eff_keep_db = peak_speech_db - 13.5;
+				if (eff_keep_db > eff_start_db - 1.5)
+					eff_keep_db = eff_start_db - 1.5;
 
 				if (db >= eff_keep_db) {
 					voiced_frames++;
@@ -1615,9 +1650,46 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 	int chime_played = is_followup_window;
 	int non_jarvis_utter = 0;
 	long post_wake_deadline_ms = is_followup_window ? (now_ms() + (long)followup_ms) : 0;
-	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 3) : 0;
+	/* Ignore first 12 frames (240ms) on follow-up entry so completion chime
+	 * (/tmp/dwm-voice-done-*.wav, ~80ms + room reverb) and TTS tail never trigger
+	 * false follow-up recording!
+	 */
+	int64_t chime_ignore_until_f = is_followup_window ? (scan_f + 12) : 0;
 	int64_t wake_end_f = chime_ignore_until_f;
-	int64_t cmd_start_f = scan_f;
+	int64_t cmd_start_f = chime_ignore_until_f;
+
+	/* Look back up to 18 frames (360ms) in the persistent ring buffer on follow-up
+	 * entry: if the user ALREADY started speaking their follow-up while jarvis was
+	 * finishing, capture the start of their sentence instead of chopping off the first words!
+	 */
+	if (is_followup_window) {
+		pthread_mutex_lock(&g_audio.mtx);
+		double look_thresh = thresh_db;
+		if (g_audio.noise_floor_db + 8.5 > look_thresh)
+			look_thresh = g_audio.noise_floor_db + 8.5;
+		if (look_thresh > -18.0)
+			look_thresh = -18.0;
+		int64_t look_from = (scan_f > 18) ? (scan_f - 18) : 0;
+		int recent_voiced = 0;
+		int64_t first_recent_f = scan_f;
+		for (int64_t f = look_from; f < scan_f; f++) {
+			if (g_audio.db[f % RING_FRAMES] >= look_thresh) {
+				if (recent_voiced == 0)
+					first_recent_f = f;
+				recent_voiced++;
+			}
+		}
+		/* Only treat as active user speech if at least 5 frames (100ms) were voiced
+		 * (longer than the 77ms completion chime).
+		 */
+		if (recent_voiced >= 5) {
+			chime_ignore_until_f = (first_recent_f > 6) ? (first_recent_f - 6) : 0;
+			wake_end_f = chime_ignore_until_f;
+			cmd_start_f = chime_ignore_until_f;
+			scan_f = first_recent_f;
+		}
+		pthread_mutex_unlock(&g_audio.mtx);
+	}
 	int64_t decoded_wake_voiced_f = -1;
 	int64_t decoded_cmd_voiced_f = -1;
 	int decoded_cmd_is_final = 0;
@@ -1657,7 +1729,7 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					const char *candidate = NULL;
 					if (wm == 2 && stripped[0])
 						candidate = stripped;
-					else if (wm == 0 && chime_played)
+					else if (wm == 0)
 						candidate = raw_res;
 
 					decoded_cmd_voiced_f = res_vf;
@@ -1738,14 +1810,22 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				if (db > peak_speech_db)
 					peak_speech_db = db;
 
-				/* Hysteresis keep threshold: always below eff_start_db so unstressed
-				 * trailing syllables (e.g. "-minal" in "terminal") are never clipped.
+				/* Dynamic Peak-Relative & Hysteresis Keep Threshold:
+				 * 1. Base hysteresis: eff_start_db - 3.5 (or nf_db + 4.5) so unstressed
+				 *    syllables are not clipped.
+				 * 2. Peak-relative floor: once the user speaks (e.g. peak_speech_db = -14 dB),
+				 *    any drop >= 13.5 dB below their speech peak counts as silence even if
+				 *    ambient room/fan noise is above eff_start_db - 3.5! This prevents
+				 *    handle_jarvis_wait from getting stuck recording for 12 seconds (600 frames)
+				 *    after a follow-up question.
 				 */
 				double eff_keep_db = eff_start_db - 3.5;
 				if (nf_db + 4.5 > eff_keep_db)
 					eff_keep_db = nf_db + 4.5;
-				if (eff_keep_db > eff_start_db - 2.0)
-					eff_keep_db = eff_start_db - 2.0;
+				if (peak_speech_db - 13.5 > eff_keep_db)
+					eff_keep_db = peak_speech_db - 13.5;
+				if (eff_keep_db > eff_start_db - 1.5)
+					eff_keep_db = eff_start_db - 1.5;
 
 				if (db >= eff_keep_db) {
 					voiced_frames++;
@@ -1938,7 +2018,15 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 				                  lang, eff_prompt, 64, 0);
 			}
 
-			if ((silence_frames * FRAME_MS) >= cmd_silence_ms || cmd_len_f >= 600) {
+			/* Transcript stability & max-utterance endpointing:
+			 *  - Normal silence endpointing: silence_frames * 20ms >= cmd_silence_ms (420ms)
+			 *  - Speculative final stability: if a non-partial decode already finished on all
+			 *    voiced frames and silence_frames >= 12 (240ms), finish immediately!
+			 *  - Hard cap: 400 frames (8.0s) instead of 600 frames (12.0s)
+			 */
+			if ((silence_frames * FRAME_MS) >= cmd_silence_ms ||
+			    (decoded_cmd_is_final && silence_frames >= 12 && live_cmd[0] != '\0') ||
+			    cmd_len_f >= 400) {
 				if (voiced_frames < 8 && live_cmd[0] == '\0') {
 					if (now_ms() < post_wake_deadline_ms) {
 						waiting_post_wake = 1;

@@ -14,16 +14,47 @@ from jarvis_adapters.base import Adapter, AdapterResult
 from jarvis_adapters.inference import AurenLLMBackend, InferenceBackend, LLMBackend, EmbeddingBackend
 
 _AGENT_REASONING_PATTERNS = (
-    r"\b(?:what|whats|why|how|who|where|which|explain|diagnose)\b",
+    r"\b(?:what|whats|why|how|who|where|which|explain|diagnose|describe|clarify|elaborate)\b",
+    r"\b(?:tell\s+me\s+more|give\s+me\s+an\s+example|for\s+example|what\s+about|how\s+about|and\s+what|and\s+why|and\s+how|really|seriously|are\s+you\s+sure)\b",
     r"\b(?:hello|hi|hey|greetings|good\s+morning|good\s+afternoon|good\s+evening|thanks|thank\s+you)\b",
     r"\b(?:are\s+you\s+there|can\s+you\s+hear|talk\s+to\s+me|talk\s+again|speak\s+to\s+me|you\s+awake|you\s+listening)\b",
-    r"\b(?:error|errors|failing|failed|broken|crash|crashing|bug|traceback|exception)\b",
+    r"\b(?:error|errors|failing|failed|broken|crash|crashing|bug|traceback|exception|problem|issue|wrong)\b",
     r"\b(?:eating|hogging|lagging|slow|ram|memory|cpu|port|ports|process|processes)\b",
     r"\b(?:clipboard|selected|highlighted|selection)\b",
     r"\b(?:remember|whenever|preference|preferences|workflow|habit)\b",
-    r"\b(?:actually|instead|undo|repeat\s+that|do\s+that\s+again|what\s+did\s+you)\b",
+    r"\b(?:actually|instead|undo|repeat\s+that|do\s+that\s+again|what\s+did\s+you|say\s+that\s+again)\b",
     r"\b(?:my\s+eyes|killing\s+me|i\s+am\s+bored|im\s+bored|set\s+up\s+my|setup\s+my)\b",
 )
+
+
+def is_non_speech_hallucination(text: str) -> bool:
+    """Return True if an ASR utterance is a single-char stutter ('vvvvvvvv...'), noise artifact, or non-speech fragment."""
+    s = (text or "").strip()
+    if not s:
+        return True
+    alnum = [c.lower() for c in s if c.isalnum()]
+    if len(alnum) < 2:
+        return True
+    # Single-character stutter run >= 4 (e.g. "vvvvvvvvvvv", "aaaaaa")
+    max_run = 1
+    cur_run = 1
+    for i in range(1, len(alnum)):
+        if alnum[i] == alnum[i - 1]:
+            cur_run += 1
+            if cur_run > max_run:
+                max_run = cur_run
+        else:
+            cur_run = 1
+    if max_run >= 4:
+        return True
+    # >= 80% identical character across 4+ characters
+    if len(alnum) >= 4:
+        from collections import Counter
+
+        most_common_cnt = Counter(alnum).most_common(1)[0][1]
+        if most_common_cnt * 10 >= len(alnum) * 8:
+            return True
+    return False
 
 
 class Jarvis:
@@ -406,6 +437,8 @@ class Jarvis:
         return {"error": "Could not resolve utterance", "utterance": clause}
 
     def process(self, utterance: str, active_surface: str = "any") -> Dict[str, Any]:
+        if is_non_speech_hallucination(utterance):
+            return {"error": "Ignored non-speech hallucination", "utterance": utterance}
         # Instant barge-in: interrupt any active TTS speech as soon as a new user utterance arrives
         if hasattr(self.adapter, "interrupt_tts"):
             try:

@@ -626,8 +626,11 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
             lines.append("Learned User Preferences & Memories: " + " | ".join(mem_items))
         if obs.get("session_turns"):
             lines.append("Recent Conversation Turns:")
-            for t in obs["session_turns"][-4:]:
-                lines.append(f"  User: {t.get('utterance', '')} -> Ops: {t.get('ops', '')} (Out: {str(t.get('output', ''))[:100]})")
+            for t in obs["session_turns"][-6:]:
+                lines.append(
+                    f"  User: {t.get('utterance', '')} -> Ops: {t.get('ops', '')} "
+                    f"(Jarvis Reply/Output: {str(t.get('output', ''))[:280]})"
+                )
         return "\n".join(lines)
 
     @staticmethod

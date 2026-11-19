@@ -325,8 +325,8 @@ def execute_utterance(
     if not quiet:
         if op != "answer_question":
             notify_desktop(f"  Jarvis → {op} ({source})", f"“{utterance}”\n▸ {output or error}")
-        if success:
-            play_done_earcon()
+            if success:
+                play_done_earcon()
 
     print(f"[{status}] {source}: {output or error}")
     return 0 if success else 1
