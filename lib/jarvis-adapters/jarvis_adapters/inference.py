@@ -571,6 +571,8 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
             lines.append(f"Focused terminal working directory (cwd): {obs['focused_cwd']}")
         if obs.get("focused_process"):
             lines.append(f"Focused terminal active foreground command: {obs['focused_process']}")
+        if obs.get("system_health"):
+            lines.append(f"Live System Health (RAM / Disk / CPU): {obs['system_health']}")
         if obs.get("terminal_panes"):
             lines.append("Live Terminal / Tmux Panes (recent visible output & active process):")
             for p in obs["terminal_panes"][:3]:
@@ -623,32 +625,36 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
                 lines.append(f"  User: {t.get('utterance', '')} -> Ops: {t.get('ops', '')} (Out: {str(t.get('output', ''))[:100]})")
         return "\n".join(lines)
 
-    def chat_agent_turn(
+    def _post_chat_messages(
         self,
         messages: List[Dict[str, str]],
-        max_tokens: int = 640,
+        max_tokens: int = 512,
     ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
-        """Execute a single turn in the Jarvis ReAct agent loop and parse the resulting JSON tool/DSL step(s)."""
+        """Send chat completion request to axil-auren with fallback routing and parse JSON DSL output."""
         candidate_models = [self.model]
-        for fallback_m in ("kilo-auto/free", "fast"):
+        for fallback_m in ("kilo-auto/free", "fast", "gpt-oss-120b"):
             if fallback_m not in candidate_models:
                 candidate_models.append(fallback_m)
 
         for cur_model in candidate_models:
             try:
+                payload: Dict[str, Any] = {
+                    "model": cur_model,
+                    "messages": messages,
+                    "temperature": 0.0,
+                    "max_tokens": max_tokens,
+                }
+                # Only pass reasoning_effort for models that need explicit low effort (avoid triggering 640-token reasoning loops on Kilo free models)
+                if cur_model not in ("kilo-auto/free",) and not cur_model.startswith("kilo/"):
+                    payload["reasoning_effort"] = "low"
+
                 req = urllib.request.Request(
                     self.endpoint,
-                    data=json.dumps({
-                        "model": cur_model,
-                        "messages": messages,
-                        "temperature": 0.1,
-                        "max_tokens": max_tokens,
-                        "reasoning_effort": "low",
-                    }).encode("utf-8"),
+                    data=json.dumps(payload).encode("utf-8"),
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
-                with urllib.request.urlopen(req, timeout=20.0) as resp:
+                with urllib.request.urlopen(req, timeout=16.0) as resp:
                     raw_body = resp.read().decode("utf-8").strip()
                 if not raw_body:
                     continue
@@ -671,6 +677,14 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
                 print(f"[AurenLLMBackend:{cur_model}] Error: {e}")
                 continue
         return None
+
+    def chat_agent_turn(
+        self,
+        messages: List[Dict[str, str]],
+        max_tokens: int = 512,
+    ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
+        """Execute a single turn in the Jarvis ReAct agent loop and parse the resulting JSON tool/DSL step(s)."""
+        return self._post_chat_messages(messages, max_tokens=max_tokens)
 
     def classify_intent(
         self,
@@ -680,52 +694,13 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
         few_shots: List[Dict[str, Any]],
     ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
         prompt = self._build_prompt(utterance, live_ontology, dsl_schema, few_shots)
-
-        candidate_models = [self.model]
-        for fallback_m in ("kilo-auto/free", "fast"):
-            if fallback_m not in candidate_models:
-                candidate_models.append(fallback_m)
-
-        for cur_model in candidate_models:
-            try:
-                req = urllib.request.Request(
-                    self.endpoint,
-                    data=json.dumps({
-                        "model": cur_model,
-                        "messages": [
-                            {"role": "system", "content": "You output ONLY valid JSON DSL. No markdown, no explanation."},
-                            {"role": "user", "content": prompt},
-                        ],
-                        "temperature": 0.1,
-                        "max_tokens": 512,
-                        "reasoning_effort": "low",
-                    }).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=20.0) as resp:
-                    raw_body = resp.read().decode("utf-8").strip()
-                if not raw_body:
-                    continue
-                data = json.loads(raw_body)
-                msg = (data.get("choices") or [{}])[0].get("message") or {}
-                content = (msg.get("content") or msg.get("reasoning_content") or "").strip()
-                if not content:
-                    continue
-                parsed = _extract_json_payload(content)
-                if isinstance(parsed, dict):
-                    res = normalize_dsl_dict(parsed)
-                    if res:
-                        return res
-                if isinstance(parsed, list):
-                    norm_list = [normalize_dsl_dict(item) for item in parsed if isinstance(item, dict)]
-                    valid_list = [d for d in norm_list if d is not None]
-                    if valid_list:
-                        return valid_list
-            except Exception as e:
-                print(f"[AurenLLMBackend:{cur_model}] Error: {e}")
-                continue
-        return None
+        return self._post_chat_messages(
+            [
+                {"role": "system", "content": "You output ONLY valid JSON DSL. No markdown, no explanation."},
+                {"role": "user", "content": prompt},
+            ],
+            max_tokens=512,
+        )
 
 
 class LLMBackend(AurenLLMBackend):

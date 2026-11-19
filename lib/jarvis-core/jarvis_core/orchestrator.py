@@ -296,17 +296,24 @@ class Jarvis:
         active_surface: str,
         ctx: Dict[str, Any],
     ) -> Dict[str, Any]:
+        t_start = time.time()
         resolved_clause = self.resolve_anaphora(clause, ctx)
+        t_obs0 = time.time()
         live_ontology = self._get_live_ontology(ctx)
+        observe_ms = round((time.time() - t_obs0) * 1000, 1)
         force_agent = self._requires_agent_reasoning(resolved_clause)
 
         # Tier 0 Fast Reflexes (skipped when utterance requires conversational/diagnostic agent reasoning)
+        t_sol0 = time.time()
         ir = None if force_agent else build_ir(resolved_clause, active_surface, live_ontology, self.ontology)
+        solver_ms = round((time.time() - t_sol0) * 1000, 1)
         tier0_threshold = 0.90 if self.agent is not None else 0.85
         if ir and ir.get("score", 0) >= tier0_threshold:
             dsl = self._compile_ir_to_dsl(ir, active_surface=active_surface, ctx=ctx, live_ontology=live_ontology)
             if dsl:
+                t_ex0 = time.time()
                 result = self.adapter.execute(dsl)
+                exec_ms = round((time.time() - t_ex0) * 1000, 1)
                 self._maybe_learn(resolved_clause, dsl, result.success)
                 self._update_context_from_step(dsl, live_ontology, ctx)
                 self.session_journal.append_turn(clause, [dsl], result.output or result.error)
@@ -317,6 +324,12 @@ class Jarvis:
                     "dsl": dsl,
                     "result": result.__dict__,
                     "source": "solver",
+                    "timing_ms": {
+                        "observe_ms": observe_ms,
+                        "solver_ms": solver_ms,
+                        "execute_ms": exec_ms,
+                        "total_ms": round((time.time() - t_start) * 1000, 1),
+                    },
                 }
 
         # Tier 1a: Embedding few-shot cache (only for non-conversational/non-agentic commands)
@@ -324,9 +337,13 @@ class Jarvis:
             for backend in self.inference_backends:
                 if isinstance(backend, AurenLLMBackend):
                     continue
+                t_emb0 = time.time()
                 dsl_or_list = backend.classify_intent(resolved_clause, live_ontology, self.dsl_schema, self.few_shots)
+                emb_ms = round((time.time() - t_emb0) * 1000, 1)
                 if isinstance(dsl_or_list, dict) and self._validate_dsl(dsl_or_list):
+                    t_ex0 = time.time()
                     result = self.adapter.execute(dsl_or_list)
+                    exec_ms = round((time.time() - t_ex0) * 1000, 1)
                     self._maybe_learn(resolved_clause, dsl_or_list, result.success)
                     self._update_context_from_step(dsl_or_list, live_ontology, ctx)
                     self.session_journal.append_turn(clause, [dsl_or_list], result.output or result.error)
@@ -337,11 +354,20 @@ class Jarvis:
                         "dsl": dsl_or_list,
                         "result": result.__dict__,
                         "source": f"inference:{backend.name}",
+                        "timing_ms": {
+                            "observe_ms": observe_ms,
+                            "solver_ms": solver_ms,
+                            "embedding_ms": emb_ms,
+                            "execute_ms": exec_ms,
+                            "total_ms": round((time.time() - t_start) * 1000, 1),
+                        },
                     }
 
         # Tier 1b: Multi-turn ReAct Agent Loop via axil-auren
         if self.agent is not None:
+            t_ag0 = time.time()
             agent_res = self.agent.run(resolved_clause, live_ontology, self.few_shots)
+            agent_ms = round((time.time() - t_ag0) * 1000, 1)
             if agent_res and agent_res.get("dsl"):
                 for step in agent_res.get("steps", []):
                     s_dsl = step.get("dsl")
@@ -351,6 +377,12 @@ class Jarvis:
                     self._maybe_learn(resolved_clause, agent_res["dsl"], agent_res["result"]["success"])
                 agent_res["clause"] = clause
                 agent_res["resolved_clause"] = resolved_clause
+                agent_res["timing_ms"] = {
+                    "observe_ms": observe_ms,
+                    "solver_ms": solver_ms,
+                    "agent_ms": agent_ms,
+                    "total_ms": round((time.time() - t_start) * 1000, 1),
+                }
                 return agent_res
 
         # Offline / fallback solver

@@ -30,7 +30,16 @@
         "media_volume",
         "record_start",
         "record_stop",
-        "wait"
+        "answer_question",
+        "wm_help",
+        "ask_agent",
+        "wait",
+        "inspect_terminal",
+        "inspect_clipboard",
+        "inspect_system",
+        "run_background_command",
+        "remember_fact",
+        "recall_facts"
       ]
     },
     "target": {

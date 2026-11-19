@@ -62,6 +62,10 @@ class DwmAdapter(Adapter):
 
     def __init__(self) -> None:
         self._desktop_apps_cache: Optional[Dict[str, str]] = None
+        self._obs_cache: Optional[Dict[str, Any]] = None
+        self._obs_cache_ts: float = 0.0
+        self._tabs_cache: List[Dict[str, Any]] = []
+        self._tabs_mtime: float = 0.0
 
     @property
     def name(self) -> str:
@@ -999,10 +1003,19 @@ class DwmAdapter(Adapter):
         except Exception:
             return False
 
-    def inspect_terminal(self, target_hint: str = "focused", lines: int = 60) -> Dict[str, Any]:
+    def inspect_terminal(
+        self,
+        target_hint: str = "focused",
+        lines: int = 60,
+        active_only: bool = False,
+        foc: Optional[Dict[str, Any]] = None,
+        other: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Capture live terminal scrollback/tmux pane content, running process, and cwd."""
-        foc = self._get_focused()
-        other = self._get_other_window()
+        if foc is None:
+            foc = self._get_focused()
+        if other is None:
+            other = self._get_other_window()
         win = other if target_hint == "other" else foc
         if not self._is_terminal_window(win) and self._is_terminal_window(other):
             win = other
@@ -1021,22 +1034,29 @@ class DwmAdapter(Adapter):
                         sh_pid = sh_pids[-1]
                         sub_pids = self._run(["pgrep", "-P", sh_pid], timeout=0.25).split()
                         target_p = sub_pids[-1] if sub_pids else sh_pid
-                        fg_process = self._run(["ps", "-p", target_p, "-o", "args="], timeout=0.25).strip()
+                        if os.path.exists(f"/proc/{target_p}/cmdline"):
+                            with open(f"/proc/{target_p}/cmdline", "rb") as cf:
+                                fg_process = cf.read().replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
+                        if not fg_process:
+                            fg_process = self._run(["ps", "-p", target_p, "-o", "args="], timeout=0.25).strip()
         except Exception:
             pass
 
         tmux_panes: List[Dict[str, str]] = []
         try:
             sess_out = self._run(
-                ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}"],
-                timeout=1.2,
+                ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}\t#{window_active}"],
+                timeout=0.5,
             )
             for line in sess_out.splitlines():
                 parts = line.split("\t")
                 if len(parts) >= 3:
                     pane_id, p_cmd, p_path = parts[0], parts[1], parts[2]
                     is_active = (parts[3] == "1") if len(parts) >= 4 else False
-                    cap = self._run(["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{max(10, min(lines, 120))}"], timeout=1.2)
+                    win_active = (parts[4] == "1") if len(parts) >= 5 else True
+                    if active_only and not (is_active and win_active):
+                        continue
+                    cap = self._run(["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{max(10, min(lines, 120))}"], timeout=0.4)
                     non_empty = [ln for ln in cap.splitlines() if ln.strip()]
                     tmux_panes.append({
                         "pane": pane_id,
@@ -1045,6 +1065,8 @@ class DwmAdapter(Adapter):
                         "active": is_active,
                         "tail": "\n".join(non_empty[-lines:]),
                     })
+                    if active_only and len(tmux_panes) >= 2:
+                        break
         except Exception:
             pass
 
@@ -1160,6 +1182,7 @@ class DwmAdapter(Adapter):
         return AdapterResult(True, output=f"sent to Pi agent: {query}")
 
     def execute(self, dsl: Dict[str, Any]) -> AdapterResult:
+        self._obs_cache_ts = 0.0
         op = dsl.get("op")
         if not op:
             return AdapterResult(False, error="DSL missing 'op' field")
@@ -1183,6 +1206,9 @@ class DwmAdapter(Adapter):
             return []
         paths.sort(key=lambda p: os.path.getmtime(p), reverse=True)
         try:
+            mt = os.path.getmtime(paths[0])
+            if mt == self._tabs_mtime and self._tabs_cache:
+                return self._tabs_cache
             raw = _decompress_mozlz4(paths[0])
             j = json.loads(raw.decode("utf-8", errors="ignore"))
             tabs = []
@@ -1196,6 +1222,8 @@ class DwmAdapter(Adapter):
                             "title": cur.get("title", ""),
                             "url": cur.get("url", ""),
                         })
+            self._tabs_mtime = mt
+            self._tabs_cache = tabs
             return tabs
         except Exception:
             return []
@@ -1291,20 +1319,70 @@ class DwmAdapter(Adapter):
                 existing.append(c)
         return existing
 
+    def _get_fast_system_health(self) -> str:
+        """Zero-subprocess system health snapshot (<0.5ms) via /proc and os.statvfs."""
+        parts: List[str] = []
+        try:
+            st = os.statvfs("/")
+            total_gb = (st.f_blocks * st.f_frsize) / (1024 ** 3)
+            free_gb = (st.f_bavail * st.f_frsize) / (1024 ** 3)
+            used_pct = int(round((1.0 - (free_gb / max(total_gb, 0.1))) * 100))
+            parts.append(f"Disk /: {free_gb:.1f} GB free / {total_gb:.0f} GB ({used_pct}% used)")
+        except Exception:
+            pass
+        try:
+            mem_total_kb = 0
+            mem_avail_kb = 0
+            with open("/proc/meminfo", "r", encoding="utf-8") as mf:
+                for line in mf:
+                    if line.startswith("MemTotal:"):
+                        mem_total_kb = int(line.split()[1])
+                    elif line.startswith("MemAvailable:"):
+                        mem_avail_kb = int(line.split()[1])
+                    if mem_total_kb and mem_avail_kb:
+                        break
+            if mem_total_kb:
+                tot_g = mem_total_kb / (1024 ** 2)
+                avail_g = mem_avail_kb / (1024 ** 2)
+                used_g = tot_g - avail_g
+                parts.append(f"RAM: {used_g:.1f} GB used / {tot_g:.1f} GB ({avail_g:.1f} GB free)")
+        except Exception:
+            pass
+        try:
+            with open("/proc/loadavg", "r", encoding="utf-8") as lf:
+                ld = lf.read().split()[:3]
+                parts.append(f"CPU Load: {' '.join(ld)}")
+        except Exception:
+            pass
+        return " | ".join(parts)
+
     def observe(self) -> Dict[str, Any]:
-        """Return live desktop observation for inference context."""
+        """Return live desktop observation for inference context (cached for 350ms across pipeline phases)."""
+        now = time.time()
+        if self._obs_cache is not None and (now - self._obs_cache_ts) < 0.35:
+            return dict(self._obs_cache)
         foc = self._get_focused()
-        term_snapshot = self.inspect_terminal(target_hint="focused", lines=25)
-        return {
+        other = self._get_other_window()
+        term_snapshot = self.inspect_terminal(
+            target_hint="focused",
+            lines=20,
+            active_only=True,
+            foc=foc,
+            other=other,
+        )
+        obs = {
             "focused": foc,
-            "focused_cwd": self._get_focused_cwd(foc),
+            "focused_cwd": term_snapshot.get("cwd") or self._get_focused_cwd(foc),
             "focused_process": term_snapshot.get("foreground_process", ""),
             "terminal_panes": term_snapshot.get("tmux_panes", []),
-            "other": self._get_other_window(),
+            "system_health": self._get_fast_system_health(),
+            "other": other,
             "clients": self._get_clients(),
             "tabs": self._get_firefox_open_tabs(),
-            "audio": self._get_audio_state(),
             "desktop_apps": self._get_desktop_apps(),
             "user_configs": self._get_user_configs(),
             "wm": "dwm",
         }
+        self._obs_cache = obs
+        self._obs_cache_ts = time.time()
+        return dict(obs)
