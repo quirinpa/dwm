@@ -255,7 +255,7 @@ play_chime_async(const char *chime_wav)
 			dup2(fd, STDERR_FILENO);
 			close(fd);
 		}
-		execlp("pw-play", "pw-play", "--volume=0.45", chime_wav, (char *)NULL);
+		execlp("pw-play", "pw-play", "--volume=0.75", chime_wav, (char *)NULL);
 		_exit(0);
 	}
 }
@@ -527,16 +527,16 @@ audio_thread_fn(void *arg)
 		 *    so a noisy room or fan never permanently locks VAD in speech!
 		 */
 		if (db < g_audio.noise_floor_db) {
-			g_audio.noise_floor_db = 0.80 * g_audio.noise_floor_db + 0.20 * db;
-		} else if (!g_audio.in_speech_hint && db < -20.0) {
+			g_audio.noise_floor_db = 0.94 * g_audio.noise_floor_db + 0.06 * db;
+		} else if (!g_audio.in_speech_hint && db < -24.0) {
 			if (g_audio.env_frames < 15) {
 				g_audio.noise_floor_db = 0.75 * g_audio.noise_floor_db + 0.25 * db;
 				g_audio.env_frames++;
-			} else if (db < g_audio.noise_floor_db + 8.0) {
-				g_audio.noise_floor_db = 0.95 * g_audio.noise_floor_db + 0.05 * db;
+			} else if (db < g_audio.noise_floor_db + 12.0) {
+				g_audio.noise_floor_db = 0.94 * g_audio.noise_floor_db + 0.06 * db;
 			}
-		} else if (g_audio.in_speech_hint && db < -24.0) {
-			g_audio.noise_floor_db = 0.992 * g_audio.noise_floor_db + 0.008 * db;
+		} else if (g_audio.in_speech_hint && db < -26.0) {
+			g_audio.noise_floor_db = 0.990 * g_audio.noise_floor_db + 0.010 * db;
 		}
 
 		if (g_audio.noise_floor_db > -25.0)
@@ -1227,18 +1227,13 @@ match_wake_prefix(const char *text, const char *wake_word, char *out_cmd, size_t
 	if (is_hallucination(clean))
 		return 1; /* WAKE_ONLY */
 
-	for (int i = 0; greetings[i]; i++) {
-		if (strcasecmp(clean, greetings[i]) == 0)
-			return 1;
-	}
-
 	int alnum_cnt = 0;
 	for (size_t i = 0; i < clen; i++) {
 		if (isalnum((unsigned char)clean[i]) || ((unsigned char)clean[i] >= 0xC0))
 			alnum_cnt++;
 	}
 
-	if (alnum_cnt >= 3) {
+	if (alnum_cnt >= 2) {
 		if (out_cmd && out_sz > 0)
 			snprintf(out_cmd, out_sz, "%s", clean);
 		return 2; /* WAKE_ONESHOT */
@@ -1247,10 +1242,11 @@ match_wake_prefix(const char *text, const char *wake_word, char *out_cmd, size_t
 }
 
 /* Word-boundary search for wake word anywhere in a short Stage-1 utterance
- * so a slight mic click or breath before "Jarvis" never prevents wake detection.
+ * so a slight mic click, breath, or filler word before "Jarvis" never prevents
+ * wake detection, and extracts any trailing command after the wake word.
  */
 static int
-contains_wake_word(const char *text, const char *wake_word)
+match_wake_anywhere(const char *text, const char *wake_word, char *out_cmd, size_t out_sz)
 {
 	static const char *aliases[] = {
 		"jarvis", "jawvis", "charvis", "jarves", "j\xc3\xa1rvis", "travis",
@@ -1267,16 +1263,22 @@ contains_wake_word(const char *text, const char *wake_word)
 			size_t wlen = strlen(wake_word);
 			if (strncasecmp(p, wake_word, wlen) == 0 &&
 			    (p[wlen] == '\0' || is_punct_or_space(p[wlen])))
-				return 1;
+				return match_wake_prefix(p, wake_word, out_cmd, out_sz);
 		}
 		for (int i = 0; aliases[i]; i++) {
 			size_t alen = strlen(aliases[i]);
 			if (strncasecmp(p, aliases[i], alen) == 0 &&
 			    (p[alen] == '\0' || is_punct_or_space(p[alen])))
-				return 1;
+				return match_wake_prefix(p, wake_word, out_cmd, out_sz);
 		}
 	}
 	return 0;
+}
+
+static int
+contains_wake_word(const char *text, const char *wake_word)
+{
+	return match_wake_anywhere(text, wake_word, NULL, 0) > 0;
 }
 
 static void
@@ -1649,6 +1651,9 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					char stripped[2048];
 					int wm = match_wake_prefix(raw_res, wake_word,
 					                           stripped, sizeof(stripped));
+					if (wm == 0 && !chime_played)
+						wm = match_wake_anywhere(raw_res, wake_word,
+						                         stripped, sizeof(stripped));
 					const char *candidate = NULL;
 					if (wm == 2 && stripped[0])
 						candidate = stripped;
@@ -1823,17 +1828,34 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 
 					int wmatch = match_wake_prefix(heard, wake_word,
 					                               inline_cmd, sizeof(inline_cmd));
-					if (wmatch == 0 && voiced_frames <= 45 &&
-					    contains_wake_word(heard, wake_word)) {
-						wmatch = 1;
+					if (wmatch == 0) {
+						wmatch = match_wake_anywhere(heard, wake_word,
+						                             inline_cmd, sizeof(inline_cmd));
 					}
 
-					if (wmatch == 1 && !cont_wake_check) {
-						/* User spoke ONLY "Jarvis" and paused: play chime, duck speaker, and wait for command */
+					/* Check if the user kept speaking into the ring buffer while
+					 * Whisper was decoding the wake slice! If so, never chop off
+					 * those frames or play a chime over their ongoing voice.
+					 */
+					int spoke_during_decode = 0;
+					pthread_mutex_lock(&g_audio.mtx);
+					int64_t cur_tf = g_audio.total_frames;
+					double chk_keep_db = eff_start_db - 3.5;
+					int v_during = 0;
+					for (int64_t f = end_f; f < cur_tf; f++) {
+						if (g_audio.db[f % RING_FRAMES] >= chk_keep_db)
+							v_during++;
+					}
+					if (v_during >= 2)
+						spoke_during_decode = 1;
+					pthread_mutex_unlock(&g_audio.mtx);
+
+					if (wmatch == 1 && !cont_wake_check && !spoke_during_decode) {
+						/* User spoke ONLY "Jarvis" and genuinely paused: play chime, duck speaker, and wait for command */
 						wake_confirmed = 1;
 						chime_played = 1;
-						duck_speaker_for_command();
 						play_chime_async(chime_wav);
+						duck_speaker_for_command();
 						waiting_post_wake = 1;
 						in_speech = 0;
 						consec_voiced = 0;
@@ -1858,13 +1880,19 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 						if (wmatch == 2 && inline_cmd[0] != '\0') {
 							snprintf(live_cmd, sizeof(live_cmd), "%s", inline_cmd);
 							decoded_cmd_voiced_f = snap_voiced_f;
-							if (!cont_wake_check && snap_voiced_f >= last_voiced_f)
+							if (!cont_wake_check && !spoke_during_decode && snap_voiced_f >= last_voiced_f)
 								decoded_cmd_is_final = 1;
 							write_state_file(state_file, "cmd", live_cmd,
 							                 "  Jarvis Command (Live)...");
 						}
-					} else if (cont_wake_check || voiced_frames > 55) {
-						non_jarvis_utter = 1;
+					} else if (cont_wake_check || voiced_frames > 50) {
+						/* Slide the window forward instead of going deaf for 4 seconds */
+						speech_start_f = (snap_voiced_f > 8) ? (snap_voiced_f - 8) : snap_voiced_f;
+						cmd_start_f = speech_start_f;
+						voiced_frames = (int)(last_voiced_f - speech_start_f);
+						if (voiced_frames < 0)
+							voiced_frames = 0;
+						decoded_wake_voiced_f = snap_voiced_f;
 					}
 				}
 			}
@@ -1948,14 +1976,17 @@ handle_jarvis_wait(int srv, int cli, struct whisper_context *ctx_wake, int n_thr
 					char stripped[2048];
 					int wm = match_wake_prefix(final_raw, wake_word,
 					                           stripped, sizeof(stripped));
+					if (wm == 0 && !chime_played)
+						wm = match_wake_anywhere(final_raw, wake_word,
+						                         stripped, sizeof(stripped));
 					if (wm == 2 && stripped[0]) {
 						snprintf(live_cmd, sizeof(live_cmd), "%s", stripped);
 					} else if (wm == 1 || (!chime_played && live_cmd[0] == '\0' && voiced_frames <= 32 &&
 					                       contains_wake_word(final_raw, wake_word))) {
 						/* User spoke ONLY "Jarvis" and paused: play chime, duck speaker, and wait for command */
-						duck_speaker_for_command();
 						if (!chime_played)
 							play_chime_async(chime_wav);
+						duck_speaker_for_command();
 						chime_played = 1;
 						waiting_post_wake = 1;
 						in_speech = 0;

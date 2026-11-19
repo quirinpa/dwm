@@ -380,6 +380,7 @@ jarvis_start() {
     fi
     rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
     ensure_whisper_server
+    /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
     setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
     sleep 0.12
     refresh_bar
@@ -426,9 +427,15 @@ voice_menu() {
     else
         j_status="OFF / Lockdown (Silver)"
     fi
+    tts_voice=$(cat "$CONF_DIR/tts_voice" 2>/dev/null || echo "bm_daniel")
+    if [ -f "$CONF_DIR/tts_enabled" ] && [ "$(cat "$CONF_DIR/tts_enabled" 2>/dev/null)" = "0" ]; then
+        tts_state="OFF (HUD Only)"
+    else
+        tts_state="ON ($tts_voice)"
+    fi
 
-    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n🎙  Jarvis Wake / Follow-Up Mode [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🤖  Jarvis LLM Inference Mode [current: %s]\n🧹  Clear Learned Voice Shortcuts (intents.learned.conf)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$f_label" "$llm_mode" "$lang" "$model" | \
-        dmenu_voice "Jarvis:" 12 "#f9e2af")
+    choice=$(printf "  Toggle Jarvis Listener On / Off [current: %s]\n🗣  Jarvis Neural Human Voice (Kokoro-82M) [current: %s]\n🎙  Jarvis Wake / Follow-Up Mode [current: %s]\n  Jarvis Lockdown (Turn Off Listener + Lock Screen)\n🤖  Jarvis LLM Inference Mode [current: %s]\n🧹  Clear Learned Voice Shortcuts (intents.learned.conf)\n🖥  Open Jarvis Pi Terminal (tmux attach)\n⏹  Stop Running Jarvis Pi Task\n🔄  Reset Jarvis Pi Session (/new)\n🔍  Jarvis Semantic Command Bar (Mod+a)\n  Window Manager Instructions & Shortcuts (Mod+F1)\n🌐  Whisper Language [current: %s]\n🧠  Whisper Model [current: %s]\n" "$j_status" "$tts_state" "$f_label" "$llm_mode" "$lang" "$model" | \
+        dmenu_voice "Jarvis:" 13 "#f9e2af")
 
     case "$choice" in
         *"Toggle Jarvis Listener"*)
@@ -436,6 +443,23 @@ voice_menu() {
                 jarvis_stop
             else
                 jarvis_start
+            fi
+            ;;
+        *"Jarvis Neural Human Voice"*)
+            vchoice=$(printf "off         (Silent HUD — Dunst notifications only, default)\nbm_daniel   (Kokoro-82M British Butler Male — Daniel)\nbm_george   (Kokoro-82M British Warm Male — George)\nbm_fable    (Kokoro-82M British Expressive Male — Fable)\nam_michael  (Kokoro-82M American Deep Male — Michael)\nam_fenrir   (Kokoro-82M American Crisp Male — Fenrir)\nbf_emma     (Kokoro-82M British Female — Emma)\naf_heart    (Kokoro-82M American Female — Heart)\npiper:gb    (Piper Ultra-Fast British Male)\npiper:us    (Piper Ultra-Fast American Voice)\n" | \
+                dmenu_voice "Neural Voice:" 10 "#f9e2af")
+            if [ -n "$vchoice" ]; then
+                v_id=$(printf '%s\n' "$vchoice" | awk '{print $1}')
+                if [ "$v_id" = "off" ]; then
+                    printf '0\n' > "$CONF_DIR/tts_enabled"
+                    notify_voice "voice" 2500 "🗣  Jarvis Voice Disabled" "Silent HUD mode active."
+                else
+                    printf '1\n' > "$CONF_DIR/tts_enabled"
+                    printf '%s\n' "$v_id" > "$CONF_DIR/tts_voice"
+                    /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
+                    notify_voice "voice" 2800 "🗣  Jarvis Neural Voice Active" "Voice set to: $v_id"
+                    /home/quirinpa/.local/bin/dwm-tts speak "At your service." >/dev/null 2>&1 &
+                fi
             fi
             ;;
         *"Jarvis Wake / Follow-Up Mode"*)
@@ -554,8 +578,22 @@ case "${1:-toggle}" in
             echo "off"
         fi
         ;;
+    tts-on)
+        printf '1\n' > "$CONF_DIR/tts_enabled"
+        if [ -n "${2:-}" ]; then
+            printf '%s\n' "$2" > "$CONF_DIR/tts_voice"
+        elif [ ! -f "$CONF_DIR/tts_voice" ]; then
+            printf 'bm_daniel\n' > "$CONF_DIR/tts_voice"
+        fi
+        /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
+        notify_voice "voice" 2500 "🗣  Jarvis Neural Voice ON" "Voice: $(cat "$CONF_DIR/tts_voice" 2>/dev/null)"
+        ;;
+    tts-off)
+        printf '0\n' > "$CONF_DIR/tts_enabled"
+        notify_voice "voice" 2500 "🗣  Jarvis Neural Voice OFF" "Silent HUD mode active."
+        ;;
     *)
-        echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|pi-show|pi-stop|pi-reset|server-start}" >&2
+        echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|tts-on [voice]|tts-off|pi-show|pi-stop|pi-reset|server-start}" >&2
         exit 1
         ;;
 esac

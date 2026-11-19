@@ -57,3 +57,30 @@ class Adapter(ABC):
     def validate_dsl(self, dsl: Dict[str, Any]) -> bool:
         """Validate DSL against schema (optional, can be overridden)."""
         return True
+
+    def confirm_action(self, description: str) -> bool:
+        """Confirm a potentially destructive action (default True in base/mock)."""
+        return True
+
+    def inspect_terminal(self, target_hint: str = "focused", lines: int = 60) -> Dict[str, Any]:
+        """Inspect terminal pane/scrollback and cwd."""
+        obs = self.observe()
+        return {
+            "window": obs.get("focused", {}),
+            "cwd": obs.get("focused_cwd", "~"),
+            "tmux_panes": obs.get("tmux_panes", []),
+        }
+
+    def inspect_clipboard(self) -> Dict[str, str]:
+        """Inspect X11/Wayland primary selection and clipboard."""
+        obs = self.observe()
+        return obs.get("clipboard", {"primary_selection": "", "clipboard": ""})
+
+    def inspect_system(self, aspect: str = "all") -> Dict[str, Any]:
+        """Inspect system health (CPU, RAM, processes, disk, ports)."""
+        obs = self.observe()
+        return obs.get("system_health", {"aspect": aspect})
+
+    def run_background_command(self, command: str, cwd: Optional[str] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        """Execute a non-interactive probe command and return stdout/stderr."""
+        return {"command": command, "cwd": cwd or "~", "returncode": 0, "stdout": "", "stderr": ""}

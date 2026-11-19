@@ -35,6 +35,34 @@ QUERIES = [
 
 
 def parse_dry_run(out: str):
+    import json as _json
+
+    raw = out.strip()
+    if raw.startswith("DRY_RUN:"):
+        raw = raw[len("DRY_RUN:") :].strip()
+    try:
+        data = _json.loads(raw)
+        if isinstance(data, list):
+            ops = []
+            scores = []
+            sources = []
+            for step in data:
+                dsl = step.get("dsl") or {}
+                ir = step.get("ir") or {}
+                ops.append(dsl.get("op", "?"))
+                scores.append(f"{ir.get('score', 1.0):.2f}")
+                sources.append(step.get("source", "?"))
+            return "ok", "+".join(scores), "+".join(sources), " -> ".join(ops)
+        if isinstance(data, dict):
+            dsl = data.get("dsl") or {}
+            ir = data.get("ir") or {}
+            op = dsl.get("op", "?")
+            score = f"{ir.get('score', dsl.get('meta', {}).get('source_ir_score', 1.0)):.2f}"
+            source = data.get("source", "?")
+            detail = _json.dumps(dsl.get("target") or dsl.get("args") or {}, separators=(",", ":"))
+            return ("ok" if dsl else "fail"), score, source, f"{op} {detail}"
+    except Exception:
+        pass
     s_idx = out.find("score=")
     i_idx = out.find("intent=")
     c_idx = out.find("cmd=")

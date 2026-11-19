@@ -1,0 +1,317 @@
+#!/home/quirinpa/.local/share/dwm-voice/venv/bin/python3
+"""dwm-tts: Persistent Zero-Latency Human Neural TTS Daemon & Client (Kokoro-82M + Piper fallback)."""
+
+import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import wave
+
+USER = os.environ.get("USER", "quirinpa")
+SOCK_PATH = f"/tmp/dwm-tts-{USER}.sock"
+PID_PATH = f"/tmp/dwm-tts-{USER}.pid"
+CONF_DIR = os.path.expanduser("~/.config/dwm-voice")
+VOICE_CONF = os.path.join(CONF_DIR, "tts_voice")
+
+KOKORO_MODEL = os.path.expanduser("~/.local/share/kokoro/kokoro-v1.0.int8.onnx")
+KOKORO_VOICES = os.path.expanduser("~/.local/share/kokoro/voices-v1.0.bin")
+PIPER_MODEL_GB = os.path.expanduser("~/.local/share/piper/en_GB-northern_english_male-medium.onnx")
+PIPER_MODEL_US = os.path.expanduser("~/.local/share/piper/en_US-lessac-high.onnx")
+
+DEFAULT_VOICE = "bm_daniel"
+
+
+def get_configured_voice() -> str:
+    env_v = os.environ.get("JARVIS_VOICE", "").strip()
+    if env_v:
+        return env_v
+    try:
+        if os.path.exists(VOICE_CONF):
+            with open(VOICE_CONF, "r", encoding="utf-8") as f:
+                v = f.read().strip()
+                if v:
+                    return v
+    except Exception:
+        pass
+    return DEFAULT_VOICE
+
+
+def set_mic_mute(muted: bool) -> None:
+    val = "1" if muted else "0"
+    try:
+        subprocess.run(
+            ["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", val],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=0.5,
+            check=False,
+        )
+    except Exception:
+        pass
+
+
+def play_wav(wav_path: str) -> None:
+    for player_cmd in (["pw-play", wav_path], ["paplay", wav_path], ["aplay", "-q", wav_path]):
+        try:
+            res = subprocess.run(
+                player_cmd,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=20.0,
+                check=False,
+            )
+            if res.returncode == 0:
+                return
+        except FileNotFoundError:
+            continue
+        except Exception:
+            break
+
+
+def clean_speech_text(text: str) -> str:
+    s = re.sub(r"[`*_#\[\]<>]", "", (text or "").strip())
+    s = re.sub(r"https?://\S+", "link", s)
+    s = " ".join(s.split())
+    if len(s) > 260:
+        cut = s[:260].rfind(". ")
+        s = (s[: cut + 1] if cut > 60 else s[:260]).strip()
+    return s
+
+
+class NeuralTTSEngine:
+    def __init__(self) -> None:
+        self.kokoro = None
+        self.piper_gb = None
+        self.piper_us = None
+        self._load_models()
+
+    def _load_models(self) -> None:
+        if os.path.exists(KOKORO_MODEL) and os.path.exists(KOKORO_VOICES):
+            try:
+                from kokoro_onnx import Kokoro
+                self.kokoro = Kokoro(KOKORO_MODEL, KOKORO_VOICES)
+            except Exception:
+                self.kokoro = None
+        if os.path.exists(PIPER_MODEL_GB):
+            try:
+                from piper.voice import PiperVoice
+                self.piper_gb = PiperVoice.load(PIPER_MODEL_GB)
+            except Exception:
+                self.piper_gb = None
+        if os.path.exists(PIPER_MODEL_US):
+            try:
+                from piper.voice import PiperVoice
+                self.piper_us = PiperVoice.load(PIPER_MODEL_US)
+            except Exception:
+                self.piper_us = None
+
+    def synthesize_to_wav(self, text: str, voice: str, out_wav: str) -> bool:
+        text = clean_speech_text(text)
+        if not text:
+            return False
+
+        # 1. Kokoro-82M human-grade neural voice
+        if self.kokoro is not None and not voice.startswith("piper:"):
+            try:
+                import soundfile as sf
+                v_name = voice if voice in self.kokoro.get_voices() else DEFAULT_VOICE
+                lang = "en-gb" if v_name.startswith("b") else "en-us"
+                samples, sr = self.kokoro.create(text, voice=v_name, speed=1.08, lang=lang)
+                sf.write(out_wav, samples, sr)
+                return True
+            except Exception:
+                pass
+
+        # 2. Piper ONNX ultra-fast fallback
+        p_model = self.piper_us if voice == "piper:us" else (self.piper_gb or self.piper_us)
+        if p_model is not None:
+            try:
+                with wave.open(out_wav, "wb") as wf:
+                    p_model.synthesize_wav(text, wf)
+                return True
+            except Exception:
+                pass
+
+        return False
+
+
+def run_daemon() -> int:
+    if os.path.exists(SOCK_PATH):
+        try:
+            os.unlink(SOCK_PATH)
+        except Exception:
+            pass
+
+    os.makedirs(CONF_DIR, exist_ok=True)
+    with open(PID_PATH, "w", encoding="utf-8") as f:
+        f.write(f"{os.getpid()}\n")
+
+    engine = NeuralTTSEngine()
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(SOCK_PATH)
+    srv.listen(4)
+
+    try:
+        while True:
+            conn, _ = srv.accept()
+            try:
+                data = conn.recv(4096).decode("utf-8", errors="ignore").strip()
+                if not data:
+                    conn.close()
+                    continue
+                if data == "PING":
+                    conn.sendall(b"PONG\n")
+                    conn.close()
+                    continue
+                if data == "STOP":
+                    conn.sendall(b"OK\n")
+                    conn.close()
+                    break
+
+                # Format: SPEAK|<voice>|<text>
+                parts = data.split("|", 2)
+                if len(parts) == 3 and parts[0] == "SPEAK":
+                    voice = parts[1].strip() or get_configured_voice()
+                    text = parts[2].strip()
+                else:
+                    voice = get_configured_voice()
+                    text = data
+
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    wav_path = tf.name
+
+                try:
+                    ok = engine.synthesize_to_wav(text, voice, wav_path)
+                    if ok:
+                        set_mic_mute(True)
+                        try:
+                            play_wav(wav_path)
+                            time.sleep(0.18)
+                        finally:
+                            set_mic_mute(False)
+                        conn.sendall(b"OK\n")
+                    else:
+                        conn.sendall(b"ERR\n")
+                finally:
+                    try:
+                        os.unlink(wav_path)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+    finally:
+        try:
+            srv.close()
+        except Exception:
+            pass
+        for p in (SOCK_PATH, PID_PATH):
+            try:
+                if os.path.exists(p):
+                    os.unlink(p)
+            except Exception:
+                pass
+    return 0
+
+
+def _send_to_daemon(payload: str, timeout: float = 20.0) -> bool:
+    if not os.path.exists(SOCK_PATH):
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(SOCK_PATH)
+        s.sendall(payload.encode("utf-8"))
+        resp = s.recv(64).decode("utf-8", errors="ignore").strip()
+        s.close()
+        return resp in ("OK", "PONG")
+    except Exception:
+        return False
+
+
+def ensure_daemon_started() -> bool:
+    if _send_to_daemon("PING", timeout=0.6):
+        return True
+    subprocess.Popen(
+        [sys.executable, os.path.abspath(__file__), "daemon"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    deadline = time.time() + 4.0
+    while time.time() < deadline:
+        if _send_to_daemon("PING", timeout=0.4):
+            return True
+        time.sleep(0.08)
+    return False
+
+
+def speak(text: str, voice: str = "") -> int:
+    clean = clean_speech_text(text)
+    if not clean:
+        return 0
+    v = voice or get_configured_voice()
+    if ensure_daemon_started():
+        if _send_to_daemon(f"SPEAK|{v}|{clean}", timeout=25.0):
+            return 0
+
+    # Direct one-shot fallback if daemon couldn't start
+    engine = NeuralTTSEngine()
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        wav_path = tf.name
+    try:
+        if engine.synthesize_to_wav(clean, v, wav_path):
+            set_mic_mute(True)
+            try:
+                play_wav(wav_path)
+                time.sleep(0.18)
+            finally:
+                set_mic_mute(False)
+            return 0
+    finally:
+        try:
+            os.unlink(wav_path)
+        except Exception:
+            pass
+    return 1
+
+
+def main() -> int:
+    if len(sys.argv) < 2:
+        print("Usage: dwm-tts {speak <text>|daemon|start|stop|voice [name]}", file=sys.stderr)
+        return 1
+    cmd = sys.argv[1]
+    if cmd == "daemon":
+        return run_daemon()
+    if cmd == "start":
+        return 0 if ensure_daemon_started() else 1
+    if cmd == "stop":
+        _send_to_daemon("STOP", timeout=1.0)
+        return 0
+    if cmd == "voice":
+        if len(sys.argv) >= 3:
+            os.makedirs(CONF_DIR, exist_ok=True)
+            with open(VOICE_CONF, "w", encoding="utf-8") as f:
+                f.write(sys.argv[2].strip() + "\n")
+            print(sys.argv[2].strip())
+            return 0
+        print(get_configured_voice())
+        return 0
+    if cmd == "speak":
+        text = " ".join(sys.argv[2:]).strip()
+        return speak(text)
+    # Default: treat all args as text to speak
+    return speak(" ".join(sys.argv[1:]).strip())
+
+
+if __name__ == "__main__":
+    sys.exit(main())

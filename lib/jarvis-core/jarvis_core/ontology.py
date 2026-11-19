@@ -47,7 +47,7 @@ class SemanticOntology:
         self.clause_seps: List[str] = []
         self.verb_phrases: Dict[str, List[Tuple[str, float]]] = {}
         self.verb_head_words: Set[str] = set()
-        self.entity_phrases: Dict[str, Tuple[str, str]] = {}
+        self.entity_phrases: Dict[str, List[Tuple[str, str]]] = {}
         self.all_vocab_words: Set[str] = set()
         self.self_locatives: Dict[str, List[str]] = {}
         self.capabilities: List[Dict[str, Any]] = []
@@ -95,7 +95,9 @@ class SemanticOntology:
                 for p in item.get("phrases", []):
                     pc = clean_phrase(p)
                     if pc:
-                        self.entity_phrases[pc] = (e_type, eid)
+                        lst = self.entity_phrases.setdefault(pc, [])
+                        if (e_type, eid) not in lst:
+                            lst.append((e_type, eid))
                         self.all_vocab_words.update(pc.split())
 
         self.self_locatives = self.raw.get("self_locatives", {})
@@ -103,9 +105,18 @@ class SemanticOntology:
 
     def build_live_entity_index(
         self, env_obs: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Tuple[str, str]]:
+    ) -> Dict[str, List[Tuple[str, str]]]:
         """Merge static ontology entities with live environment entities."""
-        merged = dict(self.entity_phrases)
+        merged: Dict[str, List[Tuple[str, str]]] = {
+            k: list(v) for k, v in self.entity_phrases.items()
+        }
+
+        def _add_entity(phrase_clean: str, etype: str, eid: str) -> None:
+            if not phrase_clean:
+                return
+            lst = merged.setdefault(phrase_clean, [])
+            if (etype, eid) not in lst:
+                lst.append((etype, eid))
 
         # Dynamically add real $HOME subdirectories
         home_dir = os.path.expanduser("~")
@@ -119,26 +130,34 @@ class SemanticOntology:
                     if ec and len(ec) >= 2:
                         rel = f"~/{entry}"
                         for suffix in ("", " folder", " directory"):
-                            key = (ec + suffix).strip()
-                            if key not in merged:
-                                merged[key] = ("fs.location", rel)
+                            _add_entity((ec + suffix).strip(), "fs.location", rel)
         except Exception:
             pass
 
+        # Dynamically index discovered .desktop GUI apps from env_obs
+        if env_obs and isinstance(env_obs.get("desktop_apps"), dict):
+            for app_name, app_exec in env_obs["desktop_apps"].items():
+                ac = clean_phrase(app_name)
+                if ac and len(ac) >= 3 and ac not in self.verb_phrases:
+                    _add_entity(ac, "gui.application", app_exec)
+
+        # Dynamically index live windows and browser tabs
         if env_obs and isinstance(env_obs.get("entities"), dict):
             for e_type, items in env_obs["entities"].items():
                 for it in items:
                     eid = it.get("id", "")
                     for nm in it.get("names", []):
                         nc = clean_phrase(nm)
-                        if nc and nc not in merged:
-                            merged[nc] = (e_type, eid)
+                        if nc and len(nc) >= 2:
+                            _add_entity(nc, e_type, eid)
+                            for suffix in (" window", " tab"):
+                                _add_entity((nc + suffix).strip(), e_type, eid)
         return merged
 
     def normalize_asr_utterance(
-        self, raw_text: str, live_entities: Optional[Dict[str, Tuple[str, str]]] = None
+        self, raw_text: str, live_entities: Optional[Dict[str, List[Tuple[str, str]]]] = None
     ) -> str:
-        """Vocabulary-driven ASR post-processor (zero ad-hoc hardcoded word replacements)."""
+        """Vocabulary-driven ASR post-processor."""
         s = (raw_text or "").strip()
         if not s:
             return ""
@@ -178,7 +197,7 @@ class SemanticOntology:
                     folded.append("lofi")
                     i += 2
                     continue
-                if joined in vocab and pair_raw not in self.verb_phrases:
+                if joined in vocab and pair_raw not in self.verb_phrases and pair_raw not in (live_entities or {}):
                     folded.append(joined)
                     i += 2
                     continue

@@ -250,19 +250,41 @@ def execute_utterance(
     eff_surface = surface if surface != "any" else detect_active_surface(jarvis)
 
     if dry_run:
-        from jarvis_core.solver import build_ir
-        from jarvis_core.ontology import SemanticOntology
-
-        ontology = SemanticOntology()
-        live_ontology = jarvis.adapter.observe()
-        clauses = jarvis.split_clauses(utterance)
-        irs = [build_ir(jarvis.resolve_anaphora(c, jarvis._load_context()), eff_surface, live_ontology, ontology) for c in clauses]
-        payload = irs[0] if len(irs) == 1 else irs
+        ctx = jarvis._load_context()
+        live_ontology = jarvis._get_live_ontology(ctx)
+        clauses = [utterance] if jarvis._requires_agent_reasoning(utterance) else jarvis.split_clauses(utterance)
+        steps = []
+        for c in clauses:
+            res_c = jarvis.resolve_anaphora(c, ctx)
+            force_agent = jarvis._requires_agent_reasoning(res_c)
+            ir = None if force_agent else jarvis.solver.solve_clause(res_c, eff_surface, live_ontology)
+            dsl = None
+            source = "unresolved"
+            tier0_thresh = 0.90 if jarvis.agent is not None else 0.85
+            if ir and ir.get("score", 0) >= tier0_thresh:
+                dsl = jarvis._compile_ir_to_dsl(ir, active_surface=eff_surface, ctx=ctx, live_ontology=live_ontology)
+                source = "solver"
+            if not dsl:
+                for backend in jarvis.inference_backends:
+                    if force_agent and not hasattr(backend, "chat_agent_turn"):
+                        continue
+                    cand = backend.classify_intent(res_c, live_ontology, jarvis.dsl_schema, jarvis.few_shots)
+                    if isinstance(cand, list) and cand:
+                        cand = cand[-1]
+                    if isinstance(cand, dict) and jarvis._validate_dsl(cand):
+                        dsl = cand
+                        source = f"inference:{backend.name}"
+                        break
+            if not dsl and ir:
+                dsl = jarvis._compile_ir_to_dsl(ir, active_surface=eff_surface, ctx=ctx, live_ontology=live_ontology)
+                source = "solver:low_confidence"
+            steps.append({"clause": c, "resolved_clause": res_c, "ir": ir, "dsl": dsl, "source": source})
+        payload = steps[0] if len(steps) == 1 else steps
         if as_json:
             print(json.dumps(payload, indent=2))
         else:
-            print(f"IR: {json.dumps(payload, separators=(',', ':'))}")
-        return 0
+            print(f"DRY_RUN: {json.dumps(payload, separators=(',', ':'))}")
+        return 0 if all(s.get("dsl") is not None for s in steps) else 1
 
     try:
         with open(ACTING_PID_FILE, "w") as f:
@@ -301,7 +323,10 @@ def execute_utterance(
     status = "OK" if success else "FAIL"
 
     if not quiet:
-        notify_desktop(f"  Jarvis → {op} ({source})", f"“{utterance}”\n▸ {output or error}")
+        if op == "answer_question":
+            notify_desktop(f"  Jarvis ({source})", output or error, timeout=8000)
+        else:
+            notify_desktop(f"  Jarvis → {op} ({source})", f"“{utterance}”\n▸ {output or error}")
         if success:
             play_done_earcon()
 
@@ -342,7 +367,7 @@ def main() -> int:
         return set_llm_mode(rest[0], quiet=args.quiet)
 
     if subcmd == "clear-learned" and not rest:
-        for p in (EMBED_CACHE_PATH, f"/tmp/jarvis-{USER}.context.json"):
+        for p in (EMBED_CACHE_PATH, f"/tmp/jarvis-{USER}.context.json", f"/tmp/jarvis-{USER}.session.json"):
             try:
                 if os.path.exists(p):
                     os.remove(p)

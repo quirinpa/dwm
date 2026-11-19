@@ -60,6 +60,9 @@ def _decompress_mozlz4(path: str) -> bytes:
 class DwmAdapter(Adapter):
     """dwm window manager adapter."""
 
+    def __init__(self) -> None:
+        self._desktop_apps_cache: Optional[Dict[str, str]] = None
+
     @property
     def name(self) -> str:
         return "dwm"
@@ -91,7 +94,16 @@ class DwmAdapter(Adapter):
             "media_volume",
             "record_start",
             "record_stop",
+            "answer_question",
+            "wm_help",
+            "ask_agent",
             "wait",
+            "inspect_terminal",
+            "inspect_clipboard",
+            "inspect_system",
+            "run_background_command",
+            "remember_fact",
+            "recall_facts",
         ]
 
     def _run(self, args: List[str], timeout: float = 3.0, input_bytes: Optional[bytes] = None) -> str:
@@ -120,6 +132,74 @@ class DwmAdapter(Adapter):
     def _is_terminal_window(self, win: Dict[str, Any]) -> bool:
         cls = (win.get("class") or "").lower()
         return any(tc in cls for tc in TERMINAL_CLASSES)
+
+    def _is_idle_shell_terminal(self, win: Dict[str, Any]) -> bool:
+        """Return True only if win is a terminal sitting at an idle interactive shell prompt (not running a TUI/app like pi, nvim, htop)."""
+        if not self._is_terminal_window(win):
+            return False
+        wid = (win.get("id") or "").strip()
+        if not wid:
+            return False
+        try:
+            out = self._run(["xprop", "-id", wid, "_NET_WM_PID"], timeout=0.4)
+            m = re.search(r"=\s*(\d+)", out)
+            if not m:
+                return False
+            wpid = m.group(1)
+            sh_pids = self._run(["pgrep", "-P", wpid], timeout=0.3).split()
+            if not sh_pids:
+                return False
+            sh_pid = sh_pids[-1]
+            sub_pids = self._run(["pgrep", "-P", sh_pid], timeout=0.3).split()
+            if not sub_pids:
+                # Interactive shell has no foreground child process -> idle prompt!
+                return True
+
+            # Check if any child of the shell is a tmux client
+            clients_out = self._run(
+                ["tmux", "list-clients", "-F", "#{client_pid}\t#{pane_current_command}\t#{pane_pid}"],
+                timeout=0.4,
+            )
+            for line in clients_out.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 3 and parts[0].strip() in sub_pids:
+                    pane_cmd = parts[1].strip().lower()
+                    pane_pid = parts[2].strip()
+                    if pane_cmd not in ("bash", "zsh", "sh", "fish", "dash", "-bash", "-zsh", "-sh"):
+                        return False
+                    pane_children = self._run(["pgrep", "-P", pane_pid], timeout=0.3).split()
+                    return len(pane_children) == 0
+
+            # Foreground process is running directly inside the shell (e.g. nvim, ssh, python, pi)
+            return False
+        except Exception:
+            return False
+
+    def _is_interactive_remote_session(self, win: Dict[str, Any]) -> bool:
+        """Return True if win is a terminal currently running an interactive ssh session."""
+        if not self._is_terminal_window(win):
+            return False
+        wid = (win.get("id") or "").strip()
+        if not wid:
+            return False
+        try:
+            out = self._run(["xprop", "-id", wid, "_NET_WM_PID"], timeout=0.3)
+            m = re.search(r"=\s*(\d+)", out)
+            if not m:
+                return False
+            wpid = m.group(1)
+            sh_pids = self._run(["pgrep", "-P", wpid], timeout=0.25).split()
+            if not sh_pids:
+                return False
+            sh_pid = sh_pids[-1]
+            sub_pids = self._run(["pgrep", "-P", sh_pid], timeout=0.25).split()
+            for sp in sub_pids:
+                comm = self._run(["ps", "-p", sp, "-o", "comm="], timeout=0.25).strip().lower()
+                if comm == "ssh":
+                    return True
+        except Exception:
+            pass
+        return False
 
     def _get_other_window(self) -> Dict[str, Any]:
         out = self._dwm_msg("other")
@@ -320,7 +400,7 @@ class DwmAdapter(Adapter):
             if not m:
                 m = re.search(r'/watch\?v=([a-zA-Z0-9_-]{11})', html)
             if m:
-                return f"https://www.youtube.com/watch?v={m.group(1)}"
+                return f"https://www.youtube.com/watch?v={m.group(1)}&autoplay=1"
         except Exception:
             pass
         return search_url
@@ -447,9 +527,32 @@ class DwmAdapter(Adapter):
         return AdapterResult(True, output=f"opened terminal: {cmd}")
 
     def _op_open_application(self, dsl: Dict[str, Any]) -> AdapterResult:
-        identifier = dsl.get("target", {}).get("identifier") or dsl.get("target", {}).get("command")
+        target = dsl.get("target", {}) or {}
+        args = dsl.get("args", {}) or {}
+        identifier = (
+            target.get("identifier")
+            or target.get("command")
+            or target.get("app")
+            or target.get("name")
+            or args.get("identifier")
+            or args.get("app")
+            or args.get("command")
+            or args.get("name")
+            or ""
+        ).strip()
         if not identifier:
             return AdapterResult(False, error="open_application requires target.identifier")
+
+        # Resolve human application names via discovered .desktop entries (e.g. "calculator" -> "gnome-calculator")
+        apps = self._get_desktop_apps()
+        id_low = identifier.lower()
+        if id_low in apps:
+            identifier = apps[id_low]
+        elif id_low.startswith("a ") and id_low[2:] in apps:
+            identifier = apps[id_low[2:]]
+        elif id_low.startswith("the ") and id_low[4:] in apps:
+            identifier = apps[id_low[4:]]
+
         if identifier in ("terminal", "st", "xterm"):
             return self._op_open_terminal({"target": {"command": "st" if identifier == "terminal" else identifier}})
 
@@ -489,11 +592,13 @@ class DwmAdapter(Adapter):
 
     def _op_spawn_shell_command(self, dsl: Dict[str, Any]) -> AdapterResult:
         target = dsl.get("target", {})
+        args = dsl.get("args", {})
         cmd = target.get("command")
         if not cmd:
             return AdapterResult(False, error="spawn_shell_command requires target.command")
 
         relation = target.get("relation", "")
+        new_term = bool(target.get("new_terminal") or args.get("new_terminal"))
         prev_foc = self._get_focused()
 
         if relation == "other":
@@ -513,10 +618,10 @@ class DwmAdapter(Adapter):
                 self._wait_window_focused(prev_foc["id"], timeout=0.4)
             return AdapterResult(True, output=f"ran in other window ({other['class']}): {cmd}")
 
-        # Normal case: If already focused on a terminal window, STAY in the current terminal!
-        if not self._is_terminal_window(prev_foc):
-            # Not currently in a terminal: spawn a fresh terminal on the current workspace
-            # so we never hijack an unrelated background terminal session
+        # Normal case: If already focused on an idle shell terminal (or an active interactive SSH shell session)
+        # and not explicitly requesting a new terminal, type into it!
+        # Otherwise (focused on a non-terminal OR a terminal busy running a local TUI/app like pi/nvim/htop), spawn a fresh terminal!
+        if new_term or not (self._is_idle_shell_terminal(prev_foc) or self._is_interactive_remote_session(prev_foc)):
             self._op_open_terminal({"target": {"command": "st"}})
 
         self._clear_modifiers()
@@ -648,6 +753,11 @@ class DwmAdapter(Adapter):
 
     def _op_window_close(self, dsl: Dict[str, Any]) -> AdapterResult:
         target_dict = dsl.get("target", {})
+        kind = (target_dict.get("kind") or "").lower()
+        if kind == "tab":
+            self._clear_modifiers()
+            self._xdotool("key", "--clearmodifiers", "ctrl+w")
+            return AdapterResult(True, output="closed browser tab")
         target = target_dict.get("identifier")
         if not target and target_dict.get("relation") == "other":
             other = self._get_other_window()
@@ -664,22 +774,55 @@ class DwmAdapter(Adapter):
         return AdapterResult(False, error="no window to close")
 
     def _op_media_play(self, dsl: Dict[str, Any]) -> AdapterResult:
-        query = dsl.get("target", {}).get("query", "")
-        if query and query.lower() not in ("music", "song", "audio", "track"):
+        query = (dsl.get("target", {}).get("query") or "").strip()
+        q_clean = re.sub(r"[^a-z0-9\s]", "", query.lower()).strip()
+        resume_phrases = {
+            "",
+            "music",
+            "song",
+            "audio",
+            "track",
+            "video",
+            "it",
+            "this",
+            "that",
+            "play",
+            "press play",
+            "hit play",
+            "resume",
+            "unpause",
+            "continue",
+            "start playing",
+            "keep playing",
+        }
+        if query and q_clean not in resume_phrases:
+            # Pause any existing MPRIS player before launching a new YouTube track
+            self._mpris_control("Pause")
             watch_url = self._resolve_youtube_url(query)
             subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self._focus_firefox()
-            if self._wait_audio_playing(timeout=3.2):
+            if self._wait_audio_playing(timeout=3.5):
                 return AdapterResult(True, output=f"playing: {query}")
-            # Nudge YouTube player with 'k' if autoplay was blocked
+            # Wait briefly for YouTube DOM to finish hydrating if tab just opened, then try MPRIS Play or click player center
+            time.sleep(0.8)
+            if self._mpris_control("Play") and self._wait_audio_playing(timeout=1.5):
+                return AdapterResult(True, output=f"playing: {query}")
+            wx, wy, ww, wh = self._get_win_geometry()
             self._clear_modifiers()
-            self._xdotool("key", "--clearmodifiers", "k")
-            if self._wait_audio_playing(timeout=1.5):
+            self._xdotool("mousemove", "--sync", str(wx + ww // 2), str(wy + int(wh * 0.45)), "click", "1")
+            if self._wait_audio_playing(timeout=1.8):
                 return AdapterResult(True, output=f"playing: {query}")
-            return AdapterResult(True, output=f"opened YouTube video for: {query}")
+            return AdapterResult(True, output=f"playing on YouTube: {query}")
 
         if self._mpris_control("Play") and self._wait_audio_playing(timeout=1.2):
             return AdapterResult(True, output="resumed via MPRIS")
+        foc = self._get_focused()
+        if foc and "firefox" in (foc.get("class") or "").lower():
+            wx, wy, ww, wh = self._get_win_geometry(foc.get("id"))
+            self._clear_modifiers()
+            self._xdotool("mousemove", "--sync", str(wx + ww // 2), str(wy + int(wh * 0.45)), "click", "1")
+            if self._wait_audio_playing(timeout=1.2):
+                return AdapterResult(True, output="toggled browser video playback")
         self._clear_modifiers()
         self._xdotool("key", "--clearmodifiers", "XF86AudioPlay")
         return AdapterResult(True, output="toggled media play")
@@ -722,9 +865,299 @@ class DwmAdapter(Adapter):
         return AdapterResult(True, output=f"recording stopped: {out}")
 
     def _op_wait(self, dsl: Dict[str, Any]) -> AdapterResult:
-        seconds = float(dsl.get("args", {}).get("seconds", 1.0))
-        time.sleep(seconds)
+        seconds = float(dsl.get("args", {}).get("seconds", dsl.get("args", {}).get("duration", 1.0)))
+        time.sleep(max(0.0, min(seconds, 10.0)))
         return AdapterResult(True, output=f"waited {seconds}s")
+
+    def _is_tts_enabled(self) -> bool:
+        if os.environ.get("JARVIS_NO_TTS", "0") == "1":
+            return False
+        env_tts = os.environ.get("JARVIS_TTS")
+        if env_tts is not None:
+            return env_tts != "0"
+        tts_conf = os.path.expanduser("~/.config/dwm-voice/tts_enabled")
+        try:
+            if os.path.exists(tts_conf):
+                with open(tts_conf, "r", encoding="utf-8") as f:
+                    return f.read().strip() not in ("0", "false", "off", "no")
+        except Exception:
+            pass
+        return True
+
+    def _op_answer_question(self, dsl: Dict[str, Any]) -> AdapterResult:
+        args = dsl.get("args", {}) or {}
+        target = dsl.get("target", {}) or {}
+        answer = (
+            args.get("answer")
+            or args.get("text")
+            or target.get("answer")
+            or target.get("query")
+            or ""
+        ).strip()
+        if not answer:
+            return AdapterResult(False, error="answer_question requires args.answer")
+        speak = self._is_tts_enabled()
+        try:
+            subprocess.Popen(
+                [
+                    "notify-send",
+                    "-t",
+                    "8000",
+                    "-h",
+                    "string:x-dunst-stack-tag:jarvis-answer",
+                    "  Jarvis",
+                    answer,
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        if speak:
+            self._speak_tts(answer)
+        return AdapterResult(True, output=answer)
+
+    def _speak_tts(self, text: str) -> None:
+        if os.environ.get("JARVIS_NO_TTS", "0") == "1":
+            return
+        clean_text = re.sub(r"[`*_#\[\]]", "", (text or "").strip())
+        clean_text = " ".join(clean_text.split())
+        if not clean_text:
+            return
+        if len(clean_text) > 260:
+            cut = clean_text[:260].rfind(". ")
+            clean_text = (clean_text[: cut + 1] if cut > 60 else clean_text[:260]).strip()
+
+        # Primary: Human-grade neural TTS daemon (Kokoro-82M / Piper ONNX) with automatic mic mute protection
+        dwm_tts_bin = os.path.expanduser("~/.local/bin/dwm-tts")
+        if os.path.exists(dwm_tts_bin):
+            try:
+                res = subprocess.run(
+                    [dwm_tts_bin, "speak", clean_text],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=25.0,
+                    check=False,
+                )
+                if res.returncode == 0:
+                    return
+            except Exception:
+                pass
+
+        # Fallback: spd-say with mic mute guard
+        try:
+            self._run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "1"], timeout=0.4)
+            self._run(["spd-say", "-C"], timeout=0.4)
+            subprocess.run(
+                ["spd-say", "-o", "espeak-ng", "-r", "12", "-w", clean_text],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=12.0,
+                check=False,
+            )
+            time.sleep(0.25)
+        except Exception:
+            pass
+        finally:
+            self._run(["wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", "0"], timeout=0.4)
+
+    def confirm_action(self, description: str) -> bool:
+        """Ask the user for confirmation via dmenu before running a destructive command."""
+        if os.environ.get("JARVIS_AUTO_CONFIRM", "0") == "1" or not os.environ.get("DISPLAY"):
+            return True
+        menu_input = b"Yes, execute\nNo, cancel\n"
+        try:
+            proc = subprocess.run(
+                [
+                    "dmenu",
+                    "-i",
+                    "-l",
+                    "2",
+                    "-p",
+                    f" Confirm ({description[:48]}):",
+                    "-fn",
+                    "Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true",
+                    "-nb",
+                    "#1e1e2e",
+                    "-nf",
+                    "#cdd6f4",
+                    "-sb",
+                    "#f38ba8",
+                    "-sf",
+                    "#11111b",
+                ],
+                input=menu_input,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                timeout=15.0,
+                check=False,
+            )
+            choice = proc.stdout.decode("utf-8", errors="ignore").strip().lower()
+            return choice.startswith("yes")
+        except Exception:
+            return False
+
+    def inspect_terminal(self, target_hint: str = "focused", lines: int = 60) -> Dict[str, Any]:
+        """Capture live terminal scrollback/tmux pane content, running process, and cwd."""
+        foc = self._get_focused()
+        other = self._get_other_window()
+        win = other if target_hint == "other" else foc
+        if not self._is_terminal_window(win) and self._is_terminal_window(other):
+            win = other
+        cwd = self._get_focused_cwd(win) if win else os.path.expanduser("~")
+
+        fg_process = ""
+        try:
+            wid = (win.get("id") or "").strip() if win else ""
+            if wid:
+                out = self._run(["xprop", "-id", wid, "_NET_WM_PID"], timeout=0.3)
+                m = re.search(r"=\s*(\d+)", out)
+                if m:
+                    wpid = m.group(1)
+                    sh_pids = self._run(["pgrep", "-P", wpid], timeout=0.25).split()
+                    if sh_pids:
+                        sh_pid = sh_pids[-1]
+                        sub_pids = self._run(["pgrep", "-P", sh_pid], timeout=0.25).split()
+                        target_p = sub_pids[-1] if sub_pids else sh_pid
+                        fg_process = self._run(["ps", "-p", target_p, "-o", "args="], timeout=0.25).strip()
+        except Exception:
+            pass
+
+        tmux_panes: List[Dict[str, str]] = []
+        try:
+            sess_out = self._run(
+                ["tmux", "list-panes", "-a", "-F", "#{session_name}:#{window_index}.#{pane_index}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_active}"],
+                timeout=1.2,
+            )
+            for line in sess_out.splitlines():
+                parts = line.split("\t")
+                if len(parts) >= 3:
+                    pane_id, p_cmd, p_path = parts[0], parts[1], parts[2]
+                    is_active = (parts[3] == "1") if len(parts) >= 4 else False
+                    cap = self._run(["tmux", "capture-pane", "-p", "-t", pane_id, "-S", f"-{max(10, min(lines, 120))}"], timeout=1.2)
+                    non_empty = [ln for ln in cap.splitlines() if ln.strip()]
+                    tmux_panes.append({
+                        "pane": pane_id,
+                        "command": p_cmd,
+                        "cwd": p_path,
+                        "active": is_active,
+                        "tail": "\n".join(non_empty[-lines:]),
+                    })
+        except Exception:
+            pass
+
+        return {
+            "window": win,
+            "cwd": cwd,
+            "foreground_process": fg_process,
+            "tmux_panes": tmux_panes[:4],
+        }
+
+    def inspect_clipboard(self) -> Dict[str, str]:
+        """Read X11 primary selection and clipboard contents."""
+        primary = self._run(["xclip", "-o", "-selection", "primary"], timeout=0.8)
+        if not primary:
+            primary = self._run(["xsel", "-op"], timeout=0.8)
+        clipboard = self._run(["xclip", "-o", "-selection", "clipboard"], timeout=0.8)
+        if not clipboard:
+            clipboard = self._run(["xsel", "-ob"], timeout=0.8)
+        return {
+            "primary_selection": (primary or "")[:1500],
+            "clipboard": (clipboard or "")[:1500],
+        }
+
+    def inspect_system(self, aspect: str = "all") -> Dict[str, Any]:
+        """Inspect CPU, memory, top processes, disk usage, and listening ports."""
+        info: Dict[str, Any] = {}
+        if aspect in ("all", "memory", "ram", "processes", "cpu"):
+            info["memory"] = self._run(["free", "-h"], timeout=1.2)
+            info["top_cpu"] = self._run(["ps", "-eo", "pid,comm,%cpu,%mem", "--sort=-%cpu"], timeout=1.2).splitlines()[:8]
+            info["top_mem"] = self._run(["ps", "-eo", "pid,comm,%cpu,%mem", "--sort=-%mem"], timeout=1.2).splitlines()[:8]
+        if aspect in ("all", "disk", "storage"):
+            info["disk"] = self._run(["df", "-h", "/", os.path.expanduser("~")], timeout=1.2)
+        if aspect in ("all", "ports", "network"):
+            ports_out = self._run(["ss", "-tulpn"], timeout=1.5)
+            info["listening_ports"] = ports_out.splitlines()[:15]
+        return info
+
+    def run_background_command(self, command: str, cwd: Optional[str] = None, timeout: float = 5.0) -> Dict[str, Any]:
+        """Run a non-interactive shell probe/command and capture its stdout/stderr for the agent loop."""
+        work_dir = os.path.expanduser(cwd) if cwd else self._get_focused_cwd(self._get_focused())
+        if not os.path.isdir(work_dir):
+            work_dir = os.path.expanduser("~")
+        try:
+            proc = subprocess.run(
+                ["/bin/sh", "-c", command],
+                cwd=work_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=max(0.5, min(timeout, 15.0)),
+                check=False,
+            )
+            stdout = proc.stdout.decode("utf-8", errors="ignore").strip()
+            stderr = proc.stderr.decode("utf-8", errors="ignore").strip()
+            return {
+                "command": command,
+                "cwd": work_dir,
+                "returncode": proc.returncode,
+                "stdout": stdout[-2000:] if len(stdout) > 2000 else stdout,
+                "stderr": stderr[-1000:] if len(stderr) > 1000 else stderr,
+            }
+        except subprocess.TimeoutExpired:
+            return {"command": command, "cwd": work_dir, "returncode": -1, "stdout": "", "stderr": "Command timed out"}
+        except Exception as e:
+            return {"command": command, "cwd": work_dir, "returncode": -1, "stdout": "", "stderr": str(e)}
+
+    def _op_inspect_terminal(self, dsl: Dict[str, Any]) -> AdapterResult:
+        target_hint = dsl.get("target", {}).get("relation") or dsl.get("target", {}).get("identifier") or "focused"
+        data = self.inspect_terminal(target_hint=str(target_hint))
+        return AdapterResult(True, output=json.dumps(data, ensure_ascii=False), metadata=data)
+
+    def _op_inspect_clipboard(self, dsl: Dict[str, Any]) -> AdapterResult:
+        data = self.inspect_clipboard()
+        return AdapterResult(True, output=json.dumps(data, ensure_ascii=False), metadata=data)
+
+    def _op_inspect_system(self, dsl: Dict[str, Any]) -> AdapterResult:
+        aspect = dsl.get("args", {}).get("aspect") or dsl.get("target", {}).get("query") or "all"
+        data = self.inspect_system(aspect=str(aspect))
+        return AdapterResult(True, output=json.dumps(data, ensure_ascii=False), metadata=data)
+
+    def _op_run_background_command(self, dsl: Dict[str, Any]) -> AdapterResult:
+        cmd = dsl.get("target", {}).get("command") or dsl.get("args", {}).get("command") or ""
+        if not cmd:
+            return AdapterResult(False, error="run_background_command requires target.command")
+        cwd = dsl.get("target", {}).get("cwd") or dsl.get("args", {}).get("cwd")
+        data = self.run_background_command(cmd, cwd=cwd)
+        ok = data.get("returncode", -1) == 0
+        summary = data.get("stdout") or data.get("stderr") or f"exit {data.get('returncode')}"
+        return AdapterResult(ok, output=summary, error="" if ok else data.get("stderr", ""), metadata=data)
+
+    def _op_wm_help(self, dsl: Dict[str, Any]) -> AdapterResult:
+        target = dsl.get("target", {}) or {}
+        args = dsl.get("args", {}) or {}
+        query = (target.get("query") or args.get("query") or args.get("text") or "").strip()
+        if not query:
+            subprocess.Popen(["dwm-help", "show"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return AdapterResult(True, output="opened dwm-help")
+        out = self._run(["dwm-help", "ask", query], timeout=4.0)
+        return AdapterResult(True, output=out or f"dwm-help: {query}")
+
+    def _op_ask_agent(self, dsl: Dict[str, Any]) -> AdapterResult:
+        target = dsl.get("target", {}) or {}
+        args = dsl.get("args", {}) or {}
+        query = (target.get("query") or args.get("query") or args.get("text") or "").strip()
+        if not query:
+            return AdapterResult(False, error="ask_agent requires target.query")
+        subprocess.Popen(
+            ["dwm-jarvis-pi", "send", query],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        return AdapterResult(True, output=f"sent to Pi agent: {query}")
 
     def execute(self, dsl: Dict[str, Any]) -> AdapterResult:
         op = dsl.get("op")
@@ -767,13 +1200,111 @@ class DwmAdapter(Adapter):
         except Exception:
             return []
 
+    def _get_focused_cwd(self, foc: Dict[str, Any]) -> str:
+        wid = foc.get("id", "")
+        if not wid:
+            return os.path.expanduser("~")
+        try:
+            out = self._run(["xprop", "-id", wid, "_NET_WM_PID"], timeout=0.4)
+            m = re.search(r"=\s*(\d+)", out)
+            if m:
+                wpid = m.group(1)
+                ch = self._run(["pgrep", "-P", wpid], timeout=0.3).split()
+                target_pid = ch[-1] if ch else wpid
+                cwd_link = f"/proc/{target_pid}/cwd"
+                if os.path.exists(cwd_link):
+                    return os.path.realpath(cwd_link)
+        except Exception:
+            pass
+        return os.path.expanduser("~")
+
+    def _get_desktop_apps(self) -> Dict[str, str]:
+        if self._desktop_apps_cache is not None:
+            return self._desktop_apps_cache
+        apps: Dict[str, str] = {}
+        search_dirs = [
+            os.path.expanduser("~/.local/share/applications"),
+            "/usr/local/share/applications",
+            "/usr/share/applications",
+            "/var/lib/snapd/desktop/applications",
+        ]
+        for d in search_dirs:
+            if not os.path.isdir(d):
+                continue
+            for entry in sorted(os.listdir(d)):
+                if not entry.endswith(".desktop"):
+                    continue
+                fpath = os.path.join(d, entry)
+                try:
+                    name = ""
+                    generic = ""
+                    exec_cmd = ""
+                    nodisplay = False
+                    in_desktop_entry = False
+                    with open(fpath, "r", encoding="utf-8", errors="ignore") as f:
+                        for line in f:
+                            s = line.strip()
+                            if s.startswith("["):
+                                in_desktop_entry = (s == "[Desktop Entry]")
+                                continue
+                            if not in_desktop_entry:
+                                continue
+                            if s.startswith("NoDisplay=true") or s.startswith("Hidden=true"):
+                                nodisplay = True
+                                break
+                            if s.startswith("Name=") and not name:
+                                name = s[5:].strip()
+                            elif s.startswith("GenericName=") and not generic:
+                                generic = s[12:].strip()
+                            elif s.startswith("Exec=") and not exec_cmd:
+                                raw_exec = s[5:].strip()
+                                cleaned_parts = [
+                                    p for p in raw_exec.split()
+                                    if not p.startswith("%") and not p.startswith("env")
+                                ]
+                                if cleaned_parts:
+                                    exec_cmd = " ".join(cleaned_parts)
+                    if not nodisplay and name and exec_cmd:
+                        apps.setdefault(name.lower(), exec_cmd)
+                        if generic:
+                            apps.setdefault(generic.lower(), exec_cmd)
+                except Exception:
+                    pass
+        self._desktop_apps_cache = apps
+        return apps
+
+    def _get_user_configs(self) -> List[str]:
+        candidates = [
+            "~/.vimrc",
+            "~/.config/nvim/init.lua",
+            "~/.config/nvim/init.vim",
+            "~/.bashrc",
+            "~/.zshrc",
+            "~/.tmux.conf",
+            "~/.Xresources",
+            "~/.local/src/dwm/config.h",
+            "~/.config/jarvis/ontology.json",
+        ]
+        existing = []
+        for c in candidates:
+            if os.path.exists(os.path.expanduser(c)):
+                existing.append(c)
+        return existing
+
     def observe(self) -> Dict[str, Any]:
         """Return live desktop observation for inference context."""
+        foc = self._get_focused()
+        term_snapshot = self.inspect_terminal(target_hint="focused", lines=25)
         return {
-            "focused": self._get_focused(),
+            "focused": foc,
+            "focused_cwd": self._get_focused_cwd(foc),
+            "focused_process": term_snapshot.get("foreground_process", ""),
+            "terminal_panes": term_snapshot.get("tmux_panes", []),
             "other": self._get_other_window(),
             "clients": self._get_clients(),
             "tabs": self._get_firefox_open_tabs(),
             "audio": self._get_audio_state(),
+            "desktop_apps": self._get_desktop_apps(),
+            "user_configs": self._get_user_configs(),
             "wm": "dwm",
         }

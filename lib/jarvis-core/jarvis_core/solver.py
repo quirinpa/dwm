@@ -1,10 +1,19 @@
 """Compositional Semantic Solver: Utterance + Host Observation -> Platform-Neutral Intent IR."""
 
-import difflib
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from .ontology import SemanticOntology, clean_phrase
+
+
+_DICTATION_VERBS = {"type", "dictate", "write", "input"}
+
+_DEICTIC_PRONOUNS = {
+    "this",
+    "current",
+    "active",
+    "window",
+}
 
 
 class CompositionalSemanticSolver:
@@ -62,43 +71,83 @@ class CompositionalSemanticSolver:
         return (c if c else clause.strip()), eff_surface, explicit_term, target_other, submit_enter
 
     def extract_constituents(
-        self, clause: str, live_entities: Dict[str, Tuple[str, str]]
+        self, clause: str, live_entities: Dict[str, List[Tuple[str, str]]]
     ) -> Dict[str, Any]:
-        """Bottom-up greedy constituent span tagger."""
+        """Bottom-up constituent span tagger with multi-type entity and verb-first resolution."""
         words = clean_phrase(clause).split()
         n = len(words)
         consumed = [False] * n
         verbs: Dict[str, float] = {}
         entities: Dict[str, List[str]] = {}
         modifiers: Set[str] = set()
+        lead_verb_span = ""
+        lead_verb_end = 0
 
-        # 1. Tag longest matching Entity spans first (up to 6 words)
+        # Skip leading polite stopwords ("please", "jarvis", "can", "you", etc.) to find the verb head
+        v_start = 0
+        while (
+            v_start < n
+            and words[v_start] in self.ont.stopwords
+            and " ".join(words[v_start : min(n, v_start + 3)]) not in self.ont.verb_phrases
+        ):
+            v_start += 1
+
+        # 1. Tag leading Verb phrase first
+        for L in range(min(6, n - v_start), 0, -1):
+            span = " ".join(words[v_start : v_start + L])
+            if span in self.ont.verb_phrases:
+                for v_concept, w in self.ont.verb_phrases[span]:
+                    verbs[v_concept] = max(verbs.get(v_concept, 0.0), w)
+                lead_verb_span = span
+                lead_verb_end = v_start + L
+                # Only mark consumed if this verb phrase is not simultaneously a self-contained entity phrase
+                if span not in live_entities:
+                    for k in range(v_start, v_start + L):
+                        consumed[k] = True
+                break
+
+        # 2. Tag longest matching Entity spans (up to 6 words) across the clause
         for L in range(min(6, n), 0, -1):
+            for i in range(0, n - L + 1):
+                span = " ".join(words[i : i + L])
+                if span not in live_entities:
+                    continue
+                if any(consumed[i : i + L]):
+                    # Allow multi-word entity phrases that subsume the leading verb (e.g. "turn up the volume", "lower volume")
+                    if not (i == v_start and L > (lead_verb_end - v_start) and all(not consumed[k] for k in range(lead_verb_end, i + L))):
+                        continue
+                # Do not let a 1-word entity consume the leading verb of a multi-word command
+                if (
+                    i == v_start
+                    and L == 1
+                    and span in self.ont.verb_phrases
+                    and n > v_start + 1
+                    and span == lead_verb_span
+                ):
+                    continue
+                for etype, eid in live_entities[span]:
+                    lst = entities.setdefault(etype, [])
+                    if eid not in lst:
+                        lst.append(eid)
+                for k in range(i, i + L):
+                    consumed[k] = True
+
+        # 3. Tag secondary / interior Verb spans if not yet tagged
+        for L in range(min(5, n), 0, -1):
             for i in range(0, n - L + 1):
                 if any(consumed[i : i + L]):
                     continue
                 span = " ".join(words[i : i + L])
-                if span in live_entities:
-                    etype, eid = live_entities[span]
-                    if i == 0 and L == 1 and span in self.ont.verb_phrases and n > 1:
-                        continue
-                    entities.setdefault(etype, []).append(eid)
-                    for k in range(i, i + L):
-                        consumed[k] = True
-
-        # 2. Tag Verb spans (usually near the start, up to 4 words)
-        for L in range(min(4, n), 0, -1):
-            for i in range(0, min(4, n - L + 1)):
-                if any(consumed[i : i + L]):
-                    continue
-                span = " ".join(words[i : i + L])
                 if span in self.ont.verb_phrases:
+                    # Do not let a secondary "google" token (e.g. "google.com" or "... on google") override another leading verb
+                    if span == "google" and i > v_start and verbs:
+                        continue
                     for v_concept, w in self.ont.verb_phrases[span]:
                         verbs[v_concept] = max(verbs.get(v_concept, 0.0), w)
                     for k in range(i, i + L):
                         consumed[k] = True
 
-        # 3. Light verb / implicit verb fallback
+        # 4. Modifiers and implicit verb fallback for verbless noun utterances
         for i, w in enumerate(words):
             if w in ("new", "hidden", "all", "silent", "fullscreen", "floating"):
                 modifiers.add(w)
@@ -107,12 +156,30 @@ class CompositionalSemanticSolver:
                     verbs[v_concept] = max(verbs.get(v_concept, 0.0), vw)
                 consumed[i] = True
 
+        # Also promote self-contained entity phrases that carry inherent verb semantics
+        if "media.object" in entities and entities["media.object"][0] in (
+            "next_track",
+            "prev_track",
+            "volume_up",
+            "volume_down",
+            "volume_mute",
+        ):
+            verbs["MEDIA_ADJUST"] = max(verbs.get("MEDIA_ADJUST", 0.0), 0.95)
+        if "ui.window_action" in entities and ("OPEN_LAUNCH" not in verbs or verbs.get("OPEN_LAUNCH", 0.0) < 0.90):
+            verbs["WINDOW_CONTROL"] = max(verbs.get("WINDOW_CONTROL", 0.0), 0.95)
+
         if not verbs and entities:
-            if "shell.program" in entities or "ui.container_kind" in entities:
+            if "ui.workspace" in entities:
+                verbs["WORKSPACE_SWITCH"] = 0.92
+            elif "ui.window_action" in entities:
+                verbs["WINDOW_CONTROL"] = 0.92
+            elif "shell.program" in entities or "ui.container_kind" in entities or "gui.application" in entities:
+                verbs["OPEN_LAUNCH"] = 0.90
+            elif "web.shortcut" in entities:
                 verbs["OPEN_LAUNCH"] = 0.90
             elif "git.object" in entities or "fs.collection" in entities or "fs.metric" in entities:
                 verbs["PRESENT"] = 0.90
-            elif "ui.relative_window" in entities:
+            elif "ui.relative_window" in entities or "ui.window" in entities:
                 verbs["FOCUS_NAV"] = 0.90
             elif "fs.location" in entities:
                 verbs["FOCUS_NAV"] = 0.88
@@ -120,8 +187,9 @@ class CompositionalSemanticSolver:
         residual_tokens = [
             words[i]
             for i in range(n)
-            if not consumed[i] and words[i] not in self.ont.stopwords
+            if not consumed[i] and words[i] not in self.ont.stopwords and words[i] not in _DEICTIC_PRONOUNS
         ]
+        open_arg_tokens = words[lead_verb_end:] if lead_verb_end > 0 else residual_tokens
         content_tokens = [w for w in words if w not in self.ont.stopwords]
         total_content = max(1, len(content_tokens))
         bound_content = max(0, total_content - len(residual_tokens))
@@ -133,9 +201,47 @@ class CompositionalSemanticSolver:
             "modifiers": modifiers,
             "residual_tokens": residual_tokens,
             "residual_text": " ".join(residual_tokens),
+            "open_arg_text": " ".join(open_arg_tokens),
+            "lead_verb_span": lead_verb_span,
             "coverage": coverage,
             "words": words,
         }
+
+    def _extract_after_verb(self, raw_stripped: str, lead_verb_span: str, strip_preps: Tuple[str, ...] = ()) -> str:
+        """Cleanly extract the open argument substring following the matched verb phrase."""
+        q = raw_stripped.strip()
+        q = re.sub(
+            r"^(?:(?:please|jarvis|hey|ok|okay|can\s+you|could\s+you|would\s+you|let's|lets)\s+)+",
+            "",
+            q,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        candidate_vps = sorted(self.ont.verb_phrases.keys(), key=len, reverse=True)
+        if lead_verb_span:
+            candidate_vps = [lead_verb_span] + [vp for vp in candidate_vps if vp != lead_verb_span]
+
+        q_low = q.lower()
+        for vp in candidate_vps:
+            if q_low.startswith(vp + " "):
+                q = q[len(vp) :].strip()
+                break
+            vp_pattern = r"^" + r"\s+".join(re.escape(w) for w in vp.split()) + r"\b\s*"
+            m = re.match(vp_pattern, q_low)
+            if m:
+                q = q[m.end() :].strip()
+                break
+
+        if strip_preps:
+            changed = True
+            while changed:
+                changed = False
+                for p in strip_preps:
+                    if q.lower().startswith(p):
+                        q = q[len(p) :].strip()
+                        changed = True
+                        break
+        return q.strip()
 
     def solve_clause(
         self,
@@ -153,18 +259,120 @@ class CompositionalSemanticSolver:
         stripped, eff_surface, explicit_term, target_other, submit_enter = self.strip_locative_modifiers(
             norm_clause, active_surface=active_surface
         )
+        new_terminal = False
+        m_new_term = re.search(
+            r"\s+\b(?:in|on|using|inside|into)\s+(?:a\s+)?new\s+(?:terminal|console|shell)(?:\s+window)?\b\s*$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if m_new_term:
+            stripped = stripped[: m_new_term.start()].strip().strip(",.!?;:")
+            new_terminal = True
+            eff_surface = "terminal"
+            explicit_term = True
+
         parsed = self.extract_constituents(stripped, live_entities)
         verbs = parsed["verbs"]
         entities = parsed["entities"]
         modifiers = parsed["modifiers"]
         residual = parsed["residual_tokens"]
+        lead_verb_span = parsed["lead_verb_span"]
 
-        # Guard: Never hijack help questions
+        # Guard: Never hijack help questions or conversational interrogatives
         if "HELP_ASK" in verbs:
             return None
 
-        # Guard: Explicit dictation handled by input.dictate capability
-        pass
+        raw_words = clean_phrase(raw_clause).split()
+        while raw_words and raw_words[0] in ("please", "jarvis", "hey", "ok", "okay"):
+            raw_words.pop(0)
+        if raw_words and raw_words[0] in (
+            "what",
+            "whats",
+            "why",
+            "how",
+            "who",
+            "when",
+            "where",
+            "which",
+            "did",
+            "does",
+            "do",
+            "is",
+            "are",
+            "explain",
+        ):
+            if not (
+                not residual
+                and ("fs.metric" in entities or "fs.collection" in entities or "git.object" in entities)
+            ):
+                return None
+
+        # Direct URL pattern in clause (e.g. "open https://...", "go to github.com/torvalds")
+        # Require lead_verb_span (leading OPEN_LAUNCH or FOCUS_NAV verb) and zero unexplained non-URL residual tokens!
+        m_url = re.search(
+            r"\b(https?://[^\s]+|[a-zA-Z0-9-]+\.(?:com|org|net|io|dev|ai|edu|gov|pt)(?:/[^\s]*)?)\b", stripped
+        )
+        if m_url and lead_verb_span and ("OPEN_LAUNCH" in verbs or "FOCUS_NAV" in verbs):
+            url_val = m_url.group(1)
+            url_words = set(clean_phrase(url_val).split())
+            non_url_residual = [t for t in residual if t not in url_words]
+            if (
+                not non_url_residual
+                and "PRESENT" not in verbs
+                and "shell.program" not in entities
+                and "SEARCH_WEB" not in verbs
+            ):
+                return {
+                    "cap": "web.open",
+                    "score": 0.96,
+                    "surface": "any",
+                    "explicit_terminal": False,
+                    "target_other": target_other,
+                    "submit_enter": submit_enter,
+                    "args": {"url": url_val},
+                }
+
+        # Guard: Explicit dictation only when clause begins with a dictation verb ('type', 'dictate', 'write', 'input')
+        is_explicit_dictation = bool(raw_words and raw_words[0] in _DICTATION_VERBS)
+        if is_explicit_dictation and "edit.unit" not in entities:
+            ir_dict = self._build_intent_ir(
+                "input.dictate",
+                0.96,
+                verbs,
+                entities,
+                modifiers,
+                residual,
+                stripped,
+                lead_verb_span,
+                eff_surface,
+                explicit_term,
+                target_other,
+                submit_enter,
+            )
+            if ir_dict:
+                ir_dict["target_other"] = target_other
+                ir_dict.setdefault("submit_enter", submit_enter)
+                return ir_dict
+
+        # Fast-path explicit coding agent delegation ("ask pi to ...", "tell the agent to ...")
+        if "AGENT_ASK" in verbs:
+            ir_agent = self._build_intent_ir(
+                "agent.ask",
+                0.96,
+                verbs,
+                entities,
+                modifiers,
+                residual,
+                stripped,
+                lead_verb_span,
+                eff_surface,
+                explicit_term,
+                target_other,
+                submit_enter,
+            )
+            if ir_agent:
+                ir_agent["target_other"] = target_other
+                return ir_agent
 
         best_cap: Optional[Dict[str, Any]] = None
         best_score = 0.0
@@ -176,15 +384,45 @@ class CompositionalSemanticSolver:
             if v_score <= 0.0:
                 continue
 
-            # Selectional Restrictions: forbidden entity types
-            forbid_ents = cap.get("forbid_entities", [])
+            req_ents = set(cap.get("required_entities", []))
+            forbid_ents = set(cap.get("forbid_entities", [])) - req_ents
             if any(fe in entities for fe in forbid_ents):
-                continue
+                blocked = False
+                for fe in forbid_ents:
+                    if fe in entities:
+                        if not req_ents or fe not in req_ents:
+                            # Allow multi-tagged entity overlaps (e.g. "terminal" is both ui.container_kind and gui.application;
+                            # "firefox" is both gui.application and ui.window; "window" is in "make this window full screen")
+                            if fe in ("ui.container_kind", "gui.application", "ui.window", "fs.location") and (
+                                req_ents & {"ui.container_kind", "gui.application", "ui.window", "ui.window_action", "media.object"}
+                                or cid in ("window.control", "media.play", "media.control")
+                            ):
+                                if fe == "fs.location" and "media.object" not in entities:
+                                    blocked = True
+                                    break
+                                continue
+                            blocked = True
+                            break
+                if blocked:
+                    continue
 
             # Required entity types
-            req_ents = cap.get("required_entities", [])
             if req_ents and not all(re_t in entities for re_t in req_ents):
                 if cid == "fs.list" and "fs.location" in entities and "PRESENT" in verbs and "FOCUS_NAV" not in verbs:
+                    pass
+                elif (
+                    cid == "workspace.switch"
+                    and "WORKSPACE_SWITCH" in verbs
+                    and any(t.isdigit() and 1 <= int(t) <= 9 for t in residual)
+                ):
+                    pass
+                elif (
+                    cid == "workspace.move_window"
+                    and "WORKSPACE_MOVE" in verbs
+                    and any(t.isdigit() and 1 <= int(t) <= 9 for t in residual)
+                ):
+                    pass
+                elif cid == "ui.scroll" and "SCROLL_NAV" in verbs:
                     pass
                 else:
                     continue
@@ -195,25 +433,79 @@ class CompositionalSemanticSolver:
                 ok_any = False
                 if "media.object" in req_any and "media.object" in entities:
                     ok_any = True
-                if "residual_with_play_verb" in req_any and residual and verbs.get("PLAY_STREAM", 0.0) >= 0.80:
+                if (
+                    "residual_with_play_verb" in req_any
+                    and (residual or "media.object" in entities or lead_verb_span in ("press play", "hit play", "resume", "unpause", "continue playing"))
+                    and verbs.get("PLAY_STREAM", 0.0) >= 0.80
+                ):
                     ok_any = True
                 if not ok_any:
                     continue
 
             # Content-Token Coverage Invariant
             if cap.get("forbid_residual", False) and residual:
+                if cid in ("workspace.switch", "workspace.move_window") and all(
+                    t.isdigit() and 1 <= int(t) <= 9 for t in residual
+                ):
+                    pass
+                elif cid == "ui.scroll" and all(t.isdigit() for t in residual):
+                    pass
+                elif cid == "window.control" and residual == ["it"]:
+                    pass
+                else:
+                    continue
+
+            if cid == "input.dictate" and not is_explicit_dictation:
                 continue
 
-            # Compute joint score = VerbFit * ArgTypeFit * ContextFit
+            # Compute joint score = VerbFit * Coverage * ArgTypeFit * ContextFit
+            # Penalize any unexplained residual tokens for closed-arg capabilities so partial matches drop in confidence
             cap_surface = cap.get("surface", "any")
             ctx_bonus = 0.04 if (cap_surface == eff_surface or explicit_term) else 0.0
-            score = min(0.99, 0.55 * v_score + 0.43 + ctx_bonus)
+            req_bonus = 0.03 if req_ents else 0.0
+            is_open_arg_cap = cid in ("media.play", "web.search", "input.dictate", "agent.ask")
+            eff_res_count = 0 if (is_open_arg_cap or (cid == "window.control" and residual == ["it"])) else len(residual)
+            residual_penalty = 0.18 * eff_res_count
+            lead_penalty = 0.0 if (lead_verb_span or not verbs or "ui.window_action" in entities or "media.object" in entities) else 0.14
+            score = min(0.99, max(0.0, 0.55 * v_score + 0.41 + ctx_bonus + req_bonus - residual_penalty - lead_penalty))
+
+            # Disambiguation: open/launch GUI application vs focus live window
+            if cid == "app.launch" and "OPEN_LAUNCH" in verbs and "FOCUS_NAV" not in verbs:
+                score = 0.99
+            if cid == "window.focus" and "OPEN_LAUNCH" in verbs and "gui.application" in entities:
+                continue
 
             # Disambiguation between fs.list and fs.navigate
             if cid == "fs.navigate" and "fs.location" in entities:
-                if verbs.get("FOCUS_NAV", 0.0) >= 0.90:
+                if verbs.get("FOCUS_NAV", 0.0) >= 0.90 and "fs.collection" not in entities:
                     score = 0.99
                 elif "PRESENT" in verbs and "OPEN_LAUNCH" not in verbs:
+                    continue
+
+            # Disambiguation: workspace.move_window beats workspace.switch when WORKSPACE_MOVE is active
+            if cid == "workspace.move_window" and verbs.get("WORKSPACE_MOVE", 0.0) >= 0.80:
+                score = 0.99
+            if cid == "workspace.switch" and verbs.get("WORKSPACE_MOVE", 0.0) >= 0.80:
+                continue
+
+            # Disambiguation: window.control beats window.new when ui.window_action or WINDOW_CONTROL is active
+            if cid == "window.control" and (
+                "ui.window_action" in entities or verbs.get("WINDOW_CONTROL", 0.0) >= 0.80
+            ):
+                score = 0.99
+
+            # Disambiguation: media.control vs media.play
+            if cid == "media.control":
+                m_objs = entities.get("media.object", [])
+                if "PAUSE_STOP" in verbs and not residual:
+                    score = 0.99
+                elif (
+                    m_objs
+                    and m_objs[0] in ("next_track", "prev_track", "volume_up", "volume_down", "volume_mute")
+                    and not residual
+                ):
+                    score = 0.99
+                else:
                     continue
 
             if score > best_score:
@@ -223,9 +515,12 @@ class CompositionalSemanticSolver:
         if not best_cap or best_score < 0.80:
             return None
 
-        # Also detect "in the other window" or "other window" on window.control
-        if best_cap["id"] == "window.control" and entities.get("ui.relative_window") == ["other"]:
-            target_other = True
+        # Detect "other window" on any capability where ui.relative_window == ["other"] or phrase contains "other window"
+        if best_cap["id"] != "window.focus_relative":
+            if "other" in entities.get("ui.relative_window", []) or re.search(
+                r"\bother\s+(?:window|terminal)\b", stripped, flags=re.IGNORECASE
+            ):
+                target_other = True
 
         ir_res = self._build_intent_ir(
             best_cap["id"],
@@ -235,6 +530,7 @@ class CompositionalSemanticSolver:
             modifiers,
             residual,
             stripped,
+            lead_verb_span,
             eff_surface,
             explicit_term,
             target_other,
@@ -242,6 +538,8 @@ class CompositionalSemanticSolver:
         )
         if ir_res is not None:
             ir_res["target_other"] = target_other
+            if new_terminal:
+                ir_res["new_terminal"] = True
             ir_res.setdefault("submit_enter", submit_enter)
         return ir_res
 
@@ -254,6 +552,7 @@ class CompositionalSemanticSolver:
         modifiers: Set[str],
         residual: List[str],
         raw_stripped: str,
+        lead_verb_span: str,
         eff_surface: str,
         explicit_term: bool,
         target_other: bool,
@@ -333,10 +632,21 @@ class CompositionalSemanticSolver:
 
         if cid == "window.new":
             kind = entities["ui.container_kind"][0]
-            if kind in ("terminal", "window", "tab", "devtools", "address_bar", "sys_monitor", "calendar", "control_center", "wifi", "battery", "power_menu", "shortcuts_help"):
-                if kind == "window" and "new" not in modifiers and "OPEN_LAUNCH" not in verbs:
-                    return None
-                if kind == "tab" and "new" not in modifiers and "OPEN_LAUNCH" not in verbs:
+            if kind in (
+                "terminal",
+                "window",
+                "tab",
+                "devtools",
+                "address_bar",
+                "sys_monitor",
+                "calendar",
+                "control_center",
+                "wifi",
+                "battery",
+                "power_menu",
+                "shortcuts_help",
+            ):
+                if kind in ("window", "tab") and "new" not in modifiers and "OPEN_LAUNCH" not in verbs:
                     return None
                 return {
                     "cap": "window.new",
@@ -346,6 +656,16 @@ class CompositionalSemanticSolver:
                     "args": {"kind": kind, "new": ("new" in modifiers)},
                 }
             return None
+
+        if cid == "window.focus":
+            win_id = entities["ui.window"][0]
+            return {
+                "cap": "window.focus",
+                "score": score,
+                "surface": "any",
+                "explicit_terminal": False,
+                "args": {"identifier": win_id},
+            }
 
         if cid == "window.focus_relative":
             rel = entities["ui.relative_window"][0]
@@ -357,17 +677,20 @@ class CompositionalSemanticSolver:
                 "args": {"relation": rel},
             }
 
-        if cid == "workspace.switch":
+        if cid in ("workspace.switch", "workspace.move_window"):
             ws = 1
-            for token in residual:
-                if token.isdigit() and 1 <= int(token) <= 9:
-                    ws = int(token)
-                    break
-            nums = re.findall(r"\b([1-9])\b", raw_stripped)
-            if nums:
-                ws = int(nums[0])
+            if "ui.workspace" in entities:
+                ws = int(entities["ui.workspace"][0])
+            else:
+                for token in residual:
+                    if token.isdigit() and 1 <= int(token) <= 9:
+                        ws = int(token)
+                        break
+                nums = re.findall(r"\b([1-9])\b", raw_stripped)
+                if nums:
+                    ws = int(nums[0])
             return {
-                "cap": "workspace.switch",
+                "cap": cid,
                 "score": score,
                 "surface": "any",
                 "explicit_terminal": False,
@@ -376,41 +699,72 @@ class CompositionalSemanticSolver:
 
         if cid == "window.control":
             action = "unknown"
-            rl = raw_stripped.lower()
-            if "fullscreen" in rl or "maximize" in rl:
-                action = "fullscreen"
-            elif "float" in rl:
-                action = "float"
-            elif "tile" in rl:
-                action = "tile"
-            elif "close" in rl or "kill" in rl:
-                action = "close"
+            if "ui.window_action" in entities:
+                action = entities["ui.window_action"][0]
+            else:
+                rl = raw_stripped.lower()
+                if "fullscreen" in rl or "full screen" in rl or "maximize" in rl:
+                    action = "fullscreen"
+                elif "unfloat" in rl or "tile" in rl:
+                    action = "tile"
+                elif "float" in rl:
+                    action = "float"
+                elif "close" in rl or "kill" in rl or "quit" in rl:
+                    action = "close"
+            if action == "unknown":
+                return None
+            kind = "tab" if ("tab" in entities.get("ui.container_kind", []) or re.search(r"\btab\b", raw_stripped, flags=re.IGNORECASE)) else "window"
             return {
                 "cap": "window.control",
                 "score": score,
                 "surface": "any",
                 "explicit_terminal": False,
-                "args": {"action": action},
+                "args": {"action": action, "kind": kind},
             }
 
+        if cid == "ui.scroll":
+            if "ui.scroll_direction" in entities:
+                direction = entities["ui.scroll_direction"][0]
+            else:
+                rl = raw_stripped.lower()
+                if "up" in rl:
+                    direction = "up"
+                elif "left" in rl:
+                    direction = "left"
+                elif "right" in rl:
+                    direction = "right"
+                else:
+                    direction = "down"
+            amount = 5
+            for t in residual:
+                if t.isdigit():
+                    amount = max(1, min(20, int(t)))
+            return {
+                "cap": "ui.scroll",
+                "score": score,
+                "surface": eff_surface,
+                "explicit_terminal": False,
+                "args": {"direction": direction, "amount": amount},
+            }
 
         if cid == "input.dictate":
-            q_clean = raw_stripped
-            for vp in sorted(self.ont.verb_phrases.keys(), key=len, reverse=True):
-                if q_clean.lower().startswith(vp + " "):
-                    q_clean = q_clean[len(vp):].strip()
-                    break
-            while q_clean.lower().startswith(("the ", "a ", "an ", "some ")):
-                for prefix in ("the ", "a ", "an ", "some "):
-                    if q_clean.lower().startswith(prefix):
-                        q_clean = q_clean[len(prefix):].strip()
-                        break
-            submit_enter_flag = submit_enter or q_clean.lower().endswith((" and press enter", " and hit enter", " and hit return", " then press enter", " then hit enter"))
+            q_clean = self._extract_after_verb(raw_stripped, lead_verb_span, strip_preps=("in ", "out "))
+            submit_enter_flag = submit_enter or q_clean.lower().endswith(
+                (" and press enter", " and hit enter", " and hit return", " then press enter", " then hit enter")
+            )
             if submit_enter_flag:
-                for suffix in (" and press enter", " and hit enter", " and hit return", " then press enter", " then hit enter"):
+                for suffix in (
+                    " and press enter",
+                    " and hit enter",
+                    " and hit return",
+                    " then press enter",
+                    " then hit enter",
+                ):
                     if q_clean.lower().endswith(suffix):
-                        q_clean = q_clean[:-len(suffix)].strip()
+                        q_clean = q_clean[: -len(suffix)].strip()
                         break
+            if not q_clean and not submit_enter_flag:
+                return None
             return {
                 "cap": "input.dictate",
                 "score": score,
@@ -419,6 +773,27 @@ class CompositionalSemanticSolver:
                 "args": {"text": q_clean, "submit_enter": submit_enter_flag},
             }
 
+        if cid == "agent.ask":
+            q_clean = self._extract_after_verb(raw_stripped, lead_verb_span, strip_preps=("to ", "for ", "about "))
+            if not q_clean:
+                return None
+            return {
+                "cap": "agent.ask",
+                "score": score,
+                "surface": "any",
+                "explicit_terminal": False,
+                "args": {"query": q_clean},
+            }
+
+        if cid == "web.open":
+            url = entities["web.shortcut"][0]
+            return {
+                "cap": "web.open",
+                "score": score,
+                "surface": "any",
+                "explicit_terminal": False,
+                "args": {"url": url},
+            }
 
         if cid == "app.launch":
             app = entities["gui.application"][0]
@@ -442,16 +817,7 @@ class CompositionalSemanticSolver:
             }
 
         if cid == "web.search":
-            q_clean = raw_stripped
-            for vp in sorted(self.ont.verb_phrases.keys(), key=len, reverse=True):
-                if q_clean.lower().startswith(vp + " "):
-                    q_clean = q_clean[len(vp):].strip()
-                    break
-            while q_clean.lower().startswith(("for ", "about ", "on ")):
-                for prefix in ("for ", "about ", "on "):
-                    if q_clean.lower().startswith(prefix):
-                        q_clean = q_clean[len(prefix):].strip()
-                        break
+            q_clean = self._extract_after_verb(raw_stripped, lead_verb_span, strip_preps=("for ", "about ", "on "))
             if not q_clean:
                 return None
             return {
@@ -472,7 +838,7 @@ class CompositionalSemanticSolver:
                     "explicit_terminal": False,
                     "args": {"action": "pause"},
                 }
-            if m_objs in (["next_track"], ["prev_track"], ["volume_up"], ["volume_down"], ["volume_mute"]):
+            if m_objs and m_objs[0] in ("next_track", "prev_track", "volume_up", "volume_down", "volume_mute"):
                 return {
                     "cap": "media.control",
                     "score": score,
@@ -492,7 +858,11 @@ class CompositionalSemanticSolver:
                     "explicit_terminal": False,
                     "args": {"action": "pause"},
                 }
-            if m_objs in (["next_track"], ["prev_track"], ["volume_up"], ["volume_down"], ["volume_mute"]):
+            if (
+                m_objs
+                and m_objs[0] in ("next_track", "prev_track", "volume_up", "volume_down", "volume_mute")
+                and not residual
+            ):
                 return {
                     "cap": "media.control",
                     "score": score,
@@ -500,19 +870,16 @@ class CompositionalSemanticSolver:
                     "explicit_terminal": False,
                     "args": {"action": m_objs[0]},
                 }
-            # Extract clean media query
-            q_clean = raw_stripped
-            for vp in sorted(self.ont.verb_phrases.keys(), key=len, reverse=True):
-                if q_clean.lower().startswith(vp + " "):
-                    q_clean = q_clean[len(vp):].strip()
-                    break
-            while q_clean.lower().startswith(("some ", "a bit of ", "a little ", "the ", "a ", "an ")):
-                for prefix in ("a bit of ", "a little ", "some ", "the ", "a ", "an "):
-                    if q_clean.lower().startswith(prefix):
-                        q_clean = q_clean[len(prefix):].strip()
-                        break
+            q_clean = self._extract_after_verb(
+                raw_stripped,
+                lead_verb_span,
+                strip_preps=("a bit of ", "a little ", "some ", "the ", "a ", "an "),
+            )
             if not q_clean:
-                return None
+                if "media.object" in entities or lead_verb_span in ("press play", "hit play", "resume", "unpause", "continue playing"):
+                    q_clean = "music"
+                else:
+                    return None
             return {
                 "cap": "media.play",
                 "score": min(score, 0.96),
