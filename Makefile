@@ -6,18 +6,24 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm dwm-msg dwm-bar dwm-vad dwm-whisperd
+all: dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm/mod_dwm.so mods/tts/mod_tts.so
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-${OBJ}: config.h config.mk
+${OBJ}: config.h config.mk dwm.h dwm-types.h
 
 config.h:
 	cp config.def.h $@
 
 dwm: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
+
+mods/dwm/mod_dwm.so: mods/dwm/mod_dwm.c dwm-types.h
+	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm/mod_dwm.c -L${X11LIB} -lX11 -L$(HOME)/.local/lib -lxylem -lstele -lcorm -Wl,-rpath,$(HOME)/.local/lib
+
+mods/tts/mod_tts.so: mods/tts/mod_tts.c
+	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/tts/mod_tts.c -L$(HOME)/.local/lib -lxylem -ldl -lpthread -lm -Wl,-rpath,$(HOME)/.local/lib
 
 dwm-msg: dwm-msg.c
 	${CC} ${CFLAGS} -o $@ dwm-msg.c -L${X11LIB} -lX11
@@ -29,10 +35,10 @@ dwm-vad: dwm-vad.c
 	${CC} ${CFLAGS} -o $@ dwm-vad.c -lm
 
 dwm-whisperd: dwm-whisperd.c whisper.h
-	${CC} ${CFLAGS} -o $@ dwm-whisperd.c $(HOME)/.local/lib/libwhisper.so.1 $(HOME)/.local/lib/libggml.so.0 -lpthread -lm -Wl,-rpath,$(HOME)/.local/lib
+	${CC} ${CFLAGS} -I$(HOME)/.local/include -o $@ dwm-whisperd.c $(HOME)/.local/lib/libwhisper.so.1 $(HOME)/.local/lib/libggml.so.0 -L$(HOME)/.local/lib -ljarvis -lxylem -lstele -lcorm -lpthread -lm -Wl,-rpath,$(HOME)/.local/lib
 
 clean:
-	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${OBJ} dwm-${VERSION}.tar.gz
+	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm/mod_dwm.so mods/tts/mod_tts.so ${OBJ} dwm-${VERSION}.tar.gz
 
 dist: clean
 	mkdir -p dwm-${VERSION}
@@ -44,14 +50,25 @@ dist: clean
 
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
-	install -m 755 dwm dwm-msg dwm-bar dwm-vad dwm-whisperd ${DESTDIR}${PREFIX}/bin/
-	install -m 755 scripts/jarvis scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/jarvis_core.py scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
-	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis
+	install -m 755 dwm dwm-msg dwm-bar dwm-vad ${DESTDIR}${PREFIX}/bin/
+	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-whisperd ${DESTDIR}${PREFIX}/bin/dwm-voice
+	install -m 755 dwm-whisperd ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/jarvis_core.py scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvis ]; then \
+		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvis ${DESTDIR}${PREFIX}/bin/jarvis; \
+	fi
+	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis $(HOME)/.config/dwm
+	install -m 755 mods/dwm/mod_dwm.so $(HOME)/.local/lib/mod_dwm.so
+	install -m 755 mods/tts/mod_tts.so $(HOME)/.local/lib/mod_tts.so
+	@if [ ! -f $(HOME)/.config/dwm/mods.load ]; then \
+		echo "$(HOME)/.local/lib/mod_dwm" > $(HOME)/.config/dwm/mods.load; \
+	fi
+	@printf "%s/.local/lib/mod_dwm.so\n%s/.local/lib/mod_tts.so\n" "$(HOME)" "$(HOME)" > $(HOME)/.config/jarvis/mods.load
+	@rm -rf $(HOME)/.local/lib/jarvis-core $(HOME)/.local/lib/jarvis-adapters $(HOME)/.local/lib/jarvis-dsl
 	cp -r lib/jarvis-core lib/jarvis-adapters lib/jarvis-dsl $(HOME)/.local/lib/
 	install -m 644 ontology.json $(HOME)/.config/jarvis/ontology.json
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
-	mkdir -p $(HOME)/.config/dwm
 	install -m 644 intents.conf $(HOME)/.config/dwm/intents.conf
 	install -m 644 ontology.json $(HOME)/.config/dwm/ontology.json
 	mkdir -p $(HOME)/.config/dunst

@@ -187,34 +187,14 @@ notify_voice() {
 }
 
 ensure_chime_wav() {
-    if [ ! -f "$CHIME_WAV" ] || [ ! -f "$DONE_CHIME_WAV" ]; then
-        python3 - "$CHIME_WAV" "$DONE_CHIME_WAV" << 'PYEOF2' 2>/dev/null || true
-import sys, wave, struct, math
-rate = 16000
-def make_wav(path, notes, amp):
-    frames = bytearray()
-    for freq, dur in notes:
-        n = int(rate * dur)
-        for i in range(n):
-            env = math.sin(math.pi * i / n)
-            val = int(amp * env * math.sin(2.0 * math.pi * freq * i / rate))
-            frames.extend(struct.pack("<h", val))
-    with wave.open(path, "wb") as w:
-        w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
-        w.writeframes(bytes(frames))
-
-make_wav(sys.argv[1], [(587.33, 0.040), (880.00, 0.060)], 7200)
-make_wav(sys.argv[2], [(659.25, 0.032), (523.25, 0.045)], 5200)
-PYEOF2
-    fi
+    return 0
 }
 
 is_jarvis_running() {
-    if [ -f "$JARVIS_PID_FILE" ]; then
-        jpid=$(cat "$JARVIS_PID_FILE" 2>/dev/null)
-        if [ -n "$jpid" ] && kill -0 "$jpid" 2>/dev/null; then
-            return 0
-        fi
+    port=$(get_srv_port)
+    st=$(dwm-whisperd -p "$port" -c "JARVIS_STATUS" 2>/dev/null || true)
+    if [ "$st" = "ON" ]; then
+        return 0
     fi
     return 1
 }
@@ -230,25 +210,33 @@ restore_idle_state() {
 
 ensure_whisper_server() {
     port=$(get_srv_port)
-    if [ -f "$SRV_PID_FILE" ]; then
-        spid=$(cat "$SRV_PID_FILE" 2>/dev/null)
-        if [ -n "$spid" ] && kill -0 "$spid" 2>/dev/null; then
+    jflag="${1:-}"
+    if pgrep -x "dwm-whisperd" >/dev/null 2>&1; then
+        spid=$(pgrep -x "dwm-whisperd" | head -n 1)
+        if [ -n "$spid" ] && readlink "/proc/$spid/exe" 2>/dev/null | grep -q '(deleted)'; then
+            pkill -x "dwm-whisperd" 2>/dev/null || true
+            rm -f "$SRV_PID_FILE"
+            sleep 0.08
+        else
+            printf '%s\n' "$spid" > "$SRV_PID_FILE"
+            if [ "$jflag" = "-j" ]; then
+                dwm-whisperd -p "$port" -c "JARVIS_ON" >/dev/null 2>&1 || true
+            fi
             return 0
         fi
     fi
-    if pgrep -x "dwm-whisperd" >/dev/null 2>&1; then
-        pgrep -x "dwm-whisperd" | head -n 1 > "$SRV_PID_FILE"
-        return 0
-    fi
-    pkill -f "whisper-server.*--port $port" 2>/dev/null || true
 
     if command -v dwm-whisperd >/dev/null 2>&1; then
         model=$(get_model)
-        setsid dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 </dev/null >/dev/null 2>&1 &
+        if [ "$jflag" = "-j" ]; then
+            setsid dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 -j </dev/null >/dev/null 2>&1 &
+        else
+            setsid dwm-whisperd -m "$model" -w "$WAKE_MODEL" -p "$port" -t 6 </dev/null >/dev/null 2>&1 &
+        fi
         printf '%s\n' "$!" > "$SRV_PID_FILE"
         i=0
         while [ "$i" -lt 40 ]; do
-            if curl -s --max-time 0.1 "http://127.0.0.1:${port}/" >/dev/null 2>&1; then
+            if dwm-whisperd -p "$port" -c "PING" >/dev/null 2>&1; then
                 break
             fi
             sleep 0.05
@@ -257,139 +245,26 @@ ensure_whisper_server() {
     fi
 }
 
-is_lockdown_phrase() {
-    phrase=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:],.!?;:-]+//; s/[[:space:],.!?;:-]+$//')
-    case "$phrase" in
-        lockdown|"lock down"|lock-down|"locked down"|"log down"|"enter lockdown"|"lockdown mode"|"jarvis lockdown"|"jarvis lock down"|"turn off"|"turn off jarvis"|"jarvis off"|"shut down jarvis"|"stop listening"|"disable jarvis"|"go to sleep"|"bloquear"|"bloquear jarvis"|"modo bloqueio"|"desligar jarvis")
-            return 0
-            ;;
-    esac
-    return 1
-}
-
 # =============================================================================
-# "Jarvis" Always-On Streaming Wake-Word & Command Daemon
+# "Jarvis" Single-Process In-Daemon Wake-Word & Command Controller
 # =============================================================================
 
 jarvis_loop() {
-    trap '' HUP
-    printf '%s\n' "$$" > "$JARVIS_PID_FILE"
-    ensure_chime_wav
-    ensure_whisper_server
-    /home/quirinpa/.local/bin/jarvis warmup </dev/null >/dev/null 2>&1 &
-    printf 'jarvis\n' > "$STATE_FILE"
-    refresh_bar
-
-    trap 'rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT" "$ACTING_PID_FILE"; restore_idle_state; exit 0' INT TERM
-
-    next_followup=0
-
-    while [ -f "$JARVIS_PID_FILE" ] && [ "$(cat "$JARVIS_PID_FILE" 2>/dev/null)" = "$$" ]; do
-        thresh_db=$(get_xres "dwm.voice.threshold_db" "-35")
-        cmd_sil=$(get_xres "dwm.voice.cmd_silence_ms" "420")
-        wake_word=$(get_wake_word)
-        lang_mode=$(get_lang_mode)
-        port=$(get_srv_port)
-        fcfg=$(get_followup_ms)
-
-        if [ "$fcfg" = "3600000" ]; then
-            if is_speaker_playing; then
-                next_followup=0
-            else
-                next_followup=3600000
-            fi
-        elif [ "${next_followup:-0}" -gt 0 ] 2>/dev/null; then
-            if is_speaker_playing; then
-                next_followup=0
-            fi
-        fi
-
-        if [ "${next_followup:-0}" -gt 0 ] 2>/dev/null; then
-            printf 'jarvis-cmd\n' > "$STATE_FILE"
-        else
-            printf 'jarvis\n' > "$STATE_FILE"
-        fi
-        refresh_bar
-
-        ensure_whisper_server
-        rm -f "$JARVIS_OUT"
-
-        dwm-whisperd -p "$port" -c "JARVIS_WAIT|${lang_mode}|${thresh_db}|${cmd_sil}|${wake_word}|${STATE_FILE}|${CHIME_WAV}|${next_followup}" </dev/null > "$JARVIS_OUT" 2>/dev/null &
-        jvad_pid=$!
-        printf '%s\n' "$jvad_pid" > "$JARVIS_VAD_PID"
-        wait "$jvad_pid"
-        rc=$?
-        rm -f "$JARVIS_VAD_PID"
-        was_followup="$next_followup"
-        next_followup=0
-
-        if [ "$rc" -eq 130 ]; then
-            rm -f "$JARVIS_OUT"
-            sleep 0.10
-            continue
-        fi
-
-        cmd_text=$(cat "$JARVIS_OUT" 2>/dev/null | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//')
-        rm -f "$JARVIS_OUT"
-
-        if [ "$rc" -eq 0 ] && [ -n "$cmd_text" ]; then
-            printf '%s' "$cmd_text" > "$LAST_TXT"
-            if is_lockdown_phrase "$cmd_text"; then
-                setsid "$0" lockdown </dev/null >/dev/null 2>&1 &
-                exit 0
-            fi
-            printf '%s\n' "$$" > "$ACTING_PID_FILE"
-            refresh_bar
-            /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
-            /home/quirinpa/.local/bin/jarvis query "$cmd_text" </dev/null >/dev/null 2>&1
-            act_rc=$?
-            rm -f "$ACTING_PID_FILE"
-            if [ "$act_rc" -eq 0 ] && ! is_speaker_playing; then
-                next_followup="$fcfg"
-            else
-                next_followup=0
-            fi
-        elif [ "$rc" -eq 2 ]; then
-            printf 'jarvis\n' > "$STATE_FILE"
-            refresh_bar
-            if [ "${was_followup:-0}" -le 0 ] 2>/dev/null; then
-                notify_voice "voice" 1800 "  Jarvis Standby" "No command spoken."
-            fi
-        else
-            printf 'jarvis\n' > "$STATE_FILE"
-            refresh_bar
-            sleep 0.15
-        fi
-    done
+    ensure_whisper_server -j
 }
 
 jarvis_stop_quiet() {
     port=$(get_srv_port)
-    /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
-    dwm-whisperd -p "$port" -c "CANCEL" >/dev/null 2>&1 &
+    dwm-whisperd -p "$port" -c "JARVIS_OFF" >/dev/null 2>&1 || true
     if [ -f "$JARVIS_VAD_PID" ]; then
         jvad=$(cat "$JARVIS_VAD_PID" 2>/dev/null)
         [ -n "$jvad" ] && kill -USR1 "$jvad" 2>/dev/null || true
-    fi
-    if [ -f "$ACTING_PID_FILE" ]; then
-        apid=$(cat "$ACTING_PID_FILE" 2>/dev/null)
-        [ -n "$apid" ] && kill "$apid" 2>/dev/null || true
-    fi
-    if [ -f "$JARVIS_PID_FILE" ]; then
-        jpid=$(cat "$JARVIS_PID_FILE" 2>/dev/null)
-        [ -n "$jpid" ] && kill "$jpid" 2>/dev/null || true
     fi
     rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID" "$JARVIS_WAV" "$JARVIS_OUT" "$STATE_FILE" "$ACTING_PID_FILE"
     refresh_bar
 }
 
 jarvis_start() {
-    if is_jarvis_running; then
-        printf 'jarvis\n' > "$STATE_FILE"
-        refresh_bar
-        notify_voice "voice" 2200 "  Jarvis Active (On)" "Listening for “Jarvis” wake word."
-        return 0
-    fi
     if command -v wpctl >/dev/null 2>&1; then
         wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
         cur_vol=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | awk '{print $2}')
@@ -397,11 +272,8 @@ jarvis_start() {
             awk "BEGIN { exit !($cur_vol < 0.70) }" 2>/dev/null && wpctl set-volume @DEFAULT_AUDIO_SOURCE@ 0.85 2>/dev/null || true
         fi
     fi
-    rm -f "$JARVIS_PID_FILE" "$JARVIS_VAD_PID"
-    ensure_whisper_server
-    /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
-    setsid "$0" jarvis-daemon </dev/null >/dev/null 2>&1 &
-    sleep 0.12
+    rm -f "$JARVIS_VAD_PID"
+    ensure_whisper_server -j
     refresh_bar
     wake=$(get_wake_word)
     notify_voice "voice" 3000 "  Jarvis Active (On)" "Say “${wake}” at any time, or “${wake}, lockdown” to turn off."
@@ -471,13 +343,13 @@ voice_menu() {
                 v_id=$(printf '%s\n' "$vchoice" | awk '{print $1}')
                 if [ "$v_id" = "off" ]; then
                     printf '0\n' > "$CONF_DIR/tts_enabled"
-                    notify_voice "voice" 2500 "🗣  Jarvis Voice Disabled" "Silent HUD mode active."
+                    dwm-whisperd -p "$(get_srv_port)" -c "TTS_INTERRUPT" >/dev/null 2>&1 || true
+                    notify_voice "voice" 2500 "🗣  Jarvis Voice Disabled" "Silent HUD mode active (0 KB TTS RAM)."
                 else
                     printf '1\n' > "$CONF_DIR/tts_enabled"
                     printf '%s\n' "$v_id" > "$CONF_DIR/tts_voice"
-                    /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
                     notify_voice "voice" 2800 "🗣  Jarvis Neural Voice Active" "Voice set to: $v_id"
-                    /home/quirinpa/.local/bin/dwm-tts speak "At your service." >/dev/null 2>&1 &
+                    dwm-whisperd -p "$(get_srv_port)" -c "TTS_SPEAK|At your service." >/dev/null 2>&1 &
                 fi
             fi
             ;;
@@ -604,16 +476,15 @@ case "${1:-toggle}" in
         elif [ ! -f "$CONF_DIR/tts_voice" ]; then
             printf 'bm_daniel\n' > "$CONF_DIR/tts_voice"
         fi
-        /home/quirinpa/.local/bin/dwm-tts start >/dev/null 2>&1 &
         notify_voice "voice" 2500 "🗣  Jarvis Neural Voice ON" "Voice: $(cat "$CONF_DIR/tts_voice" 2>/dev/null)"
         ;;
     tts-off)
         printf '0\n' > "$CONF_DIR/tts_enabled"
-        /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
-        notify_voice "voice" 2500 "🗣  Jarvis Neural Voice OFF" "Silent HUD mode active."
+        dwm-whisperd -p "$(get_srv_port)" -c "TTS_INTERRUPT" >/dev/null 2>&1 || true
+        notify_voice "voice" 2500 "🗣  Jarvis Neural Voice OFF" "Silent HUD mode active (0 KB TTS RAM)."
         ;;
     tts-interrupt|interrupt|quiet)
-        exec /home/quirinpa/.local/bin/dwm-tts interrupt
+        dwm-whisperd -p "$(get_srv_port)" -c "TTS_INTERRUPT" >/dev/null 2>&1 || exec /home/quirinpa/.local/bin/jarvis tts-interrupt
         ;;
     *)
         echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|tts-on [voice]|tts-off|tts-interrupt|pi-show|pi-stop|pi-reset|server-start}" >&2

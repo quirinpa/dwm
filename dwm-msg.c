@@ -32,6 +32,9 @@ usage(void)
 		"  pull-win <win_id>       Pull specific window ID onto current workspace and focus it\n"
 		"  pull-class <name>       Pull first window matching WM_CLASS / title onto current workspace\n"
 		"  close-win <win_id>      Close specific window ID without switching focus\n"
+		"  mod-load <path>         Hot-load a libxylem (.so) module into dwm\n"
+		"  mod-unload <path>       Unload a libxylem (.so) module from dwm\n"
+		"  mod-reload <path>       Hot-reload a libxylem (.so) module in dwm\n"
 		"  curtag                  Print current active workspace number (1..9)\n"
 		"  other                   Print the unfocused window on the current workspace\n"
 		"  clients                 List managed windows (id, class, title, tag, visible)\n"
@@ -211,6 +214,13 @@ main(int argc, char *argv[])
 		Window w = (Window)strtoul(argv[2], NULL, 0);
 		if (w)
 			send_cmd(dpy, root, 15, (long)w);
+	} else if ((!strcmp(argv[1], "mod-load") || !strcmp(argv[1], "mod-unload") || !strcmp(argv[1], "mod-reload")) && argc >= 3) {
+		Atom mod_atom = XInternAtom(dpy, "_DWM_MOD_CMD", False);
+		long action = !strcmp(argv[1], "mod-load") ? 1 : (!strcmp(argv[1], "mod-unload") ? 2 : 3);
+		XChangeProperty(dpy, root, mod_atom, XA_STRING, 8, PropModeReplace,
+			(unsigned char *)argv[2], (int)strlen(argv[2]));
+		XSync(dpy, False);
+		send_cmd(dpy, root, 16, action);
 	} else if (!strcmp(argv[1], "curtag")) {
 		unsigned int cur_mask = get_cardinal_prop(dpy, root, "_DWM_CUR_TAG", 1U);
 		printf("%d\n", mask_to_tag_num(cur_mask));

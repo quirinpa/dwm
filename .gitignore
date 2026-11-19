@@ -1,7 +1,8 @@
 *.o
+*.so
 __pycache__/
-dwm
-dwm-msg
-dwm-bar
-dwm-vad
-dwm-whisperd
+/dwm
+/dwm-msg
+/dwm-bar
+/dwm-vad
+/dwm-whisperd

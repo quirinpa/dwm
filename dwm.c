@@ -20,6 +20,7 @@
  *
  * To understand everything else, start reading main().
  */
+#include <ctype.h>
 #include <errno.h>
 #include <locale.h>
 #include <signal.h>
@@ -44,6 +45,43 @@
 
 #include "drw.h"
 #include "util.h"
+#include "dwm.h"
+
+XY_LISTENER_TAG(int, dwm_xy_on_startup, dwm_host, int, screen_num)
+{
+	(void)screen_num;
+	return 0;
+}
+
+XY_LISTENER_TAG(int, dwm_xy_on_focus, dwm_host, unsigned long, win_id, const char *, wm_class, const char *, title)
+{
+	(void)win_id;
+	(void)wm_class;
+	(void)title;
+	return 0;
+}
+
+XY_LISTENER_TAG(int, dwm_xy_on_manage, dwm_host, unsigned long, win_id, const char *, wm_class, const char *, title)
+{
+	(void)win_id;
+	(void)wm_class;
+	(void)title;
+	return 0;
+}
+
+XY_LISTENER_TAG(int, dwm_xy_on_unmanage, dwm_host, unsigned long, win_id)
+{
+	(void)win_id;
+	return 0;
+}
+
+XY_LISTENER_TAG(int, dwm_xy_on_cmd, dwm_host, long, cmd, long, arg1, long, arg2)
+{
+	(void)cmd;
+	(void)arg1;
+	(void)arg2;
+	return 0;
+}
 
 /* macros */
 #define BUTTONMASK              (ButtonPressMask|ButtonReleaseMask)
@@ -303,7 +341,7 @@ static void (*handler[LASTEvent]) (XEvent *) = {
 	[PropertyNotify] = propertynotify,
 	[UnmapNotify] = unmapnotify
 };
-static Atom wmatom[WMLast], netatom[NetLast], dwmcmdatom, dwmcurtagatom, dwmclienttagsatom;
+static Atom wmatom[WMLast], netatom[NetLast], dwmcmdatom, dwmcurtagatom, dwmclienttagsatom, dwmmodcmdatom;
 static int restart = 0;
 static int running = 1;
 static Cur *cursor[CurLast];
@@ -571,6 +609,7 @@ cleanup(void)
 	free(scheme);
 	XDestroyWindow(dpy, wmcheckwin);
 	drw_free(drw);
+	xy_shutdown();
 	XSync(dpy, False);
 	XSetInputFocus(dpy, PointerRoot, RevertToPointerRoot, CurrentTime);
 	XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
@@ -685,6 +724,22 @@ clientmessage(XEvent *e)
 					XUngrabServer(dpy);
 				}
 			}
+			break;
+		case 16: /* libxylem dynamic module load/unload/reload via _DWM_MOD_CMD root property */
+			{
+				char mod_name[512];
+				if (dwmmodcmdatom && gettextprop(root, dwmmodcmdatom, mod_name, sizeof(mod_name)) && mod_name[0]) {
+					if (cme->data.l[1] == DWM_XY_MOD_LOAD)
+						xy_load(mod_name);
+					else if (cme->data.l[1] == DWM_XY_MOD_UNLOAD)
+						xy_unload(mod_name);
+					else if (cme->data.l[1] == DWM_XY_MOD_RELOAD)
+						xy_reload(mod_name);
+				}
+			}
+			break;
+		default:
+			dwm_xy_on_cmd(cme->data.l[0], cme->data.l[1], cme->data.l[2]);
 			break;
 		}
 		return;
@@ -1048,6 +1103,13 @@ focus(Client *c)
 		grabbuttons(c, 1);
 		XSetWindowBorder(dpy, c->win, scheme[SchemeSel][ColBorder].pixel);
 		setfocus(c);
+		{
+			XClassHint ch = { NULL, NULL };
+			XGetClassHint(dpy, c->win, &ch);
+			dwm_xy_on_focus((unsigned long)c->win, ch.res_class ? ch.res_class : "", c->name);
+			if (ch.res_class) XFree(ch.res_class);
+			if (ch.res_name) XFree(ch.res_name);
+		}
 	} else {
 		XSetInputFocus(dpy, root, RevertToPointerRoot, CurrentTime);
 		XDeleteProperty(dpy, root, netatom[NetActiveWindow]);
@@ -1425,6 +1487,13 @@ manage(Window w, XWindowAttributes *wa)
 	c->mon->sel = c;
 	arrange(c->mon);
 	XMapWindow(dpy, c->win);
+	{
+		XClassHint ch = { NULL, NULL };
+		XGetClassHint(dpy, c->win, &ch);
+		dwm_xy_on_manage((unsigned long)c->win, ch.res_class ? ch.res_class : "", c->name);
+		if (ch.res_class) XFree(ch.res_class);
+		if (ch.res_name) XFree(ch.res_name);
+	}
 	focus(NULL);
 }
 
@@ -1941,6 +2010,7 @@ setup(void)
 	dwmcmdatom = XInternAtom(dpy, "_DWM_CMD", False);
 	dwmcurtagatom = XInternAtom(dpy, "_DWM_CUR_TAG", False);
 	dwmclienttagsatom = XInternAtom(dpy, "_DWM_CLIENT_TAGS", False);
+	dwmmodcmdatom = XInternAtom(dpy, "_DWM_MOD_CMD", False);
 	/* init cursors */
 	cursor[CurNormal] = drw_cur_create(drw, XC_left_ptr);
 	cursor[CurResize] = drw_cur_create(drw, XC_sizing);
@@ -1973,6 +2043,38 @@ setup(void)
 	XSelectInput(dpy, root, wa.event_mask);
 	grabkeys();
 	focus(NULL);
+	xy_init();
+	{
+		const char *home = getenv("HOME");
+		const char *env_mods = getenv("DWM_MODS");
+		if (env_mods && *env_mods) {
+			char buf[1024];
+			char *saveptr = NULL;
+			char *tok;
+			snprintf(buf, sizeof(buf), "%s", env_mods);
+			for (tok = strtok_r(buf, ":, ", &saveptr); tok; tok = strtok_r(NULL, ":, ", &saveptr))
+				if (*tok) xy_load(tok);
+		}
+		if (home && *home) {
+			char mpath[512];
+			FILE *fp;
+			snprintf(mpath, sizeof(mpath), "%s/.config/dwm/mods.load", home);
+			if ((fp = fopen(mpath, "r"))) {
+				char line[512];
+				while (fgets(line, sizeof(line), fp)) {
+					char *p = line;
+					size_t l;
+					while (*p && isspace((unsigned char)*p)) p++;
+					if (!*p || *p == '#') continue;
+					l = strlen(p);
+					while (l > 0 && isspace((unsigned char)p[l - 1])) p[--l] = '\0';
+					if (l > 0) xy_load(p);
+				}
+				fclose(fp);
+			}
+		}
+	}
+	dwm_xy_on_startup(screen);
 }
 
 void
@@ -2225,6 +2327,7 @@ unmanage(Client *c, int destroyed)
 {
 	Monitor *m = c->mon;
 	XWindowChanges wc;
+	unsigned long win_id = (unsigned long)c->win;
 
 	detach(c);
 	detachstack(c);
@@ -2241,6 +2344,7 @@ unmanage(Client *c, int destroyed)
 		XUngrabServer(dpy);
 	}
 	free(c);
+	dwm_xy_on_unmanage(win_id);
 	focus(NULL);
 	updateclientlist();
 	arrange(m);

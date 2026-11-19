@@ -1,5 +1,8 @@
 #!/bin/sh
 export PATH="$HOME/.local/bin:$PATH"
+export GNOME_ACCESSIBILITY=1
+export QT_ACCESSIBILITY=1
+export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 
 # 1. Set display resolution FIRST (before dwm or background tasks run)
 if command -v xrandr >/dev/null 2>&1; then
@@ -12,11 +15,20 @@ if [ -f "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1; then
     command -v dwm-msg >/dev/null 2>&1 && dwm-msg reload 2>/dev/null || true
 fi
 
-# 3. Import X11 environment into systemd/DBus and ensure portal is healthy in background
+# 3. Import X11 environment into systemd/DBus, enable AT-SPI2 accessibility bus, and ensure portal is healthy in background
 (
     if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-        dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP
+        dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP GNOME_ACCESSIBILITY QT_ACCESSIBILITY
     fi
+    if command -v gdbus >/dev/null 2>&1; then
+        gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled "<true>" >/dev/null 2>&1 || true
+        gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status ScreenReaderEnabled "<true>" >/dev/null 2>&1 || true
+    fi
+    for ff_dir in "$HOME"/snap/firefox/common/.mozilla/firefox/*.default* "$HOME"/.mozilla/firefox/*.default*; do
+        if [ -d "$ff_dir" ] && ! grep -q "accessibility.force_disabled" "$ff_dir/user.js" 2>/dev/null; then
+            printf 'user_pref("accessibility.force_disabled", -1);\n' >> "$ff_dir/user.js"
+        fi
+    done
     if command -v systemctl >/dev/null 2>&1; then
         systemctl --user reset-failed xdg-desktop-portal-gtk.service xdg-desktop-portal.service 2>/dev/null
         systemctl --user start xdg-desktop-portal-gtk.service 2>/dev/null
@@ -58,14 +70,12 @@ fi
 pkill -x dwm-bar 2>/dev/null || true
 /home/quirinpa/.local/bin/dwm-bar &
 
-# 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise) & start warm whisperd + Jarvis listener
+# 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise) & start single-process warm whisperd + Jarvis listener
 (
     if command -v amixer >/dev/null 2>&1; then
         amixer -c 0 sset 'Internal Mic Boost' 0 >/dev/null 2>&1 || true
         amixer -c 0 sset 'Capture' 42 >/dev/null 2>&1 || true
     fi
-    /home/quirinpa/.local/bin/dwm-voice server-start >/dev/null 2>&1 &
-    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
-    sleep 0.5
     /home/quirinpa/.local/bin/dwm-voice jarvis-start >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
 ) &
