@@ -53,7 +53,8 @@ install: all
 	install -m 755 dwm dwm-msg dwm-bar dwm-vad ${DESTDIR}${PREFIX}/bin/
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-whisperd ${DESTDIR}${PREFIX}/bin/dwm-voice
 	install -m 755 dwm-whisperd ${DESTDIR}${PREFIX}/bin/
-	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-act scripts/jarvis_core.py scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
+	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-act ${DESTDIR}${PREFIX}/bin/dwm-tts ${DESTDIR}${PREFIX}/bin/jarvis_core.py
 	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvis ]; then \
 		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvis ${DESTDIR}${PREFIX}/bin/jarvis; \
 	fi
@@ -63,13 +64,11 @@ install: all
 	@if [ ! -f $(HOME)/.config/dwm/mods.load ]; then \
 		echo "$(HOME)/.local/lib/mod_dwm" > $(HOME)/.config/dwm/mods.load; \
 	fi
-	@printf "%s/.local/lib/mod_dwm.so\n%s/.local/lib/mod_tts.so\n" "$(HOME)" "$(HOME)" > $(HOME)/.config/jarvis/mods.load
-	@rm -rf $(HOME)/.local/lib/jarvis-core $(HOME)/.local/lib/jarvis-adapters $(HOME)/.local/lib/jarvis-dsl
-	cp -r lib/jarvis-core lib/jarvis-adapters lib/jarvis-dsl $(HOME)/.local/lib/
+	@printf "%s/.local/lib/mod_dwm\n%s/.local/lib/mod_tts\n" "$(HOME)" "$(HOME)" > $(HOME)/.config/jarvis/mods.load
+	@rm -rf $(HOME)/.local/lib/jarvis-core $(HOME)/.local/lib/jarvis-adapters $(HOME)/.local/lib/jarvis-dsl $(HOME)/.config/dwm/intents.conf
 	install -m 644 ontology.json $(HOME)/.config/jarvis/ontology.json
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
-	install -m 644 intents.conf $(HOME)/.config/dwm/intents.conf
 	install -m 644 ontology.json $(HOME)/.config/dwm/ontology.json
 	mkdir -p $(HOME)/.config/dunst
 	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc

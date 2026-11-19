@@ -753,7 +753,7 @@ static void populate_tmux_panes(jarvis_world_t *w, bool active_only, int lines)
 			/* Put focused terminal screen first if it's currently active */
 			jarvis_pane_t st_pane;
 			memset(&st_pane, 0, sizeof(st_pane));
-			snprintf(st_pane.pane, sizeof(st_pane.pane), "st:%s", win->id);
+			snprintf(st_pane.pane, sizeof(st_pane.pane), "st:%.58s", win->id);
 			resolve_window_cwd_and_fg(win, st_pane.cwd, sizeof(st_pane.cwd),
 			                          st_pane.command, sizeof(st_pane.command));
 			st_pane.active = (ci == 0);
@@ -1055,52 +1055,254 @@ static bool mpris_control(const char *action)
 	return strstr(out, "OK") != NULL;
 }
 
-static void clear_modifiers(void)
+/* ---------------------------------------------------------------------------
+ * Native X11 Input Injection (libXtst.so.6 via dlopen)
+ * ------------------------------------------------------------------------- */
+
+typedef struct {
+	int  (*fake_key)(Display *, unsigned int, Bool, unsigned long);
+	int  (*fake_btn)(Display *, unsigned int, Bool, unsigned long);
+	int  (*fake_mot)(Display *, int, int, int, unsigned long);
+	bool ready;
+	bool tried;
+} xtst_syms_t;
+
+static xtst_syms_t g_xtst = {0};
+
+static bool ensure_xtst_loaded(void)
 {
-	int rc = system("xdotool keyup Super_L Super_R Shift_L Shift_R Control_L Control_R Alt_L Alt_R >/dev/null 2>&1");
-	(void)rc;
+	if (g_xtst.tried) return g_xtst.ready;
+	g_xtst.tried = true;
+	void *h = dlopen("libXtst.so.6", RTLD_LAZY | RTLD_LOCAL);
+	if (!h) h = dlopen("libXtst.so", RTLD_LAZY | RTLD_LOCAL);
+	if (!h) return false;
+	g_xtst.fake_key = (int (*)(Display *, unsigned int, Bool, unsigned long))dlsym(h, "XTestFakeKeyEvent");
+	g_xtst.fake_btn = (int (*)(Display *, unsigned int, Bool, unsigned long))dlsym(h, "XTestFakeButtonEvent");
+	g_xtst.fake_mot = (int (*)(Display *, int, int, int, unsigned long))dlsym(h, "XTestFakeMotionEvent");
+	if (g_xtst.fake_key && g_xtst.fake_btn && g_xtst.fake_mot) {
+		g_xtst.ready = true;
+	}
+	return g_xtst.ready;
 }
 
-static void xdotool_type(const char *text, bool press_enter)
+static KeySym map_keysym_token(const char *tok)
 {
-	clear_modifiers();
+	if (!tok || !*tok) return NoSymbol;
+	if (strcasecmp(tok, "ctrl") == 0 || strcasecmp(tok, "control") == 0) return XStringToKeysym("Control_L");
+	if (strcasecmp(tok, "shift") == 0) return XStringToKeysym("Shift_L");
+	if (strcasecmp(tok, "alt") == 0) return XStringToKeysym("Alt_L");
+	if (strcasecmp(tok, "super") == 0 || strcasecmp(tok, "win") == 0 || strcasecmp(tok, "meta") == 0) return XStringToKeysym("Super_L");
+	if (strcasecmp(tok, "enter") == 0 || strcasecmp(tok, "return") == 0) return XStringToKeysym("Return");
+	if (strcasecmp(tok, "esc") == 0 || strcasecmp(tok, "escape") == 0) return XStringToKeysym("Escape");
+	if (strcasecmp(tok, "space") == 0) return XStringToKeysym("space");
+	if (strcasecmp(tok, "tab") == 0) return XStringToKeysym("Tab");
+	if (strcasecmp(tok, "backspace") == 0 || strcasecmp(tok, "bs") == 0) return XStringToKeysym("BackSpace");
+	if (strcasecmp(tok, "plus") == 0) return XStringToKeysym("equal");
+	if (strcasecmp(tok, "minus") == 0) return XStringToKeysym("minus");
+	KeySym ks = XStringToKeysym(tok);
+	if (ks == NoSymbol && strlen(tok) == 1) {
+		ks = (KeySym)(unsigned char)tok[0];
+	}
+	return ks;
+}
+
+static void clear_modifiers_dpy(Display *dpy)
+{
+	if (!dpy || !ensure_xtst_loaded()) return;
+	static const char *const MODS[] = {
+		"Super_L", "Super_R", "Shift_L", "Shift_R",
+		"Control_L", "Control_R", "Alt_L", "Alt_R", NULL
+	};
+	for (size_t i = 0; MODS[i]; i++) {
+		KeySym ks = XStringToKeysym(MODS[i]);
+		if (ks != NoSymbol) {
+			KeyCode kc = XKeysymToKeycode(dpy, ks);
+			if (kc != 0) g_xtst.fake_key(dpy, kc, False, 0);
+		}
+	}
+	XFlush(dpy);
+}
+
+static void x11_press_key_combo(const char *combo)
+{
+	if (!combo || !*combo) combo = "Return";
+	Display *dpy = XOpenDisplay(NULL);
+	if (!dpy) return;
+	if (!ensure_xtst_loaded()) {
+		XCloseDisplay(dpy);
+		return;
+	}
+	clear_modifiers_dpy(dpy);
+
+	/* Split space-separated sequence of chords (e.g. "ctrl+a BackSpace") */
+	char seq_buf[256];
+	snprintf(seq_buf, sizeof(seq_buf), "%s", combo);
+	char *seq_save = NULL;
+	for (char *chord = strtok_r(seq_buf, " ", &seq_save); chord; chord = strtok_r(NULL, " ", &seq_save)) {
+		char cbuf[128];
+		snprintf(cbuf, sizeof(cbuf), "%s", chord);
+		KeyCode codes[8];
+		size_t n_codes = 0;
+		bool need_shift_plus = (strcasestr(chord, "plus") != NULL && !strcasestr(chord, "shift"));
+		if (need_shift_plus) {
+			KeyCode skc = XKeysymToKeycode(dpy, XStringToKeysym("Shift_L"));
+			if (skc != 0) codes[n_codes++] = skc;
+		}
+		char *csave = NULL;
+		for (char *part = strtok_r(cbuf, "+", &csave); part && n_codes < 8; part = strtok_r(NULL, "+", &csave)) {
+			KeySym ks = map_keysym_token(part);
+			if (ks != NoSymbol) {
+				KeyCode kc = XKeysymToKeycode(dpy, ks);
+				if (kc != 0) codes[n_codes++] = kc;
+			}
+		}
+		for (size_t i = 0; i < n_codes; i++) {
+			g_xtst.fake_key(dpy, codes[i], True, 0);
+		}
+		XFlush(dpy);
+		usleep(8000);
+		for (size_t i = n_codes; i > 0; i--) {
+			g_xtst.fake_key(dpy, codes[i - 1], False, 0);
+		}
+		XFlush(dpy);
+		usleep(8000);
+	}
+	XCloseDisplay(dpy);
+}
+
+static bool char_to_keysym_and_shift(char c, const char **out_sym, bool *out_shift)
+{
+	*out_shift = false;
+	if (c >= 'a' && c <= 'z') {
+		static char s[2];
+		s[0] = c; s[1] = '\0';
+		*out_sym = s;
+		return true;
+	}
+	if (c >= 'A' && c <= 'Z') {
+		static char s[2];
+		s[0] = (char)tolower((unsigned char)c); s[1] = '\0';
+		*out_sym = s;
+		*out_shift = true;
+		return true;
+	}
+	if (c >= '0' && c <= '9') {
+		static char s[2];
+		s[0] = c; s[1] = '\0';
+		*out_sym = s;
+		return true;
+	}
+	switch (c) {
+		case ' ':  *out_sym = "space"; return true;
+		case '\n': *out_sym = "Return"; return true;
+		case '\t': *out_sym = "Tab"; return true;
+		case '-':  *out_sym = "minus"; return true;
+		case '_':  *out_sym = "minus"; *out_shift = true; return true;
+		case '=':  *out_sym = "equal"; return true;
+		case '+':  *out_sym = "equal"; *out_shift = true; return true;
+		case '/':  *out_sym = "slash"; return true;
+		case '?':  *out_sym = "slash"; *out_shift = true; return true;
+		case '.':  *out_sym = "period"; return true;
+		case '>':  *out_sym = "period"; *out_shift = true; return true;
+		case ',':  *out_sym = "comma"; return true;
+		case '<':  *out_sym = "comma"; *out_shift = true; return true;
+		case ';':  *out_sym = "semicolon"; return true;
+		case ':':  *out_sym = "semicolon"; *out_shift = true; return true;
+		case '\'': *out_sym = "apostrophe"; return true;
+		case '"':  *out_sym = "apostrophe"; *out_shift = true; return true;
+		case '[':  *out_sym = "bracketleft"; return true;
+		case '{':  *out_sym = "bracketleft"; *out_shift = true; return true;
+		case ']':  *out_sym = "bracketright"; return true;
+		case '}':  *out_sym = "bracketright"; *out_shift = true; return true;
+		case '\\': *out_sym = "backslash"; return true;
+		case '|':  *out_sym = "backslash"; *out_shift = true; return true;
+		case '`':  *out_sym = "grave"; return true;
+		case '~':  *out_sym = "grave"; *out_shift = true; return true;
+		case '!':  *out_sym = "1"; *out_shift = true; return true;
+		case '@':  *out_sym = "2"; *out_shift = true; return true;
+		case '#':  *out_sym = "3"; *out_shift = true; return true;
+		case '$':  *out_sym = "4"; *out_shift = true; return true;
+		case '%':  *out_sym = "5"; *out_shift = true; return true;
+		case '^':  *out_sym = "6"; *out_shift = true; return true;
+		case '&':  *out_sym = "7"; *out_shift = true; return true;
+		case '*':  *out_sym = "8"; *out_shift = true; return true;
+		case '(':  *out_sym = "9"; *out_shift = true; return true;
+		case ')':  *out_sym = "0"; *out_shift = true; return true;
+		default:   return false;
+	}
+}
+
+static void x11_type_text(const char *text, bool press_enter)
+{
+	Display *dpy = XOpenDisplay(NULL);
+	if (!dpy) return;
+	if (!ensure_xtst_loaded()) {
+		XCloseDisplay(dpy);
+		return;
+	}
+	clear_modifiers_dpy(dpy);
+	KeyCode shift_kc = XKeysymToKeycode(dpy, XStringToKeysym("Shift_L"));
+
 	if (text && *text) {
-		jarvis_window_t foc;
-		bool has_foc = get_focused_window_fast(&foc) && foc.id[0];
-		pid_t pid = fork();
-		if (pid == 0) {
-			int devnull = open("/dev/null", O_RDWR);
-			if (devnull >= 0) {
-				dup2(devnull, STDIN_FILENO);
-				dup2(devnull, STDOUT_FILENO);
-				dup2(devnull, STDERR_FILENO);
-				if (devnull > 2) close(devnull);
-			}
-			if (has_foc) {
-				execlp("xdotool", "xdotool", "type", "--window", foc.id, "--clearmodifiers", "--delay", "2", "--", text, (char *)NULL);
-			} else {
-				execlp("xdotool", "xdotool", "type", "--clearmodifiers", "--delay", "2", "--", text, (char *)NULL);
-			}
-			_exit(127);
-		} else if (pid > 0) {
-			int st = 0;
-			waitpid(pid, &st, 0);
+		for (const char *p = text; *p; p++) {
+			const char *sym_name = NULL;
+			bool need_shift = false;
+			if (!char_to_keysym_and_shift(*p, &sym_name, &need_shift)) continue;
+			KeySym ks = XStringToKeysym(sym_name);
+			if (ks == NoSymbol) continue;
+			KeyCode kc = XKeysymToKeycode(dpy, ks);
+			if (kc == 0) continue;
+			if (need_shift && shift_kc != 0) g_xtst.fake_key(dpy, shift_kc, True, 0);
+			g_xtst.fake_key(dpy, kc, True, 0);
+			g_xtst.fake_key(dpy, kc, False, 0);
+			if (need_shift && shift_kc != 0) g_xtst.fake_key(dpy, shift_kc, False, 0);
+			XFlush(dpy);
+			usleep(1800);
+		}
+		usleep(15000);
+	}
+	if (press_enter) {
+		KeyCode ret_kc = XKeysymToKeycode(dpy, XStringToKeysym("Return"));
+		if (ret_kc != 0) {
+			g_xtst.fake_key(dpy, ret_kc, True, 0);
+			g_xtst.fake_key(dpy, ret_kc, False, 0);
+			XFlush(dpy);
 		}
 		usleep(25000);
 	}
-	if (press_enter) {
-		jarvis_window_t foc;
-		bool has_foc = get_focused_window_fast(&foc) && foc.id[0];
-		char cmd[256];
-		if (has_foc) {
-			snprintf(cmd, sizeof(cmd), "xdotool key --window %s --clearmodifiers Return >/dev/null 2>&1", foc.id);
-		} else {
-			snprintf(cmd, sizeof(cmd), "xdotool key --clearmodifiers Return >/dev/null 2>&1");
-		}
-		int rc = system(cmd);
-		(void)rc;
-		usleep(35000);
+	XCloseDisplay(dpy);
+}
+
+static void x11_mouse_click(int x, int y, int btn)
+{
+	Display *dpy = XOpenDisplay(NULL);
+	if (!dpy) return;
+	if (ensure_xtst_loaded()) {
+		g_xtst.fake_mot(dpy, DefaultScreen(dpy), x, y, 0);
+		g_xtst.fake_btn(dpy, (unsigned int)btn, True, 0);
+		g_xtst.fake_btn(dpy, (unsigned int)btn, False, 0);
+		XFlush(dpy);
 	}
+	XCloseDisplay(dpy);
+}
+
+static void x11_mouse_scroll(int move_x, int move_y, bool need_move, int btn, int count)
+{
+	Display *dpy = XOpenDisplay(NULL);
+	if (!dpy) return;
+	if (ensure_xtst_loaded()) {
+		if (need_move) {
+			g_xtst.fake_mot(dpy, DefaultScreen(dpy), move_x, move_y, 0);
+			XFlush(dpy);
+		}
+		for (int i = 0; i < count; i++) {
+			g_xtst.fake_btn(dpy, (unsigned int)btn, True, 0);
+			g_xtst.fake_btn(dpy, (unsigned int)btn, False, 0);
+			XFlush(dpy);
+			if (i + 1 < count) usleep(15000);
+		}
+	}
+	XCloseDisplay(dpy);
 }
 
 static void url_encode(const char *src, char *dst, size_t dst_sz)
@@ -1737,7 +1939,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 				return 0;
 			}
 			focus_window_by_id_str(w.other.id, 0.8);
-			xdotool_type(cmd, true);
+			x11_type_text(cmd, true);
 			if (w.focused.id[0] && strcmp(w.focused.id, w.other.id) != 0) {
 				focus_window_by_id_str(w.focused.id, 0.4);
 			}
@@ -1755,7 +1957,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			op_open_terminal("st", &tmp_res);
 		}
 		g_last_term_open_ts = 0.0;
-		xdotool_type(cmd, true);
+		x11_type_text(cmd, true);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "ran command: %s", cmd);
 		return 0;
@@ -1779,16 +1981,12 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 
 		if (strcmp(op, "press_key") == 0) {
 			const char *combo = dsl->args.key_combo[0] ? dsl->args.key_combo : "Return";
-			clear_modifiers();
-			char cmd[256];
-			snprintf(cmd, sizeof(cmd), "xdotool key --clearmodifiers %s >/dev/null 2>&1", combo);
-			int rc = system(cmd);
-			(void)rc;
-			usleep(40000);
+			x11_press_key_combo(combo);
+			usleep(20000);
 			snprintf(res->output, sizeof(res->output), "key: %s", combo);
 		} else {
 			bool enter = (strcmp(op, "type_and_enter") == 0);
-			xdotool_type(dsl->args.text, enter);
+			x11_type_text(dsl->args.text, enter);
 			snprintf(res->output, sizeof(res->output), "%s: %.40s",
 			         enter ? "typed+enter" : "typed", dsl->args.text);
 		}
@@ -1811,10 +2009,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			y = wy + wh / 2;
 		}
 		int btn = dsl->args.button > 0 ? dsl->args.button : 1;
-		char cmd[256];
-		snprintf(cmd, sizeof(cmd), "xdotool mousemove --sync %d %d click %d >/dev/null 2>&1", x, y, btn);
-		int rc = system(cmd);
-		(void)rc;
+		x11_mouse_click(x, y, btn);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "click at (%d,%d) button %d", x, y, btn);
 		return 0;
@@ -1833,16 +2028,9 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		int wx, wy, ww, wh, mx, my;
 		get_window_geometry(NULL, &wx, &wy, &ww, &wh);
 		get_mouse_location(&mx, &my);
-		char cmd[256];
-		if (!(mx >= wx && mx <= wx + ww && my >= wy && my <= wy + wh)) {
-			snprintf(cmd, sizeof(cmd), "xdotool mousemove --sync %d %d >/dev/null 2>&1", wx + ww / 2, wy + wh / 2);
-			int rc = system(cmd);
-			(void)rc;
-		}
-		snprintf(cmd, sizeof(cmd), "xdotool click --repeat %d --delay 30 %d >/dev/null 2>&1", amount, btn);
-		int rc = system(cmd);
-		(void)rc;
-		usleep(40000);
+		bool need_move = !(mx >= wx && mx <= wx + ww && my >= wy && my <= wy + wh);
+		x11_mouse_scroll(wx + ww / 2, wy + wh / 2, need_move, btn, amount);
+		usleep(20000);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "scrolled %s x%d", dir, amount);
 		return 0;
@@ -1918,9 +2106,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 	if (strcmp(op, "window_close") == 0) {
 		res->handled = true;
 		if (strcasecmp(dsl->target.kind, "tab") == 0) {
-			clear_modifiers();
-			int rc = system("xdotool key --clearmodifiers ctrl+w >/dev/null 2>&1");
-			(void)rc;
+			x11_press_key_combo("ctrl+w");
 			res->success = true;
 			snprintf(res->output, sizeof(res->output), "closed browser tab");
 			return 0;
@@ -1993,9 +2179,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			return 0;
 		}
 		if (!mpris_control("Play")) {
-			clear_modifiers();
-			int rc = system("xdotool key --clearmodifiers XF86AudioPlay >/dev/null 2>&1");
-			(void)rc;
+			x11_press_key_combo("XF86AudioPlay");
 		}
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "resumed media");
@@ -2005,9 +2189,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 	if (strcmp(op, "media_pause") == 0) {
 		res->handled = true;
 		if (!mpris_control("Pause")) {
-			clear_modifiers();
-			int rc = system("xdotool key --clearmodifiers XF86AudioPlay >/dev/null 2>&1");
-			(void)rc;
+			x11_press_key_combo("XF86AudioPlay");
 		}
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "paused media");
@@ -2029,10 +2211,8 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		const char *sub = "vol-up";
 		if (strcmp(act, "volume_down") == 0) sub = "vol-down";
 		else if (strcmp(act, "volume_mute") == 0 || strcmp(act, "mute") == 0) sub = "vol-mute";
-		char cmd[128];
-		snprintf(cmd, sizeof(cmd), "dwm-ctl %s >/dev/null 2>&1", sub);
-		int rc = system(cmd);
-		(void)rc;
+		char *const argv[] = { "dwm-ctl", (char *)sub, NULL };
+		spawn_detached_argv(argv);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "volume: %s", act);
 		return 0;
@@ -2132,14 +2312,14 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		}
 		resolve_window_cwd_and_fg(win, w.focused_cwd, sizeof(w.focused_cwd),
 		                          w.focused_process, sizeof(w.focused_process));
-		char raw_tail[1400] = {0};
+		char raw_tail[1000] = {0};
 		if (!get_st_screen_text(win->id, 40, raw_tail, sizeof(raw_tail))) {
 			populate_tmux_panes(&w, false, 40);
 			if (w.pane_count > 0) {
-				snprintf(raw_tail, sizeof(raw_tail), "%s", w.panes[0].tail);
+				snprintf(raw_tail, sizeof(raw_tail), "%.999s", w.panes[0].tail);
 			}
 		}
-		char esc_title[180] = {0}, esc_cwd[300] = {0}, esc_fg[260] = {0}, esc_tail[1400] = {0};
+		char esc_title[180] = {0}, esc_cwd[260] = {0}, esc_fg[200] = {0}, esc_tail[1100] = {0};
 		json_escape_into(win->title, esc_title, sizeof(esc_title));
 		json_escape_into(w.focused_cwd, esc_cwd, sizeof(esc_cwd));
 		json_escape_into(w.focused_process, esc_fg, sizeof(esc_fg));
@@ -2209,7 +2389,13 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			run_cmd_capture("ps -eo pid,comm,%cpu,%mem --sort=-%mem | head -n 7", top_mem, sizeof(top_mem));
 		}
 		if (strcasecmp(aspect, "all") == 0 || strcasecmp(aspect, "disk") == 0 || strcasecmp(aspect, "storage") == 0) {
-			run_cmd_capture("df -h / \"$HOME\" 2>/dev/null", disk, sizeof(disk));
+			struct statvfs vfs_root;
+			if (statvfs("/", &vfs_root) == 0 && vfs_root.f_blocks > 0) {
+				double tot_gb = (double)(vfs_root.f_blocks * vfs_root.f_frsize) / (1024.0 * 1024.0 * 1024.0);
+				double avail_gb = (double)(vfs_root.f_bavail * vfs_root.f_frsize) / (1024.0 * 1024.0 * 1024.0);
+				double used_gb = tot_gb - avail_gb;
+				snprintf(disk, sizeof(disk), "/: %.1fG used / %.1fG total (%.1fG free)", used_gb, tot_gb, avail_gb);
+			}
 		}
 		if (strcasecmp(aspect, "all") == 0 || strcasecmp(aspect, "ports") == 0 || strcasecmp(aspect, "network") == 0) {
 			run_cmd_capture("ss -tulpn 2>/dev/null | head -n 15", ports, sizeof(ports));
