@@ -105,7 +105,7 @@ typedef void (*ort_Release_fn)(void *ptr);
 #define KOKORO_STYLE_DIM  256
 #define KOKORO_SAMPLE_RATE 24000
 #define PIPER_SAMPLE_RATE  22050
-#define IDLE_UNLOAD_SECONDS 60
+#define IDLE_UNLOAD_SECONDS 600
 
 /* ---------------------------------------------------------------------------
  * Kokoro-82M & Piper Phoneme Vocabulary Lookup Tables
@@ -682,7 +682,7 @@ static bool tts_engine_ensure_loaded(const char *voice)
 		if (st) { ort_release_status(st); return false; }
 		ort_release_status(disable_arena(so));
 		ort_release_status(set_opt(so, 99 /* ORT_ENABLE_ALL */));
-		ort_release_status(set_intra(so, 3));
+		ort_release_status(set_intra(so, 4));
 		ort_release_status(set_inter(so, 1));
 
 		st = create_sess(g_tts.ort_env, model_path, so, &g_tts.ort_sess);
@@ -763,7 +763,7 @@ static int16_t *synthesize_segment_pcm(const char *seg_text, const char *voice, 
 
 		size_t style_row = (n_inner <= KOKORO_STYLE_ROWS) ? (n_inner - 1) : (KOKORO_STYLE_ROWS - 1);
 		float *style_vec = g_tts.kokoro_style + (style_row * KOKORO_STYLE_DIM);
-		float speed_val = 1.08f;
+		float speed_val = 1.12f;
 
 		int64_t tok_shape[2] = { 1, (int64_t)seq_len };
 		int64_t style_shape[2] = { 1, KOKORO_STYLE_DIM };
@@ -948,13 +948,17 @@ static void *tts_worker_fn(void *arg)
 {
 	(void)arg;
 	bool mic_muted = false;
+	int16_t *prefetched_pcm = NULL;
+	size_t prefetched_samples = 0;
+	int prefetched_rate = KOKORO_SAMPLE_RATE;
+	uint64_t prefetched_gen = 0;
 
 	pthread_mutex_lock(&g_tts.mtx);
 	for (;;) {
-		while (g_tts.q_count == 0) {
+		while (g_tts.q_count == 0 && !prefetched_pcm) {
 			if (mic_muted) {
 				pthread_mutex_unlock(&g_tts.mtx);
-				usleep(120000);
+				usleep(220000);
 				set_mic_mute(false);
 				mic_muted = false;
 				pthread_mutex_lock(&g_tts.mtx);
@@ -963,7 +967,7 @@ static void *tts_worker_fn(void *arg)
 			g_tts.busy_speaking = false;
 			pthread_cond_broadcast(&g_tts.done_cond);
 
-			/* If TTS was disabled, unload immediately without waiting 60s */
+			/* If TTS was disabled, unload immediately without waiting */
 			if (!is_tts_enabled()) {
 				tts_engine_unload();
 				g_tts.worker_running = false;
@@ -976,7 +980,7 @@ static void *tts_worker_fn(void *arg)
 			ts.tv_sec += IDLE_UNLOAD_SECONDS;
 			int rc = pthread_cond_timedwait(&g_tts.cond, &g_tts.mtx, &ts);
 			if (rc == ETIMEDOUT && g_tts.q_count == 0) {
-				/* 60s idle: unload ONNX + Espeak + Voice style table -> 0 KB RAM */
+				/* Idle timeout: unload ONNX + Espeak + Voice style table -> 0 KB RAM */
 				tts_engine_unload();
 				g_tts.worker_running = false;
 				pthread_mutex_unlock(&g_tts.mtx);
@@ -984,20 +988,43 @@ static void *tts_worker_fn(void *arg)
 			}
 		}
 
-		tts_segment_t seg = g_tts.queue[g_tts.q_head];
-		g_tts.q_head = (g_tts.q_head + 1) % MAX_TTS_QUEUE;
-		g_tts.q_count--;
-		g_tts.busy_speaking = true;
-		uint64_t my_gen = g_tts.cancel_gen;
-		pthread_mutex_unlock(&g_tts.mtx);
-
+		int16_t *pcm = NULL;
 		size_t n_samples = 0;
 		int sample_rate = KOKORO_SAMPLE_RATE;
-		int16_t *pcm = synthesize_segment_pcm(seg.text, seg.voice, &n_samples, &sample_rate);
+		uint64_t my_gen = g_tts.cancel_gen;
+
+		if (prefetched_pcm) {
+			if (prefetched_gen == my_gen) {
+				pcm = prefetched_pcm;
+				n_samples = prefetched_samples;
+				sample_rate = prefetched_rate;
+			} else {
+				free(prefetched_pcm);
+			}
+			prefetched_pcm = NULL;
+			prefetched_samples = 0;
+			g_tts.busy_speaking = true;
+			pthread_mutex_unlock(&g_tts.mtx);
+		} else {
+			tts_segment_t seg = g_tts.queue[g_tts.q_head];
+			g_tts.q_head = (g_tts.q_head + 1) % MAX_TTS_QUEUE;
+			g_tts.q_count--;
+			g_tts.busy_speaking = true;
+			pthread_mutex_unlock(&g_tts.mtx);
+
+			pcm = synthesize_segment_pcm(seg.text, seg.voice, &n_samples, &sample_rate);
+		}
 
 		if (pcm && n_samples > 0) {
 			pthread_mutex_lock(&g_tts.mtx);
 			bool cancelled = (g_tts.cancel_gen != my_gen);
+			bool has_next = (!cancelled && g_tts.q_count > 0);
+			tts_segment_t next_seg;
+			if (has_next) {
+				next_seg = g_tts.queue[g_tts.q_head];
+				g_tts.q_head = (g_tts.q_head + 1) % MAX_TTS_QUEUE;
+				g_tts.q_count--;
+			}
 			pthread_mutex_unlock(&g_tts.mtx);
 
 			if (!cancelled) {
@@ -1005,7 +1032,67 @@ static void *tts_worker_fn(void *arg)
 					set_mic_mute(true);
 					mic_muted = true;
 				}
-				play_pcm_blocking(pcm, n_samples, sample_rate, my_gen);
+				if (!has_next) {
+					play_pcm_blocking(pcm, n_samples, sample_rate, my_gen);
+				} else {
+					/* Start pw-cat asynchronously and write current PCM into pipe
+					 * while synthesizing next_seg in parallel for zero inter-clause gap!
+					 */
+					int pfd[2];
+					pid_t pid = -1;
+					if (pipe(pfd) == 0) {
+						char rate_arg[32];
+						snprintf(rate_arg, sizeof(rate_arg), "--rate=%d", sample_rate);
+						pid = fork();
+						if (pid == 0) {
+							close(pfd[1]);
+							dup2(pfd[0], STDIN_FILENO);
+							if (pfd[0] != STDIN_FILENO) close(pfd[0]);
+							int devnull = open("/dev/null", O_RDWR);
+							if (devnull >= 0) {
+								dup2(devnull, STDOUT_FILENO);
+								dup2(devnull, STDERR_FILENO);
+								if (devnull > 2) close(devnull);
+							}
+							execlp("pw-cat", "pw-cat", "-p", "--raw", rate_arg, "--channels=1", "--format=s16", "-", (char *)NULL);
+							_exit(127);
+						}
+						close(pfd[0]);
+					}
+					if (pid > 0) {
+						pthread_mutex_lock(&g_tts.mtx);
+						g_tts.player_pid = pid;
+						pthread_mutex_unlock(&g_tts.mtx);
+
+						const uint8_t *ptr = (const uint8_t *)pcm;
+						size_t rem = n_samples * sizeof(int16_t);
+						while (rem > 0) {
+							size_t chunk = rem > 8192 ? 8192 : rem;
+							ssize_t nw = write(pfd[1], ptr, chunk);
+							if (nw <= 0) {
+								if (nw < 0 && errno == EINTR) continue;
+								break;
+							}
+							ptr += nw;
+							rem -= (size_t)nw;
+						}
+						close(pfd[1]);
+
+						/* Synthesize next segment while pw-cat plays the pipe buffer */
+						prefetched_pcm = synthesize_segment_pcm(next_seg.text, next_seg.voice,
+						                                        &prefetched_samples, &prefetched_rate);
+						prefetched_gen = my_gen;
+
+						int st = 0;
+						waitpid(pid, &st, 0);
+						pthread_mutex_lock(&g_tts.mtx);
+						if (g_tts.player_pid == pid) g_tts.player_pid = -1;
+						pthread_mutex_unlock(&g_tts.mtx);
+					} else {
+						if (pid < 0 && pfd[1] >= 0) close(pfd[1]);
+						play_pcm_blocking(pcm, n_samples, sample_rate, my_gen);
+					}
+				}
 			}
 		}
 		free(pcm);
@@ -1128,7 +1215,15 @@ XY_IMPL(int, jarvis_xy_speak_clause, const char *, session_id, const char *, cla
 		bool first_clause = (g_tts.q_count == 0 && !g_tts.busy_speaking);
 		split_and_enqueue_locked(clean, voice, first_clause);
 	}
-	if (is_final && g_tts.worker_running) {
+	/* Wait for playback + mic unmute when is_final != 0 unless JARVIS_TTS_ASYNC=1
+	 * is set, so dwm-whisperd never enters the post-command follow-up recording
+	 * window while Jarvis's last word is still draining from PipeWire speakers.
+	 * Streaming intermediate clauses (is_final == 0) return immediately so
+	 * synthesis and playback stay pipelined.
+	 */
+	const char *async_env = getenv("JARVIS_TTS_ASYNC");
+	bool wait_sync = (is_final != 0) && !(async_env && strcmp(async_env, "1") == 0);
+	if (wait_sync && g_tts.worker_running) {
 		uint64_t wait_gen = g_tts.cancel_gen;
 		struct timespec ts;
 		clock_gettime(CLOCK_REALTIME, &ts);
