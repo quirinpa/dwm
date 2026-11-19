@@ -4,6 +4,7 @@ import glob
 import json
 import os
 import re
+import socket
 import subprocess
 import time
 import urllib.parse
@@ -99,6 +100,7 @@ class DwmAdapter(Adapter):
             "record_start",
             "record_stop",
             "answer_question",
+            "tts_interrupt",
             "wm_help",
             "ask_agent",
             "wait",
@@ -777,9 +779,32 @@ class DwmAdapter(Adapter):
             return AdapterResult(True, output="closed window")
         return AdapterResult(False, error="no window to close")
 
+    def _find_firefox_youtube_tab(self) -> Optional[Dict[str, Any]]:
+        """Check open Firefox tabs for an existing YouTube tab."""
+        for t in self._get_firefox_open_tabs():
+            url = (t.get("url") or "").lower()
+            if "youtube.com/watch" in url or "youtube.com/results" in url or "youtube.com" in url:
+                return t
+        return None
+
     def _op_media_play(self, dsl: Dict[str, Any]) -> AdapterResult:
-        query = (dsl.get("target", {}).get("query") or "").strip()
+        target = dsl.get("target", {}) or {}
+        args = dsl.get("args", {}) or {}
+        query = (target.get("query") or "").strip()
         q_clean = re.sub(r"[^a-z0-9\s]", "", query.lower()).strip()
+
+        # Detect explicit background playback request ("play ... in the background")
+        bg_flag = bool(args.get("background") or target.get("background"))
+        bg_suffix = re.search(r"\s+\b(?:in\s+the\s+background|in\s+background|quietly|without\s+focus)\b\s*$", query, flags=re.IGNORECASE)
+        if bg_suffix:
+            bg_flag = True
+            query = query[: bg_suffix.start()].strip()
+            q_clean = re.sub(r"[^a-z0-9\s]", "", query.lower()).strip()
+
+        prev_foc = self._get_focused()
+        was_terminal = self._is_terminal_window(prev_foc)
+        preserve_focus = bg_flag or (was_terminal and os.environ.get("JARVIS_MEDIA_STEAL_FOCUS", "0") != "1")
+
         resume_phrases = {
             "",
             "music",
@@ -803,18 +828,40 @@ class DwmAdapter(Adapter):
             # Pause any existing MPRIS player before launching a new YouTube track
             self._mpris_control("Pause")
             watch_url = self._resolve_youtube_url(query)
+            existing_yt = self._find_firefox_youtube_tab()
+            used_existing_tab = False
+
+            if existing_yt and existing_yt.get("index") and self._focus_firefox():
+                tab_idx = int(existing_yt["index"])
+                self._clear_modifiers()
+                if 1 <= tab_idx <= 8:
+                    self._xdotool("key", "--clearmodifiers", f"Alt+{tab_idx}")
+                    time.sleep(0.06)
+                # Close old YouTube tab and open the new track cleanly so tabs never accumulate
+                self._xdotool("key", "--clearmodifiers", "ctrl+w")
+                time.sleep(0.05)
+                used_existing_tab = True
+
             subprocess.Popen(["firefox", "--new-tab", watch_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self._focus_firefox()
-            if self._wait_audio_playing(timeout=3.5):
-                return AdapterResult(True, output=f"playing: {query}")
-            # Wait briefly for YouTube DOM to finish hydrating if tab just opened, then try MPRIS Play or click player center
-            time.sleep(0.8)
-            if self._mpris_control("Play") and self._wait_audio_playing(timeout=1.5):
-                return AdapterResult(True, output=f"playing: {query}")
-            wx, wy, ww, wh = self._get_win_geometry()
-            self._clear_modifiers()
-            self._xdotool("mousemove", "--sync", str(wx + ww // 2), str(wy + int(wh * 0.45)), "click", "1")
-            if self._wait_audio_playing(timeout=1.8):
+            if not used_existing_tab:
+                self._focus_firefox()
+
+            playing_ok = self._wait_audio_playing(timeout=3.2)
+            if not playing_ok:
+                time.sleep(0.6)
+                if self._mpris_control("Play") and self._wait_audio_playing(timeout=1.4):
+                    playing_ok = True
+                else:
+                    wx, wy, ww, wh = self._get_win_geometry()
+                    self._clear_modifiers()
+                    self._xdotool("mousemove", "--sync", str(wx + ww // 2), str(wy + int(wh * 0.45)), "click", "1")
+                    playing_ok = self._wait_audio_playing(timeout=1.6)
+
+            if preserve_focus and prev_foc and prev_foc.get("id"):
+                self._dwm_msg("focus-win", prev_foc["id"])
+                self._wait_window_focused(prev_foc["id"], timeout=0.6)
+
+            if playing_ok:
                 return AdapterResult(True, output=f"playing: {query}")
             return AdapterResult(True, output=f"playing on YouTube: {query}")
 
@@ -888,6 +935,77 @@ class DwmAdapter(Adapter):
             pass
         return True
 
+    def _tts_sock_path(self) -> str:
+        user = os.environ.get("USER", "quirinpa")
+        return f"/tmp/dwm-tts-{user}.sock"
+
+    def _get_tts_voice(self) -> str:
+        env_v = os.environ.get("JARVIS_VOICE", "").strip()
+        if env_v:
+            return env_v
+        v_conf = os.path.expanduser("~/.config/dwm-voice/tts_voice")
+        try:
+            if os.path.exists(v_conf):
+                with open(v_conf, "r", encoding="utf-8") as f:
+                    v = f.read().strip()
+                    if v:
+                        return v
+        except Exception:
+            pass
+        return "bm_daniel"
+
+    def _send_tts_sock(self, payload: str, timeout: float = 2.0) -> bool:
+        sock_path = self._tts_sock_path()
+        if not os.path.exists(sock_path):
+            dwm_tts_bin = os.path.expanduser("~/.local/bin/dwm-tts")
+            if os.path.exists(dwm_tts_bin):
+                try:
+                    subprocess.run(
+                        [dwm_tts_bin, "start"],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        timeout=3.0,
+                        check=False,
+                    )
+                except Exception:
+                    pass
+        if not os.path.exists(sock_path):
+            return False
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.settimeout(timeout)
+            s.connect(sock_path)
+            s.sendall(payload.encode("utf-8"))
+            resp = s.recv(64).decode("utf-8", errors="ignore").strip()
+            s.close()
+            return resp in ("OK", "PONG", "SPEAKING", "IDLE")
+        except Exception:
+            return False
+
+    def interrupt_tts(self) -> bool:
+        """Immediately stop any active neural TTS speech (<10ms barge-in)."""
+        sock_path = self._tts_sock_path()
+        if not os.path.exists(sock_path):
+            return False
+        return self._send_tts_sock("INTERRUPT", timeout=0.6)
+
+    def stream_tts_chunk(self, session_id: str, clause_text: str, is_final: bool = False) -> None:
+        """Push an incremental LLM clause directly to dwm-tts while tokens are still streaming."""
+        if not self._is_tts_enabled():
+            return
+        voice = self._get_tts_voice()
+        clean_clause = re.sub(r"[`*_#\[\]]", "", (clause_text or "").strip())
+        clean_clause = " ".join(clean_clause.split())
+        if clean_clause:
+            self._send_tts_sock(f"STREAM_CHUNK|{session_id}|{voice}|{clean_clause}", timeout=2.5)
+        if is_final:
+            self._send_tts_sock(f"STREAM_END|{session_id}|WAIT", timeout=55.0)
+
+    def _op_tts_interrupt(self, dsl: Dict[str, Any]) -> AdapterResult:
+        self.interrupt_tts()
+        return AdapterResult(True, output="stopped speaking")
+
     def _op_answer_question(self, dsl: Dict[str, Any]) -> AdapterResult:
         args = dsl.get("args", {}) or {}
         target = dsl.get("target", {}) or {}
@@ -900,7 +1018,8 @@ class DwmAdapter(Adapter):
         ).strip()
         if not answer:
             return AdapterResult(False, error="answer_question requires args.answer")
-        speak = self._is_tts_enabled()
+        already_streamed = bool(args.get("streamed_tts"))
+        speak = self._is_tts_enabled() and not already_streamed
         try:
             subprocess.Popen(
                 [

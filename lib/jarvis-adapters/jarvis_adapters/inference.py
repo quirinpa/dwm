@@ -6,7 +6,7 @@ import os
 import re
 import urllib.request
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 
 def _clean_phrase(text: str) -> str:
@@ -137,6 +137,11 @@ def normalize_dsl_dict(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         "recall": "recall_facts",
         "search_memory": "recall_facts",
         "get_preferences": "recall_facts",
+        "interrupt": "tts_interrupt",
+        "stop_speaking": "tts_interrupt",
+        "stop_talking": "tts_interrupt",
+        "be_quiet": "tts_interrupt",
+        "silence_tts": "tts_interrupt",
     }
     op = op_aliases.get(op, op)
 
@@ -148,7 +153,7 @@ def normalize_dsl_dict(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     for tk in ("command", "identifier", "url", "query", "relation", "kind", "title_contains", "class_contains", "x", "y", "cwd"):
         if tk in raw and tk not in target:
             target[tk] = raw[tk]
-    for ak in ("text", "key_combo", "workspace", "action", "direction", "amount", "button", "mode", "seconds", "answer", "aspect", "key", "value", "fact", "reply", "speak"):
+    for ak in ("text", "key_combo", "workspace", "action", "direction", "amount", "button", "mode", "seconds", "answer", "aspect", "key", "value", "fact", "reply", "speak", "background", "streamed_tts"):
         if ak in raw and ak not in args:
             args[ak] = raw[ak]
 
@@ -625,16 +630,101 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
                 lines.append(f"  User: {t.get('utterance', '')} -> Ops: {t.get('ops', '')} (Out: {str(t.get('output', ''))[:100]})")
         return "\n".join(lines)
 
+    @staticmethod
+    def _extract_streaming_answer_prefix(raw_json_fragment: str) -> Optional[str]:
+        """If raw_json_fragment is streaming an answer_question op, extract the decoded answer string seen so far."""
+        if not raw_json_fragment:
+            return None
+        if not re.search(r'"(?:op|operation|action)"\s*:\s*"(?:answer_question|answer|reply)"', raw_json_fragment):
+            return None
+        m = re.search(r'"answer"\s*:\s*"', raw_json_fragment)
+        if not m:
+            return None
+        idx = m.end()
+        n = len(raw_json_fragment)
+        chars: List[str] = []
+        while idx < n:
+            ch = raw_json_fragment[idx]
+            if ch == '"':
+                break
+            if ch == "\\":
+                if idx + 1 >= n:
+                    break
+                nxt = raw_json_fragment[idx + 1]
+                if nxt in ('"', "\\", "/"):
+                    chars.append(nxt)
+                    idx += 2
+                elif nxt == "n":
+                    chars.append(" ")
+                    idx += 2
+                elif nxt == "r":
+                    idx += 2
+                elif nxt == "t":
+                    chars.append(" ")
+                    idx += 2
+                elif nxt == "u":
+                    if idx + 6 > n:
+                        break
+                    hex_str = raw_json_fragment[idx + 2 : idx + 6]
+                    try:
+                        chars.append(chr(int(hex_str, 16)))
+                    except Exception:
+                        pass
+                    idx += 6
+                else:
+                    chars.append(nxt)
+                    idx += 2
+            else:
+                chars.append(ch)
+                idx += 1
+        return "".join(chars)
+
+    @staticmethod
+    def _pop_ready_clause(unspoken: str, is_first_clause: bool) -> Optional[Tuple[str, str]]:
+        """Check if unspoken buffer contains a complete clause boundary ready for immediate TTS synthesis."""
+        s = unspoken.lstrip()
+        if not s:
+            return None
+        # 1. For the very first clause (TTFA boost), split at a natural preposition/conjunction boundary around 18-38 chars
+        if is_first_clause and len(s) >= 34:
+            m_fast = re.search(
+                r"^(.{18,38}?)\s+((?:at|in|on|by|to|for|from|with|where|which|that|and|or|as|of|because|while|when)\b\s+.+)$",
+                s,
+            )
+            if m_fast:
+                return m_fast.group(1).strip(), m_fast.group(2)
+        # 2. Strong sentence/clause punctuation (. ! ? ; : —) followed by whitespace
+        max_sent = 42 if is_first_clause else 140
+        m_sent = re.search(rf"^(.{{8,{max_sent}}}?(?:[.!?;:]|\s+[—–]))\s+(.+)$", s)
+        if m_sent:
+            return m_sent.group(1).strip(), m_sent.group(2)
+        # 3. Comma boundary after a reasonable phrase length
+        min_comma = 16 if is_first_clause else 32
+        max_comma = 42 if is_first_clause else 110
+        m_comma = re.search(rf"^(.{{{min_comma},{max_comma}}}?,)\s+(.+)$", s)
+        if m_comma:
+            return m_comma.group(1).strip(), m_comma.group(2)
+        # 4. Fallback word boundary if a long unpunctuated run exceeds limit
+        max_run = 40 if is_first_clause else 95
+        if len(s) >= max_run + 8:
+            cut = s.rfind(" ", 18, max_run)
+            if cut > 15:
+                return s[:cut].strip(), s[cut + 1 :]
+        return None
+
     def _post_chat_messages(
         self,
         messages: List[Dict[str, str]],
         max_tokens: int = 512,
+        on_answer_clause: Optional[Callable[[str, bool], None]] = None,
     ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
-        """Send chat completion request to axil-auren with fallback routing and parse JSON DSL output."""
+        """Send chat completion request to axil-auren with fallback routing (and optional SSE token->clause streaming)."""
         candidate_models = [self.model]
         for fallback_m in ("kilo-auto/free", "fast", "gpt-oss-120b"):
             if fallback_m not in candidate_models:
                 candidate_models.append(fallback_m)
+
+        use_stream = on_answer_clause is not None
 
         for cur_model in candidate_models:
             try:
@@ -644,6 +734,8 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
                     "temperature": 0.0,
                     "max_tokens": max_tokens,
                 }
+                if use_stream:
+                    payload["stream"] = True
                 # Only pass reasoning_effort for models that need explicit low effort (avoid triggering 640-token reasoning loops on Kilo free models)
                 if cur_model not in ("kilo-auto/free",) and not cur_model.startswith("kilo/"):
                     payload["reasoning_effort"] = "low"
@@ -654,19 +746,81 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
                     headers={"Content-Type": "application/json"},
                     method="POST",
                 )
+
+                content = ""
+                emitted_len = 0
+                is_first_clause = True
+                streamed_any = False
+
                 with urllib.request.urlopen(req, timeout=16.0) as resp:
-                    raw_body = resp.read().decode("utf-8").strip()
-                if not raw_body:
-                    continue
-                data = json.loads(raw_body)
-                msg = (data.get("choices") or [{}])[0].get("message") or {}
-                content = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+                    if not use_stream:
+                        raw_body = resp.read().decode("utf-8").strip()
+                        if not raw_body:
+                            continue
+                        data = json.loads(raw_body)
+                        msg = (data.get("choices") or [{}])[0].get("message") or {}
+                        content = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+                    else:
+                        acc_chunks: List[str] = []
+                        for raw_line in resp:
+                            line = raw_line.decode("utf-8", errors="ignore").strip()
+                            if not line:
+                                continue
+                            # Support both SSE `data: {...}` and non-SSE fallback JSON body
+                            if not line.startswith("data:"):
+                                if line.startswith("{"):
+                                    try:
+                                        data = json.loads(line)
+                                        msg = (data.get("choices") or [{}])[0].get("message") or {}
+                                        c_full = (msg.get("content") or msg.get("reasoning_content") or "").strip()
+                                        if c_full:
+                                            acc_chunks.append(c_full)
+                                    except Exception:
+                                        pass
+                                continue
+                            data_str = line[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            try:
+                                chunk = json.loads(data_str)
+                            except Exception:
+                                continue
+                            choices = chunk.get("choices") or []
+                            if not choices:
+                                continue
+                            delta = choices[0].get("delta") or choices[0].get("message") or {}
+                            piece = delta.get("content") or ""
+                            if not piece:
+                                continue
+                            acc_chunks.append(piece)
+                            cur_text = "".join(acc_chunks)
+                            ans_prefix = self._extract_streaming_answer_prefix(cur_text)
+                            if ans_prefix is not None and len(ans_prefix) > emitted_len:
+                                while True:
+                                    unspoken = ans_prefix[emitted_len:]
+                                    popped = self._pop_ready_clause(unspoken, is_first_clause=is_first_clause)
+                                    if not popped:
+                                        break
+                                    clause_text, remainder = popped
+                                    emitted_len = len(ans_prefix) - len(remainder)
+                                    if clause_text and on_answer_clause is not None:
+                                        on_answer_clause(clause_text, False)
+                                        is_first_clause = False
+                                        streamed_any = True
+                        content = "".join(acc_chunks).strip()
+
                 if not content:
                     continue
                 parsed = _extract_json_payload(content)
                 if isinstance(parsed, dict):
                     res = normalize_dsl_dict(parsed)
                     if res:
+                        if use_stream and res.get("op") == "answer_question" and on_answer_clause is not None:
+                            final_ans = (res.get("args") or {}).get("answer") or ""
+                            rem_tail = final_ans[emitted_len:].strip() if len(final_ans) >= emitted_len else ""
+                            if rem_tail or streamed_any:
+                                on_answer_clause(rem_tail, True)
+                                res.setdefault("args", {})["streamed_tts"] = True
                         return res
                 if isinstance(parsed, list):
                     norm_list = [normalize_dsl_dict(item) for item in parsed if isinstance(item, dict)]
@@ -682,9 +836,10 @@ OUTPUT ONLY VALID JSON DSL. No markdown, no explanation."""
         self,
         messages: List[Dict[str, str]],
         max_tokens: int = 512,
+        on_answer_clause: Optional[Callable[[str, bool], None]] = None,
     ) -> Optional[Union[Dict[str, Any], List[Dict[str, Any]]]]:
         """Execute a single turn in the Jarvis ReAct agent loop and parse the resulting JSON tool/DSL step(s)."""
-        return self._post_chat_messages(messages, max_tokens=max_tokens)
+        return self._post_chat_messages(messages, max_tokens=max_tokens, on_answer_clause=on_answer_clause)
 
     def classify_intent(
         self,

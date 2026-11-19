@@ -406,6 +406,12 @@ class Jarvis:
         return {"error": "Could not resolve utterance", "utterance": clause}
 
     def process(self, utterance: str, active_surface: str = "any") -> Dict[str, Any]:
+        # Instant barge-in: interrupt any active TTS speech as soon as a new user utterance arrives
+        if hasattr(self.adapter, "interrupt_tts"):
+            try:
+                self.adapter.interrupt_tts()
+            except Exception:
+                pass
         ctx = self._load_context()
 
         # If the full utterance is conversational, diagnostic, or invokes a remembered workflow,
@@ -659,7 +665,13 @@ class Jarvis:
 
         if cap == "media.play":
             query = args.get("query", "")
-            return {"op": "media_play", "target": {"query": query}, "verify": {"audio_playing": True}}
+            dsl_media: Dict[str, Any] = {"op": "media_play", "target": {"query": query}, "verify": {"audio_playing": True}}
+            if args.get("background"):
+                dsl_media["args"] = {"background": True}
+            return dsl_media
+
+        if cap == "tts.interrupt":
+            return {"op": "tts_interrupt", "target": {}, "verify": {}}
 
         if cap == "media.control":
             action = args.get("action", "pause")
@@ -704,6 +716,7 @@ class Jarvis:
         if op in (
             "wait",
             "answer_question",
+            "tts_interrupt",
             "wm_help",
             "ask_agent",
             "type_text",

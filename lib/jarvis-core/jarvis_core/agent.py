@@ -277,7 +277,16 @@ OUTPUT ONLY VALID JSON (a single DSL object or a JSON array of DSL objects):"""
         try:
             for step_idx in range(max_steps):
                 self._set_status(f"Jarvis thinking ({step_idx + 1})...")
-                turn_out = self.llm.chat_agent_turn(messages)
+                on_clause_cb = None
+                if hasattr(self.adapter, "stream_tts_chunk"):
+                    sess_id = f"agent-{int(time.time() * 1000)}-{step_idx}"
+
+                    def _on_clause(clause_text: str, is_final: bool, _sid: str = sess_id) -> None:
+                        self.adapter.stream_tts_chunk(_sid, clause_text, is_final=is_final)
+
+                    on_clause_cb = _on_clause
+
+                turn_out = self.llm.chat_agent_turn(messages, on_answer_clause=on_clause_cb)
                 if not turn_out:
                     break
 

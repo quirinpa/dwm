@@ -16,6 +16,24 @@ _DEICTIC_PRONOUNS = {
 }
 
 
+_TTS_INTERRUPT_PHRASES = {
+    "stop talking",
+    "stop speaking",
+    "be quiet",
+    "shut up",
+    "quiet",
+    "hush",
+    "silence",
+    "enough",
+    "stop voice",
+    "mute voice",
+    "mute yourself",
+    "quiet down",
+    "shh",
+    "shush",
+}
+
+
 class CompositionalSemanticSolver:
     """Universal Frame-Semantic Solver."""
 
@@ -285,6 +303,30 @@ class CompositionalSemanticSolver:
         raw_words = clean_phrase(raw_clause).split()
         while raw_words and raw_words[0] in ("please", "jarvis", "hey", "ok", "okay"):
             raw_words.pop(0)
+
+        # Fast-path Tier-0 voice interruption ("stop talking", "be quiet", "shut up", "hush")
+        raw_core = " ".join(raw_words)
+        if raw_core in _TTS_INTERRUPT_PHRASES:
+            return {
+                "cap": "tts.interrupt",
+                "score": 0.99,
+                "surface": "any",
+                "explicit_terminal": False,
+                "target_other": False,
+                "submit_enter": False,
+                "args": {},
+            }
+
+        # Check for background playback modifier ("in the background", "quietly", "without focus")
+        bg_play = False
+        m_bg = re.search(
+            r"\s+\b(?:in\s+the\s+background|in\s+background|without\s+focus|without\s+stealing\s+focus)\b\s*$",
+            stripped,
+            flags=re.IGNORECASE,
+        )
+        if m_bg:
+            stripped = stripped[: m_bg.start()].strip().strip(",.!?;:")
+            bg_play = True
         if raw_words and raw_words[0] in (
             "what",
             "whats",
@@ -540,6 +582,8 @@ class CompositionalSemanticSolver:
             ir_res["target_other"] = target_other
             if new_terminal:
                 ir_res["new_terminal"] = True
+            if bg_play and ir_res.get("cap") == "media.play":
+                ir_res.setdefault("args", {})["background"] = True
             ir_res.setdefault("submit_enter", submit_enter)
         return ir_res
 

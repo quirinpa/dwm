@@ -88,6 +88,7 @@ class MockAdapter(Adapter):
             "record_start",
             "record_stop",
             "answer_question",
+            "tts_interrupt",
             "wm_help",
             "ask_agent",
             "wait",
@@ -266,6 +267,11 @@ class TestJarvisPipeline(unittest.TestCase):
             ("start recording screen and audio", "record_start", lambda d: d["args"]["mode"] == "both"),
             ("stop recording", "record_stop", None),
             ("ask pi to refactor the parser", "ask_agent", lambda d: "refactor the parser" in d["target"]["query"]),
+            # Voice Interruption ("Barge-In") & Background Media
+            ("stop talking", "tts_interrupt", None),
+            ("Jarvis, be quiet", "tts_interrupt", None),
+            ("please shut up", "tts_interrupt", None),
+            ("play some jazz music in the background", "media_play", lambda d: "jazz" in d["target"]["query"] and d.get("args", {}).get("background") is True),
         ]
 
         for utt, expected_op, check_fn in cases:
@@ -454,6 +460,19 @@ class TestJarvisPipeline(unittest.TestCase):
         self.assertIn("Cancelled destructive command", blocked_res.error)
         adapter.allow_confirm = True
         print("  [PASS] Destructive Command Safety Guardrail -> blocked unconfirmed 'rm -rf'")
+
+    def test_06_streaming_answer_clause_extraction(self) -> None:
+        """Incremental LLM -> TTS answer extractor pops short opening clauses while JSON is still streaming."""
+        partial1 = '```json\n{\n  "op": "answer_question",\n  "args": {\n    "answer": "Quantum physics describes nature at the atomic scale, where particles behave as waves'
+        ans1 = AurenLLMBackend._extract_streaming_answer_prefix(partial1)
+        self.assertEqual(ans1, "Quantum physics describes nature at the atomic scale, where particles behave as waves")
+
+        popped0 = AurenLLMBackend._pop_ready_clause(ans1, is_first_clause=True)
+        self.assertIsNotNone(popped0)
+        c0, rem0 = popped0
+        self.assertTrue(15 <= len(c0) <= 55, f"Expected short opening clause for fast TTFA, got: '{c0}' ({len(c0)} chars)")
+        self.assertIn("Quantum physics", c0)
+        print(f"  [PASS] Streaming Clause 0 extraction -> '{c0}' (remainder: '{rem0}')")
 
 
 if __name__ == "__main__":

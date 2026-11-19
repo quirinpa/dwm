@@ -149,6 +149,17 @@ is_speaker_playing() {
             return 0
         fi
     fi
+    if command -v pactl >/dev/null 2>&1; then
+        if pactl list sink-inputs 2>/dev/null | awk '
+            /^Sink Input #/ { in_blk=1; corked=1; sys=0 }
+            in_blk && /Corked: no/ { corked=0 }
+            in_blk && /(application\.name|node\.name|media\.name).*([pP]w-cat|[pP]w-play|paplay|aplay|canberra|espeak|piper|speech-dispatcher|[wW]eb[rR][tT][cC])/ { sys=1 }
+            /^$/ { if (in_blk && !corked && !sys) { found=1; exit 0 } in_blk=0 }
+            END { if (in_blk && !corked && !sys) found=1; exit(found ? 0 : 1) }
+        '; then
+            return 0
+        fi
+    fi
     return 1
 }
 
@@ -287,6 +298,10 @@ jarvis_loop() {
             else
                 next_followup=3600000
             fi
+        elif [ "${next_followup:-0}" -gt 0 ] 2>/dev/null; then
+            if is_speaker_playing; then
+                next_followup=0
+            fi
         fi
 
         if [ "${next_followup:-0}" -gt 0 ] 2>/dev/null; then
@@ -325,11 +340,14 @@ jarvis_loop() {
             fi
             printf '%s\n' "$$" > "$ACTING_PID_FILE"
             refresh_bar
+            /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
             /home/quirinpa/.local/bin/jarvis query "$cmd_text" </dev/null >/dev/null 2>&1
             act_rc=$?
             rm -f "$ACTING_PID_FILE"
-            if [ "$act_rc" -eq 0 ]; then
+            if [ "$act_rc" -eq 0 ] && ! is_speaker_playing; then
                 next_followup="$fcfg"
+            else
+                next_followup=0
             fi
         elif [ "$rc" -eq 2 ]; then
             printf 'jarvis\n' > "$STATE_FILE"
@@ -347,6 +365,7 @@ jarvis_loop() {
 
 jarvis_stop_quiet() {
     port=$(get_srv_port)
+    /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
     dwm-whisperd -p "$port" -c "CANCEL" >/dev/null 2>&1 &
     if [ -f "$JARVIS_VAD_PID" ]; then
         jvad=$(cat "$JARVIS_VAD_PID" 2>/dev/null)
@@ -590,10 +609,14 @@ case "${1:-toggle}" in
         ;;
     tts-off)
         printf '0\n' > "$CONF_DIR/tts_enabled"
+        /home/quirinpa/.local/bin/dwm-tts interrupt >/dev/null 2>&1 &
         notify_voice "voice" 2500 "🗣  Jarvis Neural Voice OFF" "Silent HUD mode active."
         ;;
+    tts-interrupt|interrupt|quiet)
+        exec /home/quirinpa/.local/bin/dwm-tts interrupt
+        ;;
     *)
-        echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|tts-on [voice]|tts-off|pi-show|pi-stop|pi-reset|server-start}" >&2
+        echo "Usage: dwm-voice {toggle|on|off|lockdown|menu|status|tts-on [voice]|tts-off|tts-interrupt|pi-show|pi-stop|pi-reset|server-start}" >&2
         exit 1
         ;;
 esac
