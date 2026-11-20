@@ -156,9 +156,9 @@ static const char *shotfull[]  = { "/home/quirinpa/.local/bin/dwm-shot", "full",
 static const char *shotarea[]  = { "/home/quirinpa/.local/bin/dwm-shot", "select", NULL };
 static const char *shotwin[]   = { "/home/quirinpa/.local/bin/dwm-shot", "window", NULL };
 static const char *helpcmd[]   = { "/home/quirinpa/.local/bin/dwm-help", NULL };
-static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/dwm-voice", "toggle", NULL };
-static const char *voicemenu[] = { "/home/quirinpa/.local/bin/dwm-voice", "menu", NULL };
-static const char *aurencmd[]  = { "/home/quirinpa/.local/bin/dwm-auren", "dmenu", NULL };
+static const char *voicecmd[]  = { "/home/quirinpa/.local/bin/jarvis", "toggle", NULL };
+static const char *voicemenu[] = { "/home/quirinpa/.local/bin/jarvis", "menu", NULL };
+static const char *aurencmd[]  = { "/home/quirinpa/.local/bin/jarvis", "dmenu", NULL };
 static const char *kbdtoggle[] = { "/home/quirinpa/.local/bin/dwm-ctl", "kbd-toggle", NULL };
 
 static const Key keys[] = {

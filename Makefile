@@ -6,7 +6,7 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm dwm-msg dwm-bar dwm-vad mods/dwm/mod_dwm.so
+all: dwm dwm-msg dwm-bar mods/dwm/mod_dwm.so
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
@@ -28,9 +28,6 @@ dwm-msg: dwm-msg.c
 dwm-bar: dwm-bar.c
 	${CC} ${CFLAGS} -o $@ dwm-bar.c -L${X11LIB} -lX11 -lasound
 
-dwm-vad: dwm-vad.c
-	${CC} ${CFLAGS} -o $@ dwm-vad.c -lm
-
 clean:
 	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm/mod_dwm.so mods/tts/mod_tts.so ${OBJ} dwm-${VERSION}.tar.gz
 
@@ -44,8 +41,8 @@ dist: clean
 
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
-	install -m 755 dwm dwm-msg dwm-bar dwm-vad ${DESTDIR}${PREFIX}/bin/
-	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice
+	install -m 755 dwm dwm-msg dwm-bar ${DESTDIR}${PREFIX}/bin/
+	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice ${DESTDIR}${PREFIX}/bin/dwm-vad
 	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-act ${DESTDIR}${PREFIX}/bin/dwm-tts ${DESTDIR}${PREFIX}/bin/jarvis_core.py
 	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvis ]; then \
@@ -53,22 +50,18 @@ install: all
 	fi
 	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvisd ]; then \
 		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvisd ${DESTDIR}${PREFIX}/bin/jarvisd; \
-		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvisd ${DESTDIR}${PREFIX}/bin/dwm-whisperd; \
+		ln -sf jarvisd ${DESTDIR}${PREFIX}/bin/dwm-whisperd; \
 	fi
-	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis $(HOME)/.config/dwm
+	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis
 	install -m 755 mods/dwm/mod_dwm.so $(HOME)/.local/lib/mod_dwm.so
 	@if [ -f $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so ]; then \
 		install -m 755 $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so $(HOME)/.local/lib/mod_tts.so; \
 	fi
-	@if [ ! -f $(HOME)/.config/dwm/mods.load ]; then \
-		echo "$(HOME)/.local/lib/mod_dwm" > $(HOME)/.config/dwm/mods.load; \
+	@if [ -f $(HOME)/site/external/libjarvis/data/ontology.json ]; then \
+		install -m 644 $(HOME)/site/external/libjarvis/data/ontology.json $(HOME)/.config/jarvis/ontology.json; \
 	fi
-	@printf "%s/.local/lib/mod_dwm\n%s/.local/lib/mod_tts\n" "$(HOME)" "$(HOME)" > $(HOME)/.config/jarvis/mods.load
-	@rm -rf $(HOME)/.local/lib/jarvis-core $(HOME)/.local/lib/jarvis-adapters $(HOME)/.local/lib/jarvis-dsl $(HOME)/.config/dwm/intents.conf
-	install -m 644 ontology.json $(HOME)/.config/jarvis/ontology.json
 	mkdir -p $(HOME)/.dwm
 	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
-	install -m 644 ontology.json $(HOME)/.config/dwm/ontology.json
 	mkdir -p $(HOME)/.config/dunst
 	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc
 	install -m 644 Xresources $(HOME)/.Xresources

@@ -107,20 +107,3 @@ dwm.bar.cpu_warn:               4
 dwm.bar.cpu_crit:               10
 dwm.bar.bat_warn:               30
 dwm.bar.bat_crit:               15
-
-! Local AI / Voice integration (axil-auren + dwm-voice)
-dwm.auren.url:                  http://127.0.0.1:4242/v1/systemone
-dwm.auren.model:                bge-base
-dwm.auren.threshold:            0.68
-dwm.auren.inference:            false
-dwm.auren.llm_fallback:         true
-dwm.auren.llm_mode:             auto
-dwm.voice.auto_kbd_lang:        false
-dwm.voice.auto_stop:            true
-dwm.voice.silence_ms:           450
-dwm.voice.cmd_silence_ms:       420
-dwm.voice.followup_ms:          8000
-dwm.voice.threshold_db:         -35
-dwm.voice.wake_word:            jarvis
-dwm.voice.jarvis_autostart:     true
-dwm.voice.server_port:          8179

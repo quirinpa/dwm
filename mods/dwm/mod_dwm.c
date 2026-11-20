@@ -856,6 +856,13 @@ static void ensure_desktop_apps_loaded(void)
 static const char *resolve_desktop_app_exec(const char *identifier)
 {
 	if (!identifier || !*identifier) return identifier;
+	if (strcasecmp(identifier, "sys_monitor") == 0)    return "dwm-ctl sys-monitor";
+	if (strcasecmp(identifier, "calendar") == 0)       return "dwm-cal popup";
+	if (strcasecmp(identifier, "control_center") == 0) return "dwm-ctl";
+	if (strcasecmp(identifier, "wifi") == 0)           return "dwm-net wifi";
+	if (strcasecmp(identifier, "battery") == 0)        return "dwm-ctl battery-info";
+	if (strcasecmp(identifier, "power_menu") == 0)     return "dwm-ctl power-menu";
+	if (strcasecmp(identifier, "shortcuts_help") == 0) return "dwm-help show";
 	ensure_desktop_apps_loaded();
 
 	for (size_t i = 0; i < g_desktop_app_count; i++) {
@@ -2279,21 +2286,12 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		res->handled = true;
 		const char *act = dsl->args.action[0] ? dsl->args.action : "on";
 		bool turn_on = (strcasecmp(act, "off") != 0 && strcasecmp(act, "0") != 0 && strcasecmp(act, "disable") != 0);
-		const char *home = getenv("HOME");
-		if (home && *home) {
-			char dir[512], path[512];
-			snprintf(dir, sizeof(dir), "%s/.config/dwm-voice", home);
-			mkdir(dir, 0755);
-			snprintf(path, sizeof(path), "%s/tts_enabled", dir);
-			FILE *fp = fopen(path, "w");
-			if (fp) {
-				fprintf(fp, "%s\n", turn_on ? "1" : "0");
-				fclose(fp);
-			}
-		}
+		char cmd[128];
+		snprintf(cmd, sizeof(cmd), "jarvis config tts_enabled %s >/dev/null 2>&1", turn_on ? "1" : "0");
+		spawn_detached_sh(cmd);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "%s",
-		         turn_on ? "Voice enabled. At your service." : "Voice disabled.");
+		         turn_on ? "1" : "0");
 		return 0;
 	}
 
@@ -2493,7 +2491,7 @@ XY_IMPL(int, jarvis_xy_voice_status, int, state, const char *, partial_text)
 	const char *user = getenv("USER");
 	if (!user || !*user) user = "quirinpa";
 	char acting_file[128];
-	snprintf(acting_file, sizeof(acting_file), "/tmp/dwm-acting-%s.pid", user);
+	snprintf(acting_file, sizeof(acting_file), "/tmp/jarvis-acting-%s.pid", user);
 
 	if (state == JARVIS_VOICE_ACTING) {
 		FILE *fp = fopen(acting_file, "w");
@@ -2560,7 +2558,9 @@ XY_IMPL(int, jarvis_xy_notify, const char *, title, const char *, body, int, pla
 		const char *user = getenv("USER");
 		if (!user || !*user) user = "quirinpa";
 		char wav_path[128];
-		snprintf(wav_path, sizeof(wav_path), "/tmp/dwm-voice-done-%s.wav", user);
+		snprintf(wav_path, sizeof(wav_path), "/tmp/jarvis-done-%s.wav", user);
+		if (access(wav_path, R_OK) != 0)
+			snprintf(wav_path, sizeof(wav_path), "/tmp/dwm-voice-done-%s.wav", user);
 		if (access(wav_path, R_OK) == 0) {
 			char *const argv[] = { "pw-play", "--volume=0.30", wav_path, NULL };
 			spawn_detached_argv(argv);

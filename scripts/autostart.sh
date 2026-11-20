@@ -76,6 +76,6 @@ pkill -x dwm-bar 2>/dev/null || true
         amixer -c 0 sset 'Internal Mic Boost' 0 >/dev/null 2>&1 || true
         amixer -c 0 sset 'Capture' 42 >/dev/null 2>&1 || true
     fi
-    /home/quirinpa/.local/bin/dwm-voice jarvis-start >/dev/null 2>&1 &
-    /home/quirinpa/.local/bin/dwm-auren warmup >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/jarvis start >/dev/null 2>&1 &
+    /home/quirinpa/.local/bin/jarvis warmup >/dev/null 2>&1 &
 ) &
