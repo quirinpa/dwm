@@ -304,20 +304,29 @@ static void get_tts_voice(char *out, size_t out_sz)
 
 static void set_mic_mute(bool muted)
 {
-	pid_t pid = fork();
-	if (pid == 0) {
-		int devnull = open("/dev/null", O_RDWR);
-		if (devnull >= 0) {
-			dup2(devnull, STDIN_FILENO);
-			dup2(devnull, STDOUT_FILENO);
-			dup2(devnull, STDERR_FILENO);
-			if (devnull > 2) close(devnull);
-		}
-		execlp("wpctl", "wpctl", "set-mute", "@DEFAULT_AUDIO_SOURCE@", muted ? "1" : "0", (char *)NULL);
-		_exit(127);
-	} else if (pid > 0) {
-		int st = 0;
-		waitpid(pid, &st, 0);
+	/* Never mute the user's microphone source during TTS synthesis or playback so
+	 * barge-in commands and speech while Jarvis is talking are always captured!
+	 * Self-speech echo is suppressed via /tmp/dwm-tts-active-$USER.state in dwm-whisperd.
+	 */
+	(void)muted;
+}
+
+static void write_tts_active_state(const char *text, bool active)
+{
+	const char *u = getenv("USER");
+	if (!u || !*u) u = "quirinpa";
+	char path[256], tmp[280];
+	snprintf(path, sizeof(path), "/tmp/dwm-tts-active-%s.state", u);
+	if (!active) {
+		unlink(path);
+		return;
+	}
+	snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+	FILE *fp = fopen(tmp, "wb");
+	if (fp) {
+		fprintf(fp, "%s\n", (text && *text) ? text : "1");
+		fclose(fp);
+		rename(tmp, path);
 	}
 }
 
@@ -958,7 +967,8 @@ static void *tts_worker_fn(void *arg)
 		while (g_tts.q_count == 0 && !prefetched_pcm) {
 			if (mic_muted) {
 				pthread_mutex_unlock(&g_tts.mtx);
-				usleep(220000);
+				usleep(180000);
+				write_tts_active_state(NULL, false);
 				set_mic_mute(false);
 				mic_muted = false;
 				pthread_mutex_lock(&g_tts.mtx);
@@ -1185,10 +1195,12 @@ XY_IMPL(int, jarvis_xy_tts_interrupt, int, dummy)
 	g_tts.q_head = 0;
 	g_tts.q_tail = 0;
 	g_tts.q_count = 0;
+	g_tts.busy_speaking = false;
 	pid_t pid = g_tts.player_pid;
 	if (pid > 1) {
 		kill(pid, SIGKILL);
 	}
+	write_tts_active_state(NULL, false);
 	pthread_cond_broadcast(&g_tts.cond);
 	pthread_cond_broadcast(&g_tts.done_cond);
 	pthread_mutex_unlock(&g_tts.mtx);
@@ -1213,16 +1225,15 @@ XY_IMPL(int, jarvis_xy_speak_clause, const char *, session_id, const char *, cla
 	pthread_mutex_lock(&g_tts.mtx);
 	if (clean[0]) {
 		bool first_clause = (g_tts.q_count == 0 && !g_tts.busy_speaking);
+		write_tts_active_state(clean, true);
 		split_and_enqueue_locked(clean, voice, first_clause);
 	}
-	/* Wait for playback + mic unmute when is_final != 0 unless JARVIS_TTS_ASYNC=1
-	 * is set, so dwm-whisperd never enters the post-command follow-up recording
-	 * window while Jarvis's last word is still draining from PipeWire speakers.
-	 * Streaming intermediate clauses (is_final == 0) return immediately so
-	 * synthesis and playback stay pipelined.
+	/* Only block synchronously if JARVIS_TTS_SYNC=1 is explicitly set (e.g. CLI test harness);
+	 * in daemon mode, return immediately so dwm-whisperd immediately re-enters its listening
+	 * loop while the background TTS worker synthesizes and speaks!
 	 */
-	const char *async_env = getenv("JARVIS_TTS_ASYNC");
-	bool wait_sync = (is_final != 0) && !(async_env && strcmp(async_env, "1") == 0);
+	const char *sync_env = getenv("JARVIS_TTS_SYNC");
+	bool wait_sync = (is_final >= 2) || (is_final && sync_env && strcmp(sync_env, "1") == 0);
 	if (wait_sync && g_tts.worker_running) {
 		uint64_t wait_gen = g_tts.cancel_gen;
 		struct timespec ts;
