@@ -6,7 +6,7 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm/mod_dwm.so mods/tts/mod_tts.so
+all: dwm dwm-msg dwm-bar dwm-vad mods/dwm/mod_dwm.so
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
@@ -22,9 +22,6 @@ dwm: ${OBJ}
 mods/dwm/mod_dwm.so: mods/dwm/mod_dwm.c dwm-types.h
 	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm/mod_dwm.c -L${X11LIB} -lX11 -L$(HOME)/.local/lib -lxylem -lstele -lcorm -Wl,-rpath,$(HOME)/.local/lib
 
-mods/tts/mod_tts.so: mods/tts/mod_tts.c
-	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/tts/mod_tts.c -L$(HOME)/.local/lib -lxylem -ldl -lpthread -lm -Wl,-rpath,$(HOME)/.local/lib
-
 dwm-msg: dwm-msg.c
 	${CC} ${CFLAGS} -o $@ dwm-msg.c -L${X11LIB} -lX11
 
@@ -33,9 +30,6 @@ dwm-bar: dwm-bar.c
 
 dwm-vad: dwm-vad.c
 	${CC} ${CFLAGS} -o $@ dwm-vad.c -lm
-
-dwm-whisperd: dwm-whisperd.c whisper.h
-	${CC} ${CFLAGS} -I$(HOME)/.local/include -o $@ dwm-whisperd.c $(HOME)/.local/lib/libwhisper.so.1 $(HOME)/.local/lib/libggml.so.0 -L$(HOME)/.local/lib -ljarvis -lxylem -lstele -lcorm -lpthread -lm -Wl,-rpath,$(HOME)/.local/lib
 
 clean:
 	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm/mod_dwm.so mods/tts/mod_tts.so ${OBJ} dwm-${VERSION}.tar.gz
@@ -51,16 +45,21 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm dwm-msg dwm-bar dwm-vad ${DESTDIR}${PREFIX}/bin/
-	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-whisperd ${DESTDIR}${PREFIX}/bin/dwm-voice
-	install -m 755 dwm-whisperd ${DESTDIR}${PREFIX}/bin/
+	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice
 	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-rec scripts/dwm-jarvis-pi scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-act ${DESTDIR}${PREFIX}/bin/dwm-tts ${DESTDIR}${PREFIX}/bin/jarvis_core.py
 	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvis ]; then \
 		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvis ${DESTDIR}${PREFIX}/bin/jarvis; \
 	fi
+	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvisd ]; then \
+		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvisd ${DESTDIR}${PREFIX}/bin/jarvisd; \
+		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvisd ${DESTDIR}${PREFIX}/bin/dwm-whisperd; \
+	fi
 	mkdir -p $(HOME)/.local/lib $(HOME)/.config/jarvis $(HOME)/.config/dwm
 	install -m 755 mods/dwm/mod_dwm.so $(HOME)/.local/lib/mod_dwm.so
-	install -m 755 mods/tts/mod_tts.so $(HOME)/.local/lib/mod_tts.so
+	@if [ -f $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so ]; then \
+		install -m 755 $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so $(HOME)/.local/lib/mod_tts.so; \
+	fi
 	@if [ ! -f $(HOME)/.config/dwm/mods.load ]; then \
 		echo "$(HOME)/.local/lib/mod_dwm" > $(HOME)/.config/dwm/mods.load; \
 	fi

@@ -265,6 +265,11 @@ jarvis_stop_quiet() {
 }
 
 jarvis_start() {
+    if command -v pactl >/dev/null 2>&1; then
+        if pactl list sources short 2>/dev/null | grep -q 'jarvis_aec_source'; then
+            pactl set-default-source jarvis_aec_source 2>/dev/null || true
+        fi
+    fi
     if command -v wpctl >/dev/null 2>&1; then
         wpctl set-mute @DEFAULT_AUDIO_SOURCE@ 0 2>/dev/null || true
         cur_vol=$(wpctl get-volume @DEFAULT_AUDIO_SOURCE@ 2>/dev/null | awk '{print $2}')

@@ -857,13 +857,9 @@ static const char *resolve_desktop_app_exec(const char *identifier)
 {
 	if (!identifier || !*identifier) return identifier;
 	ensure_desktop_apps_loaded();
-	const char *q = identifier;
-	if (strncasecmp(q, "a ", 2) == 0) q += 2;
-	else if (strncasecmp(q, "the ", 4) == 0) q += 4;
 
 	for (size_t i = 0; i < g_desktop_app_count; i++) {
-		if (strcasecmp(g_desktop_apps[i].phrase, identifier) == 0 ||
-		    strcasecmp(g_desktop_apps[i].phrase, q) == 0) {
+		if (strcasecmp(g_desktop_apps[i].phrase, identifier) == 0) {
 			return g_desktop_apps[i].exec_cmd;
 		}
 	}
@@ -2144,9 +2140,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 	if (strcmp(op, "media_play") == 0) {
 		res->handled = true;
 		const char *q = dsl->target.query;
-		if (q[0] && strcasecmp(q, "music") != 0 && strcasecmp(q, "song") != 0 &&
-		    strcasecmp(q, "audio") != 0 && strcasecmp(q, "play") != 0 && strcasecmp(q, "resume") != 0 &&
-		    strcasecmp(q, "it") != 0 && strcasecmp(q, "this") != 0 && strcasecmp(q, "that") != 0) {
+		if (q[0]) {
 			jarvis_window_t prev_foc;
 			get_focused_window_fast(&prev_foc);
 			bool preserve_foc = dsl->args.background || is_terminal_class(prev_foc.wm_class);
@@ -2461,14 +2455,18 @@ XY_IMPL(int, jarvis_xy_confirm, const char *, description)
 	if ((auto_c && strcmp(auto_c, "1") == 0) || !getenv("DISPLAY")) {
 		return 1;
 	}
+	const char *yes_lbl = getenv("JARVIS_CONFIRM_YES");
+	const char *no_lbl = getenv("JARVIS_CONFIRM_NO");
+	if (!yes_lbl || !*yes_lbl) yes_lbl = "1: OK";
+	if (!no_lbl || !*no_lbl) no_lbl = "0: Cancel";
 	char cmd[512], out[64];
 	snprintf(cmd, sizeof(cmd),
-		"printf 'Yes, execute\\nNo, cancel\\n' | dmenu -i -l 2 -p ' Confirm (%.42s):' "
+		"printf '%s\\n%s\\n' | dmenu -i -l 2 -p ' (%.42s):' "
 		"-fn 'Ubuntu Sans:style=Medium:size=12:antialias=true:autohint=true' "
 		"-nb '#1e1e2e' -nf '#cdd6f4' -sb '#f38ba8' -sf '#11111b' 2>/dev/null",
-		description ? description : "command");
+		yes_lbl, no_lbl, description ? description : "...");
 	run_cmd_capture(cmd, out, sizeof(out));
-	return strncasecmp(out, "yes", 3) == 0 ? 1 : 0;
+	return (out[0] && strncasecmp(out, yes_lbl, strlen(yes_lbl)) == 0) ? 1 : 0;
 }
 
 /* ---------------------------------------------------------------------------
