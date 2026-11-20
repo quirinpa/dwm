@@ -137,8 +137,14 @@ static pid_t spawn_detached_sh(const char *cmd)
 
 static pid_t spawn_detached_argv(char *const argv[])
 {
+	int err_pipe[2] = { -1, -1 };
+	if (pipe(err_pipe) == 0) {
+		fcntl(err_pipe[0], F_SETFD, FD_CLOEXEC);
+		fcntl(err_pipe[1], F_SETFD, FD_CLOEXEC);
+	}
 	pid_t pid = fork();
 	if (pid == 0) {
+		if (err_pipe[0] >= 0) close(err_pipe[0]);
 		setsid();
 		int devnull = open("/dev/null", O_RDWR);
 		if (devnull >= 0) {
@@ -148,7 +154,23 @@ static pid_t spawn_detached_argv(char *const argv[])
 			if (devnull > 2) close(devnull);
 		}
 		execvp(argv[0], argv);
+		int e = errno;
+		if (err_pipe[1] >= 0) {
+			ssize_t ign = write(err_pipe[1], &e, sizeof(e));
+			(void)ign;
+			close(err_pipe[1]);
+		}
 		_exit(127);
+	}
+	if (err_pipe[1] >= 0) close(err_pipe[1]);
+	if (err_pipe[0] >= 0) {
+		int child_err = 0;
+		ssize_t n = read(err_pipe[0], &child_err, sizeof(child_err));
+		close(err_pipe[0]);
+		if (n > 0) {
+			errno = child_err;
+			return -1;
+		}
 	}
 	return pid;
 }
@@ -1699,20 +1721,39 @@ static double g_last_term_open_ts = 0.0;
 static void op_open_terminal(const char *cmd, jarvis_adapter_result_t *res)
 {
 	const char *term_cmd = (cmd && *cmd) ? cmd : "st";
+	char resolved_term[512] = {0};
+	if (strchr(term_cmd, '/') == NULL && strchr(term_cmd, ' ') == NULL) {
+		const char *home = getenv("HOME");
+		if (home && *home) {
+			char local_cand[512];
+			snprintf(local_cand, sizeof(local_cand), "%s/.local/bin/%s", home, term_cmd);
+			if (access(local_cand, X_OK) == 0) {
+				snprintf(resolved_term, sizeof(resolved_term), "%s", local_cand);
+			}
+		}
+	}
+	const char *exec_cmd = resolved_term[0] ? resolved_term : term_cmd;
 	jarvis_window_t prev_foc;
 	get_focused_window_fast(&prev_foc);
 	const char *term_cls = (strncmp(term_cmd, "xterm", 5) == 0) ? "xterm" : "st-256color";
 
 	pid_t pid = 0;
-	if (strcmp(term_cmd, "st") == 0 || strcmp(term_cmd, "xterm") == 0) {
-		char *const argv[] = { (char *)term_cmd, NULL };
+	if (strchr(exec_cmd, ' ') == NULL) {
+		char *const argv[] = { (char *)exec_cmd, NULL };
 		pid = spawn_detached_argv(argv);
 	} else {
-		pid = spawn_detached_sh(term_cmd);
+		pid = spawn_detached_sh(exec_cmd);
+	}
+
+	if (pid <= 0) {
+		res->handled = true;
+		res->success = false;
+		snprintf(res->error, sizeof(res->error), "Failed to launch terminal '%s': %s", term_cmd, strerror(errno));
+		return;
 	}
 
 	bool focused_new = false;
-	double deadline = now_sec() + 1.5;
+	double deadline = now_sec() + 2.0;
 	usleep(40000);
 	while (now_sec() < deadline) {
 		jarvis_window_t foc;
@@ -1726,7 +1767,10 @@ static void op_open_terminal(const char *cmd, jarvis_adapter_result_t *res)
 	}
 
 	if (!focused_new) {
-		wait_window_focused(term_cls, 0.6);
+		res->handled = true;
+		res->success = false;
+		snprintf(res->error, sizeof(res->error), "Terminal window did not focus: %s", term_cmd);
+		return;
 	}
 
 	/* Wait briefly for interactive shell startup (.bashrc/.zshrc) subshells to settle before typing */
@@ -1958,6 +2002,13 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			jarvis_adapter_result_t tmp_res;
 			memset(&tmp_res, 0, sizeof(tmp_res));
 			op_open_terminal("st", &tmp_res);
+			if (!tmp_res.success) {
+				g_last_term_open_ts = 0.0;
+				res->success = false;
+				snprintf(res->error, sizeof(res->error), "%s",
+				         tmp_res.error[0] ? tmp_res.error : "Failed to open terminal");
+				return 0;
+			}
 		}
 		g_last_term_open_ts = 0.0;
 		x11_type_text(cmd, true);
