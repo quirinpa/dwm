@@ -132,5 +132,7 @@ Rules in `~/.config/dwm/intents.conf` can carry an `@terminal` or `@browser` sco
 ### Unified `ren` Executive Brain
 All spoken or typed commands are routed directly to `ren --jarvis` running in a persistent `tmux` session (`dwm-jarvis` on `/tmp/ren-jarvis-$USER.sock`):
 1. **Tier 0 Reflex (`< 1 ms`)**: High-confidence deterministic desktop, media, window, and keyboard actions execute instantaneously via `mod_jarvis.so` + `mod_dwm.so`.
-2. **Tier 1 ReAct Agent (`ren`)**: Any open-ended, multi-step, GUI (`inspect` / `input`), or coding task is executed directly by `ren` with full conversation continuity and `libmm` episodic memory.
+2. **Tier 1 ReAct Agent (`ren`)**: Any open-ended, multi-step, GUI (`inspect` / `input`), or coding task is executed directly by `ren` with full conversation continuity and `libmm` episodic memory (`recall`, `record`).
+   - Supports multi-project code search (`recall [project:<name>] code:<query>`), AST symbol reads (`recall symbol:<name>`), call-graph tracing (`recall trace:<name>`), and git-diff blast radius analysis (`recall diff`).
+   - Automatically distills engineering findings and preferences in zero-JSON format directly into `libmm`.
 3. **Undo & Eviction**: Saying ***"Jarvis, undo"*** or ***"Jarvis, scratch that"*** reverses the last action.
