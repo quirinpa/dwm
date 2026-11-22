@@ -47,7 +47,7 @@ ensure_jarvis_session() {
     if ! has_jarvis_session; then
         rm -f "$SOCK_PATH"
         REN_MODS=""
-        for m in ren-dwm ren-x11 ren-firefox ren-jarvis ren-mm; do
+        for m in ren-dwm ren-reflex ren-x11 ren-firefox ren-desktop ren-jarvis ren-mm; do
             if [ -e "$HOME/.local/lib/ren/$m.so" ]; then
                 REN_MODS="${REN_MODS:+$REN_MODS:}$m"
             fi

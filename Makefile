@@ -6,7 +6,7 @@ include config.mk
 SRC = drw.c dwm.c util.c
 OBJ = ${SRC:.c=.o}
 
-all: dwm dwm-msg dwm-bar mods/dwm-jarvis/dwm-jarvis.so mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so
+all: dwm dwm-msg dwm-bar mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so
 
 .c.o:
 	${CC} -c ${CFLAGS} $<
@@ -18,9 +18,6 @@ config.h:
 
 dwm: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
-
-mods/dwm-jarvis/dwm-jarvis.so: mods/dwm-jarvis/dwm-jarvis.c mods/dwm_ctl.h dwm-types.h
-	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm-jarvis/dwm-jarvis.c -L${X11LIB} -lX11 -L$(HOME)/.local/lib -ljarvis -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,$(HOME)/.local/lib
 
 mods/dwm-ren/dwm-ren.so: mods/dwm-ren/dwm-ren.c dwm-types.h
 	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm-ren/dwm-ren.c -L$(HOME)/.local/lib -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,$(HOME)/.local/lib
@@ -35,7 +32,7 @@ dwm-bar: dwm-bar.c
 	${CC} ${CFLAGS} -o $@ dwm-bar.c -L${X11LIB} -lX11 -lasound
 
 clean:
-	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm-jarvis/dwm-jarvis.so mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so mods/tts/mod_tts.so ${OBJ} dwm-${VERSION}.tar.gz
+	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so ${OBJ} dwm-${VERSION}.tar.gz
 
 dist: clean
 	mkdir -p dwm-${VERSION}
@@ -59,13 +56,9 @@ install: all
 		ln -sf jarvisd ${DESTDIR}${PREFIX}/bin/dwm-whisperd; \
 	fi
 	mkdir -p $(HOME)/.local/lib/dwm $(HOME)/.local/lib/ren $(HOME)/.config/jarvis
-	@rm -f $(HOME)/.local/lib/mod_dwm.so
-	install -m 755 mods/dwm-jarvis/dwm-jarvis.so $(HOME)/.local/lib/dwm/dwm-jarvis.so
+	@rm -f $(HOME)/.local/lib/mod_dwm.so $(HOME)/.local/lib/mod_tts.so $(HOME)/.local/lib/dwm/dwm-jarvis.so
 	install -m 755 mods/dwm-ren/dwm-ren.so $(HOME)/.local/lib/dwm/dwm-ren.so
 	install -m 755 mods/ren-dwm/ren-dwm.so $(HOME)/.local/lib/ren/ren-dwm.so
-	@if [ -f $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so ]; then \
-		install -m 755 $(HOME)/site/external/libjarvis/mods/tts/mod_tts.so $(HOME)/.local/lib/mod_tts.so; \
-	fi
 	@if [ -f $(HOME)/site/external/libjarvis/data/ontology.json ]; then \
 		install -m 644 $(HOME)/site/external/libjarvis/data/ontology.json $(HOME)/.config/jarvis/ontology.json; \
 	fi
