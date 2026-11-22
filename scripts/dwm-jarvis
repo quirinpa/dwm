@@ -47,7 +47,7 @@ ensure_jarvis_session() {
     if ! has_jarvis_session; then
         rm -f "$SOCK_PATH"
         tmux new-session -d -s "$SESSION" -x 120 -y 36 -c "$WORKDIR" \
-            "export PATH='$PATH'; exec ren --session jarvis --listen \"$SOCK_PATH\" --max-turns 16 -m mod_jarvis:mod_mm"
+            "export PATH='$PATH'; exec ren --session jarvis --listen \"$SOCK_PATH\" --max-turns 16 -m ren-jarvis:ren-mm"
     fi
     # Wait up to 1.5s for /tmp/ren-jarvis-$USER.sock to bind
     i=0
