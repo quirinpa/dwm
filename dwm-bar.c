@@ -308,8 +308,15 @@ seg_voice(char *out, size_t len, const char *user)
 	snprintf(path, sizeof(path), "/tmp/jarvis-voice-%s.state", user);
 	if (read_small_file(path, buf, sizeof(buf)) <= 0)
 		snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
+	int tts_speaking = 0, processing = 0;
 	if (read_small_file(path, buf, sizeof(buf)) > 0) {
-		if (!strncmp(buf, "jarvis-cmd", 10) ||
+		if (!strncmp(buf, "tts-speaking", 12)) {
+			tts_speaking = 1;
+			jarvis_on = 1;
+		} else if (!strncmp(buf, "processing", 10)) {
+			processing = 1;
+			jarvis_on = 1;
+		} else if (!strncmp(buf, "jarvis-cmd", 10) ||
 		    !strncmp(buf, "cmd", 3) ||
 		    !strncmp(buf, "acting", 6)) {
 			acting = 1;
@@ -327,8 +334,14 @@ seg_voice(char *out, size_t len, const char *user)
 			jarvis_on = 1;
 	}
 
-	if (acting) {
-		/* Red robot icon: Jarvis heard wake word / capturing or executing command */
+	if (tts_speaking) {
+		/* Green robot icon: Jarvis is actively speaking */
+		snprintf(out, len, "%s%s   %s", C_VOC, C_BOK, extra_tags);
+	} else if (processing) {
+		/* Blue/cyan robot icon: Jarvis is processing/executing */
+		snprintf(out, len, "%s%s   %s", C_VOC, C_NET, extra_tags);
+	} else if (acting) {
+		/* Red robot icon: Jarvis heard wake word / capturing command */
 		snprintf(out, len, "%s   %s", C_VOC, extra_tags);
 	} else if (jarvis_on) {
 		/* Yellow robot icon: Jarvis is On and listening for wake word */
