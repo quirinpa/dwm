@@ -46,8 +46,15 @@ ensure_jarvis_session() {
     fi
     if ! has_jarvis_session; then
         rm -f "$SOCK_PATH"
+        REN_MODS=""
+        for m in ren-dwm ren-x11 ren-firefox ren-jarvis ren-mm; do
+            if [ -e "$HOME/.local/lib/ren/$m.so" ]; then
+                REN_MODS="${REN_MODS:+$REN_MODS:}$m"
+            fi
+        done
+        [ -n "$REN_MODS" ] || REN_MODS="ren-jarvis:ren-mm"
         tmux new-session -d -s "$SESSION" -x 120 -y 36 -c "$WORKDIR" \
-            "export PATH='$PATH'; exec ren --session jarvis --listen \"$SOCK_PATH\" --max-turns 16 -m ren-jarvis:ren-mm"
+            "export PATH='$PATH'; exec ren --session jarvis --listen \"$SOCK_PATH\" --max-turns 16 -m $REN_MODS"
     fi
     # Wait up to 1.5s for /tmp/ren-jarvis-$USER.sock to bind
     i=0
@@ -115,9 +122,9 @@ cmd_reload() {
     set_ren_state ""
     tmux kill-session -t "$SESSION" 2>/dev/null || true
     rm -f "$SOCK_PATH" "$HOME/.ren/sessions/jarvis"
-    dwm-msg mod-reload "$HOME/.local/lib/mod_dwm.so" 2>/dev/null || true
+    dwm-msg mod-reload "$HOME/.local/lib/dwm/dwm-ren.so" 2>/dev/null || true
     ensure_jarvis_session
-    notify_ren 3500 "🔄  Jarvis Reloaded" "Reloaded mod_dwm.so and restarted background ren tmux session '${SESSION}'."
+    notify_ren 3500 "🔄  Jarvis Reloaded" "Reloaded dwm-ren.so and restarted background ren tmux session '${SESSION}'."
 }
 
 case "${1:-show}" in
