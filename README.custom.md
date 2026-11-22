@@ -13,7 +13,7 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod + p` | Application launcher (`dmenu`) | `dmenu_run` |
 | `Mod + Space` | **Toggle Keyboard Layout (`US` ⇄ `PT`)** | `dwm-ctl kbd-toggle` |
 | `Mod + v` | **Toggle Jarvis Listener On (`Yellow`) ⇄ Off (`Silver`)** (without locking screen) | `dwm-voice toggle` |
-| `Mod + Shift + v` | **Jarvis Settings & Pi Menu** (`dmenu`) | `dwm-voice menu` |
+| `Mod + Shift + v` | **Jarvis Settings & ren Menu** (`dmenu`) | `dwm-voice menu` |
 | `Mod + n` | **Quick Wi-Fi Switcher** (`dmenu`) | `dwm-net wifi` |
 | `Mod + s` or `Mod + Shift + l` | **Lock screen immediately** | `slock` |
 | `Mod + Ctrl + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
@@ -101,8 +101,9 @@ All custom scripts are tracked inside `scripts/` in the `dwm` Git repository (`~
 | `scripts/dwm-net` | `~/.local/bin/dwm-net` | Vertical dropdown network & system settings menu (`Mod+n` for Wi-Fi, `Mod+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, GNOME Control Center, and Shortcuts Cheat Sheet). |
 | `scripts/dwm-shot` | `~/.local/bin/dwm-shot` | Captures full-screen, rectangular selection, or active window to `~/Pictures/Screenshots/`, copies PNG data to the X11 clipboard via GTK3, and sends a desktop notification with thumbnail. |
 | `scripts/dwm-help` | `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard & voice shortcuts (`Mod+F1` or `Mod+/`), or answers `"Jarvis, how do I..."` queries. |
-| `scripts/dwm-voice` | `~/.local/bin/dwm-voice` | Manages the Jarvis voice pipeline (`dwm-vad` + `dwm-whisperd`) and opens the `Mod+Shift+v` Jarvis control menu (Pi coding session, LLM inference mode, learned shortcuts, language, whisper model). |
-| `scripts/dwm-auren` | `~/.local/bin/dwm-auren` | Semantic intent router: Tier 0 context-scoped phrases (`@terminal` / `@browser` in `<1ms`), `bge-base` embeddings via `axil-auren`, pluggable LLM fallback (`auto`/`cloud`/`local`/`local-0.5b`/`pi`/`off`), and self-learning into `~/.config/dwm/intents.learned.conf`. |
+| `scripts/dwm-voice` | `~/.local/bin/dwm-voice` | Manages the Jarvis voice pipeline (`jarvisd`) and opens the `Mod+Shift+v` Jarvis control menu (`ren` brain session, TTS voice, learned shortcuts, language, whisper model). |
+| `scripts/dwm-jarvis` | `~/.local/bin/dwm-jarvis` | Persistent `tmux`-backed `ren --jarvis` session controller (`/tmp/ren-jarvis-$USER.sock`), providing the single unified `ren` brain (Tier 0 reflex + Tier 1 ReAct tools) for Jarvis. |
+| `scripts/dwm-auren` | `~/.local/bin/dwm-auren` | Compatibility CLI wrapper delegating to `jarvis` (`dmenu`, `query`, `clear-learned`, `edit-config`). |
 | `scripts/dwm-act` | `~/.local/bin/dwm-act` | Executes structured desktop actions, multi-chord X11 key sequences, app launches, media queries, and undo (`dwm-act undo`, which also evicts bad learned rules). |
 | `scripts/dwm-session` | `~/.local/bin/dwm-session` | Session wrapper launched by the display manager (`dwm.desktop`). |
 | `scripts/gnome-control-center` | `~/.local/bin/gnome-control-center` | Wrapper that exports `XDG_CURRENT_DESKTOP=GNOME` before launching `/usr/bin/gnome-control-center` so GNOME Settings works inside `dwm`. |
@@ -115,9 +116,8 @@ All custom scripts are tracked inside `scripts/` in the `dwm` Git repository (`~
 - **Floating Cheat Sheet (`Mod + F1` or `Mod + /`)**: Toggles the graphical shortcuts & Jarvis reference panel (`dwm-help`). You can also say ***"Jarvis, show shortcuts"*** or ask ***"Jarvis, how do I move a window to workspace 3?"***.
 - **Jarvis Control Menu (`Mod + Shift + v` or Right-Click `` in top bar)**:
   - Toggle listener On (`Yellow`) ⇄ Off (`Silver`)
-  - Open/stop/reset the **Jarvis Pi Coding Session (`tmux`)**
-  - Switch **🤖 Jarvis LLM Inference Mode** (`auto`, `cloud`, `local`, `local-0.5b`, `pi`, `off`)
-  - **🧹 Clear Learned Voice Shortcuts** (`~/.config/dwm/intents.learned.conf`)
+  - Open/stop/reset the **Jarvis `ren` Brain Session (`tmux`)** (`dwm-jarvis`)
+  - **🧹 Clear Learned Voice Shortcuts & Caches**
   - Switch recognition language (`Auto`, `English`, `Português`) or Whisper model (`small`, `base`, `tiny`)
 - **Semantic Text Bar (`Mod + a`)**: Type any natural-language Jarvis command instead of speaking it.
 
@@ -129,14 +129,8 @@ Rules in `~/.config/dwm/intents.conf` can carry an `@terminal` or `@browser` sco
 - ***"Jarvis, search command history"*** → `Ctrl+R` in a terminal
 - ***"Jarvis, reopen closed tab"*** / ***"developer tools"*** → `Ctrl+Shift+T` / `Ctrl+Shift+I` in a browser
 
-### Pluggable LLM Inference & Self-Learning
-When you speak a novel command not in `intents.conf` (e.g. *"Jarvis, transpose the last two characters"*):
-1. `dwm-auren` infers the action using your selected LLM mode (`dwm-auren llm-mode` or `Mod+Shift+v`):
-   - `auto` *(default)*: Cloud Flash (**0 MB local RAM**, ~650 ms) with automatic offline fallback to local GGUF.
-   - `cloud`: Cloud Flash only (**0 MB RAM**).
-   - `local`: Local `Qwen2.5-1.5B-Instruct` on `axil-auren` (`:4242`, ~1.1 GB RAM).
-   - `local-0.5b`: Ultra-light local `Qwen2.5-0.5B-Instruct` (`~/.models/qwen2.5-0.5b-instruct-q4_k_m.gguf`, ~469 MB RAM).
-   - `pi`: Escalates novel requests directly to the background `dwm-jarvis-pi` coding agent.
-   - `off`: Disables LLM inference (Tier 0 + embeddings only).
-2. **Self-Learning**: Inferred keyboard shortcuts are saved to `~/.config/dwm/intents.learned.conf` (scoped to `@terminal` or `@browser`), so the next time you say the phrase it executes in **`< 1 ms`** with zero LLM calls.
-3. **Undo & Eviction**: Saying ***"Jarvis, undo"*** or ***"Jarvis, scratch that"*** within 3 minutes reverses the action and removes any newly learned rule from `~/.config/dwm/intents.learned.conf`.
+### Unified `ren` Executive Brain
+All spoken or typed commands are routed directly to `ren --jarvis` running in a persistent `tmux` session (`dwm-jarvis` on `/tmp/ren-jarvis-$USER.sock`):
+1. **Tier 0 Reflex (`< 1 ms`)**: High-confidence deterministic desktop, media, window, and keyboard actions execute instantaneously via `mod_jarvis.so` + `mod_dwm.so`.
+2. **Tier 1 ReAct Agent (`ren`)**: Any open-ended, multi-step, GUI (`inspect` / `input`), or coding task is executed directly by `ren` with full conversation continuity and `libmm` episodic memory.
+3. **Undo & Eviction**: Saying ***"Jarvis, undo"*** or ***"Jarvis, scratch that"*** reverses the last action.

@@ -3,14 +3,14 @@
 export PATH="$HOME/.local/bin:$PATH"
 
 case "${1:-toggle}" in
-    pi-show|pi)
-        exec dwm-jarvis-pi show
+    ren-show|ren)
+        exec dwm-jarvis show
         ;;
-    pi-stop)
-        exec dwm-jarvis-pi stop
+    ren-stop)
+        exec dwm-jarvis stop
         ;;
-    pi-reset)
-        exec dwm-jarvis-pi reset
+    ren-reset)
+        exec dwm-jarvis reset
         ;;
     jarvis-daemon|server-start)
         exec jarvis server-start

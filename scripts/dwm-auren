@@ -14,10 +14,6 @@ case "${1:-dmenu}" in
     warmup)
         exec /home/quirinpa/.local/bin/jarvis warmup
         ;;
-    llm-mode)
-        shift
-        exec /home/quirinpa/.local/bin/jarvis llm-mode "$@"
-        ;;
     clear-learned)
         exec /home/quirinpa/.local/bin/jarvis clear-learned
         ;;

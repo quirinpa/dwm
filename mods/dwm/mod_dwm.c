@@ -1181,16 +1181,26 @@ static void x11_press_key_combo(const char *combo)
 				if (kc != 0) codes[n_codes++] = kc;
 			}
 		}
-		for (size_t i = 0; i < n_codes; i++) {
+		for (size_t i = 0; i + 1 < n_codes; i++) {
 			g_xtst.fake_key(dpy, codes[i], True, 0);
 		}
-		XFlush(dpy);
-		usleep(8000);
-		for (size_t i = n_codes; i > 0; i--) {
+		if (n_codes > 1) {
+			XFlush(dpy);
+			usleep(12000);
+		}
+		if (n_codes > 0) {
+			g_xtst.fake_key(dpy, codes[n_codes - 1], True, 0);
+			XFlush(dpy);
+			usleep(12000);
+			g_xtst.fake_key(dpy, codes[n_codes - 1], False, 0);
+			XFlush(dpy);
+			usleep(12000);
+		}
+		for (size_t i = n_codes > 1 ? n_codes - 1 : 0; i > 0; i--) {
 			g_xtst.fake_key(dpy, codes[i - 1], False, 0);
 		}
 		XFlush(dpy);
-		usleep(8000);
+		usleep(12000);
 	}
 	XCloseDisplay(dpy);
 }
@@ -1259,6 +1269,41 @@ static bool char_to_keysym_and_shift(char c, const char **out_sym, bool *out_shi
 
 static void x11_type_text(const char *text, bool press_enter)
 {
+	bool has_utf8 = false;
+	if (text) {
+		for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+			if (*p >= 0x80) {
+				has_utf8 = true;
+				break;
+			}
+		}
+	}
+
+	jarvis_window_t foc;
+	bool has_foc = get_focused_window_fast(&foc);
+	bool is_term = (has_foc && is_terminal_class(foc.wm_class));
+	bool is_browser = (has_foc &&
+	                   (str_contains_ci(foc.wm_class, "firefox") ||
+	                    str_contains_ci(foc.wm_class, "chromium") ||
+	                    str_contains_ci(foc.wm_class, "chrome") ||
+	                    str_contains_ci(foc.wm_class, "brave")));
+
+	if ((has_utf8 || is_browser) && text && *text) {
+		FILE *fp = popen("xsel -ib 2>/dev/null || xclip -selection clipboard -i 2>/dev/null", "w");
+		if (fp) {
+			fwrite(text, 1, strlen(text), fp);
+			pclose(fp);
+			usleep(25000);
+			x11_press_key_combo(is_term ? "ctrl+shift+v" : "ctrl+v");
+			usleep(120000);
+			if (press_enter) {
+				x11_press_key_combo("Return");
+				usleep(60000);
+			}
+			return;
+		}
+	}
+
 	Display *dpy = XOpenDisplay(NULL);
 	if (!dpy) return;
 	if (!ensure_xtst_loaded()) {
@@ -1304,7 +1349,11 @@ static void x11_mouse_click(int x, int y, int btn)
 	if (!dpy) return;
 	if (ensure_xtst_loaded()) {
 		g_xtst.fake_mot(dpy, DefaultScreen(dpy), x, y, 0);
+		XFlush(dpy);
+		usleep(12000);
 		g_xtst.fake_btn(dpy, (unsigned int)btn, True, 0);
+		XFlush(dpy);
+		usleep(18000);
 		g_xtst.fake_btn(dpy, (unsigned int)btn, False, 0);
 		XFlush(dpy);
 	}
@@ -1378,21 +1427,36 @@ static void json_escape_into(const char *src, char *dst, size_t dst_sz)
  * ------------------------------------------------------------------------- */
 
 typedef struct {
-	int   (*init)(void);
-	void *(*get_desktop)(int);
-	int   (*get_child_count)(void *, void **);
-	void *(*get_child_at_index)(void *, int, void **);
-	char *(*get_name)(void *, void **);
-	char *(*get_role_name)(void *, void **);
-	char *(*text_get_text)(void *, int, int, void **);
-	void *(*get_hyperlink)(void *);
-	char *(*hyperlink_get_uri)(void *, int, void **);
-	void *(*get_document_iface)(void *);
-	char *(*doc_get_attr)(void *, const char *, void **);
-	void  (*g_unref)(void *);
-	void  (*g_free)(void *);
-	bool  ready;
-	bool  tried;
+	int x;
+	int y;
+	int width;
+	int height;
+} atspi_rect_t;
+
+typedef struct {
+	int           (*init)(void);
+	void         *(*get_desktop)(int);
+	int           (*get_child_count)(void *, void **);
+	void         *(*get_child_at_index)(void *, int, void **);
+	char         *(*get_name)(void *, void **);
+	char         *(*get_role_name)(void *, void **);
+	char         *(*text_get_text)(void *, int, int, void **);
+	void         *(*get_hyperlink)(void *);
+	char         *(*hyperlink_get_uri)(void *, int, void **);
+	void         *(*get_document_iface)(void *);
+	char         *(*doc_get_attr)(void *, const char *, void **);
+	void         *(*get_component_iface)(void *);
+	atspi_rect_t *(*comp_get_extents)(void *, int, void **);
+	int           (*comp_grab_focus)(void *, void **);
+	void         *(*get_action_iface)(void *);
+	int           (*action_get_n)(void *, void **);
+	int           (*action_do)(void *, int, void **);
+	void         *(*get_state_set)(void *);
+	int           (*state_set_contains)(void *, int);
+	void          (*g_unref)(void *);
+	void          (*g_free)(void *);
+	bool          ready;
+	bool          tried;
 } atspi_syms_t;
 
 static atspi_syms_t g_atspi = {0};
@@ -1407,19 +1471,27 @@ static bool ensure_atspi_loaded(void)
 	void *h_glib  = dlopen("libglib-2.0.so.0", RTLD_LAZY | RTLD_LOCAL);
 	if (!h_atspi || !h_gobj || !h_glib) return false;
 
-	g_atspi.init               = (int (*)(void))dlsym(h_atspi, "atspi_init");
-	g_atspi.get_desktop        = (void *(*)(int))dlsym(h_atspi, "atspi_get_desktop");
-	g_atspi.get_child_count    = (int (*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_child_count");
-	g_atspi.get_child_at_index = (void *(*)(void *, int, void **))dlsym(h_atspi, "atspi_accessible_get_child_at_index");
-	g_atspi.get_name           = (char *(*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_name");
-	g_atspi.get_role_name      = (char *(*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_role_name");
-	g_atspi.text_get_text      = (char *(*)(void *, int, int, void **))dlsym(h_atspi, "atspi_text_get_text");
-	g_atspi.get_hyperlink      = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_hyperlink");
-	g_atspi.hyperlink_get_uri  = (char *(*)(void *, int, void **))dlsym(h_atspi, "atspi_hyperlink_get_uri");
-	g_atspi.get_document_iface = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_document_iface");
-	g_atspi.doc_get_attr       = (char *(*)(void *, const char *, void **))dlsym(h_atspi, "atspi_document_get_document_attribute_value");
-	g_atspi.g_unref            = (void (*)(void *))dlsym(h_gobj, "g_object_unref");
-	g_atspi.g_free             = (void (*)(void *))dlsym(h_glib, "g_free");
+	g_atspi.init                = (int (*)(void))dlsym(h_atspi, "atspi_init");
+	g_atspi.get_desktop         = (void *(*)(int))dlsym(h_atspi, "atspi_get_desktop");
+	g_atspi.get_child_count     = (int (*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_child_count");
+	g_atspi.get_child_at_index  = (void *(*)(void *, int, void **))dlsym(h_atspi, "atspi_accessible_get_child_at_index");
+	g_atspi.get_name            = (char *(*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_name");
+	g_atspi.get_role_name       = (char *(*)(void *, void **))dlsym(h_atspi, "atspi_accessible_get_role_name");
+	g_atspi.text_get_text       = (char *(*)(void *, int, int, void **))dlsym(h_atspi, "atspi_text_get_text");
+	g_atspi.get_hyperlink       = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_hyperlink");
+	g_atspi.hyperlink_get_uri   = (char *(*)(void *, int, void **))dlsym(h_atspi, "atspi_hyperlink_get_uri");
+	g_atspi.get_document_iface  = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_document_iface");
+	g_atspi.doc_get_attr        = (char *(*)(void *, const char *, void **))dlsym(h_atspi, "atspi_document_get_document_attribute_value");
+	g_atspi.get_component_iface = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_component_iface");
+	g_atspi.comp_get_extents    = (atspi_rect_t *(*)(void *, int, void **))dlsym(h_atspi, "atspi_component_get_extents");
+	g_atspi.comp_grab_focus     = (int (*)(void *, void **))dlsym(h_atspi, "atspi_component_grab_focus");
+	g_atspi.get_action_iface    = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_action_iface");
+	g_atspi.action_get_n        = (int (*)(void *, void **))dlsym(h_atspi, "atspi_action_get_n_actions");
+	g_atspi.action_do           = (int (*)(void *, int, void **))dlsym(h_atspi, "atspi_action_do_action");
+	g_atspi.get_state_set       = (void *(*)(void *))dlsym(h_atspi, "atspi_accessible_get_state_set");
+	g_atspi.state_set_contains  = (int (*)(void *, int))dlsym(h_atspi, "atspi_state_set_contains");
+	g_atspi.g_unref             = (void (*)(void *))dlsym(h_gobj, "g_object_unref");
+	g_atspi.g_free              = (void (*)(void *))dlsym(h_glib, "g_free");
 
 	if (!g_atspi.init || !g_atspi.get_desktop || !g_atspi.get_child_count ||
 	    !g_atspi.get_child_at_index || !g_atspi.get_name || !g_atspi.get_role_name ||
@@ -1431,10 +1503,111 @@ static bool ensure_atspi_loaded(void)
 	return true;
 }
 
-static void walk_atspi_browser_node(void *node, int depth, bool in_doc,
+static bool atspi_node_has_state(void *node, int state_id)
+{
+	if (!node || !g_atspi.get_state_set || !g_atspi.state_set_contains) return true;
+	void *ss = g_atspi.get_state_set(node);
+	if (!ss) return false;
+	bool has = (g_atspi.state_set_contains(ss, state_id) != 0);
+	g_atspi.g_unref(ss);
+	return has;
+}
+
+static bool atspi_is_interactive_role(const char *role)
+{
+	if (!role) return false;
+	return strcmp(role, "entry") == 0 ||
+	       strcmp(role, "combo box") == 0 ||
+	       strcmp(role, "button") == 0 ||
+	       strcmp(role, "push button") == 0 ||
+	       strcmp(role, "toggle button") == 0 ||
+	       strcmp(role, "link") == 0 ||
+	       strcmp(role, "list item") == 0 ||
+	       strcmp(role, "page tab") == 0 ||
+	       strcmp(role, "menu item") == 0 ||
+	       strcmp(role, "check box") == 0 ||
+	       strcmp(role, "radio button") == 0 ||
+	       strcmp(role, "table row") == 0;
+}
+
+static bool atspi_get_node_center(void *node, int *out_cx, int *out_cy)
+{
+	if (!node || !g_atspi.get_component_iface || !g_atspi.comp_get_extents) return false;
+	void *comp = g_atspi.get_component_iface(node);
+	if (!comp) return false;
+	void *cerr = NULL;
+	/* Prefer ATSPI_COORD_TYPE_WINDOW (1) + live X11 window offset so Firefox
+	   multi-process cached negative dwm showhide offsets (-3200) never poison coordinates */
+	atspi_rect_t *r = g_atspi.comp_get_extents(comp, 1, &cerr);
+	bool is_win_rel = (r != NULL && r->width > 0 && r->height > 0);
+	if (!is_win_rel) {
+		if (r) g_atspi.g_free(r);
+		cerr = NULL;
+		r = g_atspi.comp_get_extents(comp, 0, &cerr);
+	}
+	g_atspi.g_unref(comp);
+	if (!r) return false;
+
+	int rx = r->x;
+	int ry = r->y;
+	int rw = r->width;
+	int rh = r->height;
+	g_atspi.g_free(r);
+
+	if (rw <= 0 || rh <= 0) return false;
+	while (rx < -1600) rx += 3200;
+
+	if (is_win_rel) {
+		int wx = 0, wy = 33, ww = 1600, wh = 867;
+		get_window_geometry(NULL, &wx, &wy, &ww, &wh);
+		if (wx < -1600) wx += 3200;
+		rx += wx;
+		ry += wy;
+	}
+
+	bool valid = (rx >= 0 && ry >= 0 && rx < 3200 && ry < 1200);
+	if (valid) {
+		*out_cx = rx + rw / 2;
+		*out_cy = ry + rh / 2;
+	}
+	return valid;
+}
+
+static void clean_atspi_text(const char *raw, char *clean_txt, size_t clean_sz)
+{
+	if (!clean_txt || clean_sz == 0) return;
+	size_t cw = 0;
+	if (raw) {
+		for (const unsigned char *p = (const unsigned char *)raw; *p && cw + 2 < clean_sz; ) {
+			if (p[0] == 0xEF && p[1] == 0xBF && p[2] == 0xBC) {
+				p += 3;
+				continue;
+			}
+			if (p[0] == 0xE2 && p[1] == 0x80 && (p[2] >= 0xAA && p[2] <= 0xAE)) {
+				p += 3;
+				continue;
+			}
+			if (p[0] == 0xC2 && p[1] == 0xA0) {
+				if (cw > 0 && clean_txt[cw - 1] != ' ') clean_txt[cw++] = ' ';
+				p += 2;
+				continue;
+			}
+			if (*p == '\n' || *p == '\r' || *p == '\t') {
+				if (cw > 0 && clean_txt[cw - 1] != ' ') clean_txt[cw++] = ' ';
+				p++;
+				continue;
+			}
+			clean_txt[cw++] = (char)*p++;
+		}
+	}
+	while (cw > 0 && clean_txt[cw - 1] == ' ') cw--;
+	clean_txt[cw] = '\0';
+}
+
+static void walk_atspi_browser_node(void *node, int depth, bool in_doc, const char *filter_query,
                                     char *out, size_t out_sz, size_t *off, int *visited)
 {
-	if (!node || depth > 20 || *visited > 350 || *off + 128 >= out_sz) return;
+	if (!node || depth > 24 || *visited > 2800 || *off + 110 >= out_sz) return;
 	(*visited)++;
 
 	void *err = NULL;
@@ -1443,8 +1616,17 @@ static void walk_atspi_browser_node(void *node, int depth, bool in_doc,
 	char *name = g_atspi.get_name(node, &err);
 
 	bool now_in_doc = in_doc;
+	const char *child_filter = filter_query;
+	bool skip_children = false;
+
 	if (role) {
 		if (strcmp(role, "document web") == 0 || strcmp(role, "document frame") == 0) {
+			/* Skip inactive background tabs (only active tab has ATSPI_STATE_SHOWING = 25 and lacks ATSPI_STATE_OFFSCREEN = 38) */
+			if (!atspi_node_has_state(node, 25) || atspi_node_has_state(node, 38)) {
+				g_atspi.g_free(role);
+				if (name) g_atspi.g_free(name);
+				return;
+			}
 			now_in_doc = true;
 			char *doc_url = NULL;
 			if (g_atspi.get_document_iface && g_atspi.doc_get_attr) {
@@ -1453,6 +1635,14 @@ static void walk_atspi_browser_node(void *node, int depth, bool in_doc,
 					void *derr = NULL;
 					doc_url = g_atspi.doc_get_attr(doc_if, "DocURL", &derr);
 					g_atspi.g_unref(doc_if);
+				}
+			}
+			/* If filter_query matches the active document title/URL itself (e.g. "whatsapp"),
+			   do not filter out the child elements of this document */
+			if (child_filter && *child_filter) {
+				if ((name && str_contains_ci(name, child_filter)) ||
+				    (doc_url && str_contains_ci(doc_url, child_filter))) {
+					child_filter = NULL;
 				}
 			}
 			*off += (size_t)snprintf(out + *off, out_sz - *off,
@@ -1464,57 +1654,222 @@ static void walk_atspi_browser_node(void *node, int depth, bool in_doc,
 			if (doc_url) g_atspi.g_free(doc_url);
 		} else if (!in_doc && strcmp(role, "frame") == 0 && name && *name) {
 			*off += (size_t)snprintf(out + *off, out_sz - *off, "[frame] %s\n", name);
+		} else if (!in_doc && strcmp(role, "page tab") == 0 && name && *name) {
+			int cx = 0, cy = 0;
+			char coord_buf[32] = {0};
+			if (atspi_get_node_center(node, &cx, &cy)) {
+				snprintf(coord_buf, sizeof(coord_buf), " @(%d,%d)", cx, cy);
+			}
+			bool is_sel = atspi_node_has_state(node, 23);
+			*off += (size_t)snprintf(out + *off, out_sz - *off,
+			                         "[page tab%s%s] %s\n",
+			                         coord_buf, is_sel ? " *ACTIVE*" : "", name);
+			skip_children = true;
 		} else if (now_in_doc &&
-		           (strcmp(role, "heading") == 0 ||
-		            strcmp(role, "paragraph") == 0 ||
-		            strcmp(role, "link") == 0 ||
-		            strcmp(role, "entry") == 0 ||
-		            strcmp(role, "push button") == 0 ||
-		            strcmp(role, "list item") == 0 ||
-		            strcmp(role, "section") == 0 ||
-		            strcmp(role, "static") == 0 ||
-		            strcmp(role, "text") == 0)) {
+		           (atspi_is_interactive_role(role) ||
+		            strcmp(role, "heading") == 0)) {
 			char *txt = NULL;
-			if (g_atspi.text_get_text) {
+			if ((!name || !*name) && g_atspi.text_get_text) {
 				void *terr = NULL;
-				txt = g_atspi.text_get_text(node, 0, 400, &terr);
+				txt = g_atspi.text_get_text(node, 0, 200, &terr);
 			}
-			char *uri = NULL;
-			if (strcmp(role, "link") == 0 && g_atspi.get_hyperlink && g_atspi.hyperlink_get_uri) {
-				void *hl = g_atspi.get_hyperlink(node);
-				if (hl) {
-					void *herr = NULL;
-					uri = g_atspi.hyperlink_get_uri(hl, 0, &herr);
-					g_atspi.g_unref(hl);
-				}
-			}
-			/* Clean embedded Private-Use / object-replacement glyphs (0xEF 0xBF 0xBC) from AT-SPI text */
-			const char *best_txt = (txt && *txt) ? txt : ((name && *name) ? name : "");
-			char clean_txt[420] = {0};
-			size_t cw = 0;
-			for (const unsigned char *p = (const unsigned char *)best_txt; *p && cw + 2 < sizeof(clean_txt); ) {
-				if (p[0] == 0xEF && p[1] == 0xBF && p[2] == 0xBC) {
-					p += 3;
-					continue;
-				}
-				if (*p == '\n' || *p == '\r') {
-					clean_txt[cw++] = ' ';
-					p++;
-					continue;
-				}
-				clean_txt[cw++] = (char)*p++;
-			}
-			clean_txt[cw] = '\0';
+			const char *best_txt = (name && *name) ? name : ((txt && *txt) ? txt : "");
+			char clean_txt[180] = {0};
+			clean_atspi_text(best_txt, clean_txt, sizeof(clean_txt));
 
-			if (clean_txt[0] || (uri && *uri)) {
-				*off += (size_t)snprintf(out + *off, out_sz - *off,
-				                         "[%s] %s%s%s\n",
-				                         role, clean_txt,
-				                         (uri && *uri) ? " -> " : "",
-				                         (uri && *uri) ? uri : "");
+			bool is_input = (strcmp(role, "entry") == 0 || strcmp(role, "combo box") == 0);
+			bool matches = true;
+			if (child_filter && *child_filter && !is_input) {
+				matches = str_contains_ci(clean_txt, child_filter) ||
+				          (name && str_contains_ci(name, child_filter)) ||
+				          str_contains_ci(role, child_filter);
+			}
+
+			if (matches && clean_txt[0]) {
+				int cx = 0, cy = 0;
+				if (atspi_get_node_center(node, &cx, &cy)) {
+					*off += (size_t)snprintf(out + *off, out_sz - *off,
+					                         "[%s @(%d,%d)] %.95s\n",
+					                         role, cx, cy, clean_txt);
+					if (strcmp(role, "table row") == 0 ||
+					    strcmp(role, "button") == 0 ||
+					    strcmp(role, "push button") == 0 ||
+					    strcmp(role, "toggle button") == 0 ||
+					    strcmp(role, "entry") == 0 ||
+					    strcmp(role, "heading") == 0 ||
+					    strcmp(role, "link") == 0) {
+						skip_children = true;
+					}
+				}
 			}
 			if (txt) g_atspi.g_free(txt);
-			if (uri) g_atspi.g_free(uri);
+		}
+	}
+
+	if (role) g_atspi.g_free(role);
+	if (name) g_atspi.g_free(name);
+
+	if (skip_children) return;
+
+	err = NULL;
+	int n = g_atspi.get_child_count(node, &err);
+	if (n > 80) n = 80;
+	if (now_in_doc && (!child_filter || !*child_filter) && n > 10) {
+		/* For large lists/tables (e.g. chat list + message history), visit first 6 and last 4
+		   so the bottom message input bar is never truncated out of the buffer */
+		for (int i = 0; i < 6 && *off + 110 < out_sz; i++) {
+			err = NULL;
+			void *ch = g_atspi.get_child_at_index(node, i, &err);
+			if (ch) {
+				walk_atspi_browser_node(ch, depth + 1, now_in_doc, child_filter, out, out_sz, off, visited);
+				g_atspi.g_unref(ch);
+			}
+		}
+		for (int i = n - 4; i < n && *off + 110 < out_sz; i++) {
+			err = NULL;
+			void *ch = g_atspi.get_child_at_index(node, i, &err);
+			if (ch) {
+				walk_atspi_browser_node(ch, depth + 1, now_in_doc, child_filter, out, out_sz, off, visited);
+				g_atspi.g_unref(ch);
+			}
+		}
+		return;
+	}
+	for (int i = 0; i < n && *off + 110 < out_sz; i++) {
+		err = NULL;
+		void *ch = g_atspi.get_child_at_index(node, i, &err);
+		if (ch) {
+			walk_atspi_browser_node(ch, depth + 1, now_in_doc, child_filter, out, out_sz, off, visited);
+			g_atspi.g_unref(ch);
+		}
+	}
+}
+
+typedef struct {
+	const char *query;
+	int         best_score;
+	int         best_cx;
+	int         best_cy;
+	char        best_role[64];
+	char        best_label[128];
+	int         visited;
+} atspi_find_ctx_t;
+
+static int score_atspi_match(const char *role, const char *label, bool in_doc, bool in_chat_list, bool in_msg_row, const char *query)
+{
+	if (!role || !label || !query || !*query) return -1;
+	bool label_match = str_contains_ci(label, query);
+	bool role_match  = str_contains_ci(role, query);
+	if (!label_match && !(role_match && atspi_is_interactive_role(role))) return -1;
+
+	int score = 10;
+	if (in_doc) score += 20;
+	if (atspi_is_interactive_role(role)) score += 35;
+	if (strcmp(role, "page tab") == 0) score += 30;
+	if (in_chat_list && strcmp(role, "table row") == 0) score += 65;
+	if (in_msg_row) score -= 75;
+
+	if (strcmp(role, "entry") == 0 || strcmp(role, "combo box") == 0) {
+		if (str_contains_ci(query, "escrever") || str_contains_ci(query, "mensagem") ||
+		    str_contains_ci(query, "message") || str_contains_ci(query, "procurar") ||
+		    str_contains_ci(query, "search") || str_contains_ci(query, "entry") ||
+		    str_contains_ci(query, "input") || str_contains_ci(query, "type")) {
+			score += 65;
+		}
+	}
+
+	size_t qlen = strlen(query);
+	if (strcasecmp(label, query) == 0) {
+		score += 80;
+	} else if (strncasecmp(label, query, qlen) == 0) {
+		score += 55;
+	} else {
+		/* Check if query occurs near the beginning of label (e.g. "Guilherme Tavira 01:11...") */
+		for (size_t pos = 0; label[pos] && pos < 25; pos++) {
+			if (strncasecmp(label + pos, query, qlen) == 0) {
+				score += 30;
+				break;
+			}
+		}
+	}
+
+	if (strncasecmp(label, "Informações de contacto", 23) == 0 &&
+	    !str_contains_ci(query, "informa") && !str_contains_ci(query, "contacto")) {
+		score -= 60;
+	}
+	if (!in_chat_list && strcmp(role, "table row") == 0) {
+		for (size_t pos = 0; label[pos] && pos < 30; pos++) {
+			if (label[pos] == ':' && label[pos + 1] == ' ') {
+				score -= 50;
+				break;
+			}
+		}
+	}
+	return score;
+}
+
+static void find_atspi_interactive_node(void *node, int depth, bool in_doc, bool in_chat_list, bool in_msg_row, atspi_find_ctx_t *ctx)
+{
+	if (!node || depth > 24 || ctx->visited > 3000) return;
+	ctx->visited++;
+
+	void *err = NULL;
+	char *role = g_atspi.get_role_name(node, &err);
+	err = NULL;
+	char *name = g_atspi.get_name(node, &err);
+
+	bool now_in_doc = in_doc;
+	if (role && (strcmp(role, "document web") == 0 || strcmp(role, "document frame") == 0)) {
+		if (!atspi_node_has_state(node, 25) || atspi_node_has_state(node, 38)) {
+			g_atspi.g_free(role);
+			if (name) g_atspi.g_free(name);
+			return;
+		}
+		now_in_doc = true;
+	}
+
+	bool now_in_chat_list = in_chat_list;
+	if (role && strcmp(role, "table") == 0 && name &&
+	    (str_contains_ci(name, "conversas") || str_contains_ci(name, "chats") || str_contains_ci(name, "chat list"))) {
+		now_in_chat_list = true;
+	}
+	bool now_in_msg_row = in_msg_row;
+
+	if (role && strcmp(role, "frame") != 0 && strcmp(role, "application") != 0 &&
+	    strcmp(role, "document web") != 0 && strcmp(role, "document frame") != 0) {
+		char *txt = NULL;
+		if ((!name || !*name) && g_atspi.text_get_text) {
+			void *terr = NULL;
+			txt = g_atspi.text_get_text(node, 0, 200, &terr);
+		}
+		char clean_name[256] = {0}, clean_txt[256] = {0};
+		clean_atspi_text(name, clean_name, sizeof(clean_name));
+		clean_atspi_text(txt, clean_txt, sizeof(clean_txt));
+		if (txt) g_atspi.g_free(txt);
+
+		const char *label = clean_name[0] ? clean_name : clean_txt;
+		int score = score_atspi_match(role, label, now_in_doc, now_in_chat_list, in_msg_row, ctx->query);
+		if (score > ctx->best_score) {
+			int cx = 0, cy = 0;
+			if (atspi_get_node_center(node, &cx, &cy)) {
+				ctx->best_score = score;
+				ctx->best_cx = cx;
+				ctx->best_cy = cy;
+				snprintf(ctx->best_role, sizeof(ctx->best_role), "%.63s", role);
+				snprintf(ctx->best_label, sizeof(ctx->best_label), "%.120s", label[0] ? label : role);
+				if ((strcmp(role, "entry") == 0 || strcmp(role, "combo box") == 0) &&
+				    g_atspi.get_component_iface && g_atspi.comp_grab_focus) {
+					void *comp = g_atspi.get_component_iface(node);
+					if (comp) {
+						void *ferr = NULL;
+						g_atspi.comp_grab_focus(comp, &ferr);
+						g_atspi.g_unref(comp);
+					}
+				}
+			}
+		}
+		if (strcmp(role, "table row") == 0 && !now_in_chat_list) {
+			now_in_msg_row = true;
 		}
 	}
 
@@ -1523,15 +1878,184 @@ static void walk_atspi_browser_node(void *node, int depth, bool in_doc,
 
 	err = NULL;
 	int n = g_atspi.get_child_count(node, &err);
-	if (n > 64) n = 64;
-	for (int i = 0; i < n && *off + 128 < out_sz; i++) {
+	if (n > 100) n = 100;
+	for (int i = 0; i < n; i++) {
 		err = NULL;
 		void *ch = g_atspi.get_child_at_index(node, i, &err);
 		if (ch) {
-			walk_atspi_browser_node(ch, depth + 1, now_in_doc, out, out_sz, off, visited);
+			find_atspi_interactive_node(ch, depth + 1, now_in_doc, now_in_chat_list, now_in_msg_row, ctx);
 			g_atspi.g_unref(ch);
 		}
 	}
+}
+
+static bool focus_firefox_window(void);
+
+typedef struct {
+	bool any_entry_focused;
+	int  best_cx;
+	int  best_cy;
+	int  best_score;
+	char best_label[128];
+	int  visited;
+} atspi_entry_focus_ctx_t;
+
+static void walk_find_or_check_entry_focus(void *node, int depth, bool in_doc, atspi_entry_focus_ctx_t *ctx)
+{
+	if (!node || depth > 24 || ctx->visited > 2800 || ctx->any_entry_focused) return;
+	ctx->visited++;
+
+	void *err = NULL;
+	char *role = g_atspi.get_role_name(node, &err);
+	err = NULL;
+	char *name = g_atspi.get_name(node, &err);
+
+	bool now_in_doc = in_doc;
+	if (role && (strcmp(role, "document web") == 0 || strcmp(role, "document frame") == 0)) {
+		if (!atspi_node_has_state(node, 25) || atspi_node_has_state(node, 38)) {
+			g_atspi.g_free(role);
+			if (name) g_atspi.g_free(name);
+			return;
+		}
+		now_in_doc = true;
+	}
+
+	if (now_in_doc && role && (strcmp(role, "entry") == 0 || strcmp(role, "combo box") == 0)) {
+		if (atspi_node_has_state(node, 12)) {
+			ctx->any_entry_focused = true;
+		} else {
+			/* Also check if a direct paragraph/text child inside the entry has focus */
+			int nc = g_atspi.get_child_count(node, &err);
+			for (int i = 0; i < nc && i < 4; i++) {
+				void *ch = g_atspi.get_child_at_index(node, i, &err);
+				if (ch) {
+					if (atspi_node_has_state(ch, 12)) ctx->any_entry_focused = true;
+					g_atspi.g_unref(ch);
+				}
+			}
+		}
+		int cx = 0, cy = 0;
+		if (!ctx->any_entry_focused && atspi_get_node_center(node, &cx, &cy)) {
+			char clean_name[128] = {0};
+			clean_atspi_text(name, clean_name, sizeof(clean_name));
+			int score = 20 + (cy / 20); /* Prefer compose box lower on the page */
+			if (str_contains_ci(clean_name, "escrever") ||
+			    str_contains_ci(clean_name, "mensagem") ||
+			    str_contains_ci(clean_name, "message") ||
+			    str_contains_ci(clean_name, "reply") ||
+			    str_contains_ci(clean_name, "chat")) {
+				score += 100;
+			}
+			if (score > ctx->best_score) {
+				ctx->best_score = score;
+				ctx->best_cx = cx;
+				ctx->best_cy = cy;
+				snprintf(ctx->best_label, sizeof(ctx->best_label), "%s", clean_name);
+			}
+		}
+	}
+
+	if (role) g_atspi.g_free(role);
+	if (name) g_atspi.g_free(name);
+	if (ctx->any_entry_focused) return;
+
+	err = NULL;
+	int n = g_atspi.get_child_count(node, &err);
+	if (n > 100) n = 100;
+	for (int i = 0; i < n && !ctx->any_entry_focused; i++) {
+		err = NULL;
+		void *ch = g_atspi.get_child_at_index(node, i, &err);
+		if (ch) {
+			walk_find_or_check_entry_focus(ch, depth + 1, now_in_doc, ctx);
+			g_atspi.g_unref(ch);
+		}
+	}
+}
+
+/* Ensure an input entry inside the browser is focused before typing */
+static void atspi_ensure_browser_entry_focused(void)
+{
+	jarvis_window_t foc;
+	if (!get_focused_window_fast(&foc)) return;
+	if (!str_contains_ci(foc.wm_class, "firefox") &&
+	    !str_contains_ci(foc.wm_class, "chromium") &&
+	    !str_contains_ci(foc.wm_class, "chrome") &&
+	    !str_contains_ci(foc.wm_class, "brave")) {
+		return;
+	}
+	if (!ensure_atspi_loaded()) return;
+	void *desktop = g_atspi.get_desktop(0);
+	if (!desktop) return;
+
+	atspi_entry_focus_ctx_t ctx;
+	memset(&ctx, 0, sizeof(ctx));
+
+	void *err = NULL;
+	int n_apps = g_atspi.get_child_count(desktop, &err);
+	for (int i = 0; i < n_apps && !ctx.any_entry_focused; i++) {
+		err = NULL;
+		void *app = g_atspi.get_child_at_index(desktop, i, &err);
+		if (!app) continue;
+		err = NULL;
+		char *aname = g_atspi.get_name(app, &err);
+		if (aname && (str_contains_ci(aname, "Firefox") ||
+		              str_contains_ci(aname, "Chromium") ||
+		              str_contains_ci(aname, "Chrome") ||
+		              str_contains_ci(aname, "Brave"))) {
+			walk_find_or_check_entry_focus(app, 0, false, &ctx);
+		}
+		if (aname) g_atspi.g_free(aname);
+		g_atspi.g_unref(app);
+	}
+	g_atspi.g_unref(desktop);
+
+	if (!ctx.any_entry_focused && ctx.best_score > 0) {
+		x11_mouse_click(ctx.best_cx, ctx.best_cy, 1);
+		usleep(80000);
+	}
+}
+
+static bool atspi_click_or_focus_element_ex(const char *query, int btn, char *out_role, size_t role_sz, char *out_msg, size_t out_sz)
+{
+	if (out_role && role_sz > 0) out_role[0] = '\0';
+	if (!query || !*query || !ensure_atspi_loaded()) return false;
+	focus_firefox_window();
+	void *desktop = g_atspi.get_desktop(0);
+	if (!desktop) return false;
+
+	atspi_find_ctx_t ctx;
+	memset(&ctx, 0, sizeof(ctx));
+	ctx.query = query;
+
+	void *err = NULL;
+	int n_apps = g_atspi.get_child_count(desktop, &err);
+	for (int i = 0; i < n_apps; i++) {
+		err = NULL;
+		void *app = g_atspi.get_child_at_index(desktop, i, &err);
+		if (!app) continue;
+		err = NULL;
+		char *aname = g_atspi.get_name(app, &err);
+		if (aname && (str_contains_ci(aname, "Firefox") ||
+		              str_contains_ci(aname, "Chromium") ||
+		              str_contains_ci(aname, "Chrome") ||
+		              str_contains_ci(aname, "Brave"))) {
+			find_atspi_interactive_node(app, 0, false, false, false, &ctx);
+		}
+		if (aname) g_atspi.g_free(aname);
+		g_atspi.g_unref(app);
+	}
+	g_atspi.g_unref(desktop);
+
+	if (ctx.best_score <= 0) return false;
+
+	if (out_role && role_sz > 0) {
+		snprintf(out_role, role_sz, "%s", ctx.best_role);
+	}
+	x11_mouse_click(ctx.best_cx, ctx.best_cy, btn);
+	usleep(90000);
+	snprintf(out_msg, out_sz, "clicked [%s] '%.64s' at (%d,%d)",
+	         ctx.best_role, ctx.best_label, ctx.best_cx, ctx.best_cy);
+	return true;
 }
 
 static void extract_html_fallback(const char *file_url, char *out, size_t out_sz, size_t *off)
@@ -1584,7 +2108,7 @@ static void extract_html_fallback(const char *file_url, char *out, size_t out_sz
 	out[*off] = '\0';
 }
 
-static bool inspect_browser_a11y(const jarvis_world_t *w, char *out, size_t out_sz)
+static bool inspect_browser_a11y_filtered(const jarvis_world_t *w, const char *filter_query, char *out, size_t out_sz)
 {
 	if (!out || out_sz == 0) return false;
 	out[0] = '\0';
@@ -1606,7 +2130,7 @@ static bool inspect_browser_a11y(const jarvis_world_t *w, char *out, size_t out_
 				              str_contains_ci(aname, "Chrome") ||
 				              str_contains_ci(aname, "Brave"))) {
 					int visited = 0;
-					walk_atspi_browser_node(app, 0, false, out, out_sz, &off, &visited);
+					walk_atspi_browser_node(app, 0, false, filter_query, out, out_sz, &off, &visited);
 				}
 				if (aname) g_atspi.g_free(aname);
 				g_atspi.g_unref(app);
@@ -1640,6 +2164,135 @@ static bool inspect_browser_a11y(const jarvis_world_t *w, char *out, size_t out_
 	return off > 0;
 }
 
+static bool inspect_browser_a11y(const jarvis_world_t *w, char *out, size_t out_sz)
+{
+	return inspect_browser_a11y_filtered(w, NULL, out, out_sz);
+}
+
+typedef struct {
+	const char *query;
+	bool        active_matches;
+	bool        found_other;
+	int         other_cx;
+	int         other_cy;
+	char        matched_title[128];
+} atspi_tab_switch_ctx_t;
+
+static void walk_find_page_tab(void *node, int depth, atspi_tab_switch_ctx_t *ctx)
+{
+	if (!node || depth > 10 || ctx->active_matches) return;
+	void *err = NULL;
+	char *role = g_atspi.get_role_name(node, &err);
+	err = NULL;
+	char *name = g_atspi.get_name(node, &err);
+
+	if (role && (strcmp(role, "document web") == 0 || strcmp(role, "document frame") == 0)) {
+		g_atspi.g_free(role);
+		if (name) g_atspi.g_free(name);
+		return;
+	}
+	if (role && strcmp(role, "page tab") == 0 && name && *name) {
+		if (str_contains_ci(name, ctx->query)) {
+			if (atspi_node_has_state(node, 23)) {
+				ctx->active_matches = true;
+				snprintf(ctx->matched_title, sizeof(ctx->matched_title), "%.120s", name);
+			} else if (!ctx->found_other) {
+				bool switched = false;
+				if (g_atspi.get_action_iface && g_atspi.action_do) {
+					void *act = g_atspi.get_action_iface(node);
+					if (act) {
+						void *aerr = NULL;
+						if (g_atspi.action_do(act, 0, &aerr) != 0) {
+							switched = true;
+						}
+						g_atspi.g_unref(act);
+					}
+				}
+				if (switched) {
+					ctx->active_matches = true;
+					snprintf(ctx->matched_title, sizeof(ctx->matched_title), "%.120s", name);
+					usleep(160000);
+				} else {
+					int cx = 0, cy = 0;
+					if (atspi_get_node_center(node, &cx, &cy)) {
+						ctx->found_other = true;
+						ctx->other_cx = cx;
+						ctx->other_cy = cy;
+						snprintf(ctx->matched_title, sizeof(ctx->matched_title), "%.120s", name);
+					}
+				}
+			}
+		}
+		g_atspi.g_free(role);
+		g_atspi.g_free(name);
+		return;
+	}
+	if (role) g_atspi.g_free(role);
+	if (name) g_atspi.g_free(name);
+
+	err = NULL;
+	int n = g_atspi.get_child_count(node, &err);
+	if (n > 40) n = 40;
+	for (int i = 0; i < n && !ctx->active_matches; i++) {
+		err = NULL;
+		void *ch = g_atspi.get_child_at_index(node, i, &err);
+		if (ch) {
+			walk_find_page_tab(ch, depth + 1, ctx);
+			g_atspi.g_unref(ch);
+		}
+	}
+}
+
+static bool atspi_switch_to_matching_tab_if_needed(const char *query, char *out_tab_title, size_t title_sz)
+{
+	if (out_tab_title && title_sz > 0) out_tab_title[0] = '\0';
+	if (!query || !*query || !ensure_atspi_loaded()) return false;
+	for (int attempt = 0; attempt < 2; attempt++) {
+		void *desktop = g_atspi.get_desktop(0);
+		if (!desktop) return false;
+
+		atspi_tab_switch_ctx_t ctx;
+		memset(&ctx, 0, sizeof(ctx));
+		ctx.query = query;
+
+		void *err = NULL;
+		int n_apps = g_atspi.get_child_count(desktop, &err);
+		for (int i = 0; i < n_apps && !ctx.active_matches; i++) {
+			err = NULL;
+			void *app = g_atspi.get_child_at_index(desktop, i, &err);
+			if (!app) continue;
+			err = NULL;
+			char *aname = g_atspi.get_name(app, &err);
+			if (aname && (str_contains_ci(aname, "Firefox") ||
+			              str_contains_ci(aname, "Chromium") ||
+			              str_contains_ci(aname, "Chrome") ||
+			              str_contains_ci(aname, "Brave"))) {
+				walk_find_page_tab(app, 0, &ctx);
+			}
+			if (aname) g_atspi.g_free(aname);
+			g_atspi.g_unref(app);
+		}
+		g_atspi.g_unref(desktop);
+
+		if (ctx.active_matches) {
+			if (out_tab_title && title_sz > 0) {
+				snprintf(out_tab_title, title_sz, "%s", ctx.matched_title);
+			}
+			return true;
+		}
+		if (ctx.found_other) {
+			x11_mouse_click(ctx.other_cx, ctx.other_cy, 1);
+			usleep(140000);
+			if (out_tab_title && title_sz > 0) {
+				snprintf(out_tab_title, title_sz, "%s", ctx.matched_title);
+			}
+			return true;
+		}
+		usleep(45000);
+	}
+	return false;
+}
+
 static bool focus_window_by_id_str(const char *wid_str, double timeout_sec)
 {
 	if (!wid_str || !*wid_str) return false;
@@ -1649,7 +2302,27 @@ static bool focus_window_by_id_str(const char *wid_str, double timeout_sec)
 	if (!dpy) return false;
 	send_dwm_cmd(dpy, DefaultRootWindow(dpy), DWM_CMD_FOCUS_WIN, (long)w);
 	XCloseDisplay(dpy);
-	return wait_window_focused(wid_str, timeout_sec);
+	bool ok = wait_window_focused(wid_str, timeout_sec);
+	if (ok) {
+		/* Wait up to 200ms for dwm showhide to move window onto positive X screen coords */
+		double deadline = now_sec() + 0.20;
+		int wx = -1, wy = 0, ww = 0, wh = 0;
+		while (now_sec() < deadline) {
+			get_window_geometry(wid_str, &wx, &wy, &ww, &wh);
+			if (wx >= 0) break;
+			usleep(15000);
+		}
+		if (ww > 0 && wh > 0) {
+			Display *wdpy = XOpenDisplay(NULL);
+			if (wdpy) {
+				XWarpPointer(wdpy, None, w, 0, 0, 0, 0, ww / 2, wh / 2);
+				XFlush(wdpy);
+				XCloseDisplay(wdpy);
+			}
+		}
+		usleep(35000);
+	}
+	return ok;
 }
 
 static bool focus_firefox_window(void)
@@ -1658,12 +2331,18 @@ static bool focus_firefox_window(void)
 	memset(&w, 0, sizeof(w));
 	query_x11_windows(&w);
 	for (size_t i = 0; i < w.client_count; i++) {
-		if (w.clients[i].visible && str_contains_ci(w.clients[i].wm_class, "firefox")) {
+		if (w.clients[i].visible &&
+		    (str_contains_ci(w.clients[i].wm_class, "firefox") ||
+		     str_contains_ci(w.clients[i].wm_class, "chromium") ||
+		     str_contains_ci(w.clients[i].wm_class, "brave"))) {
+			if (w.clients[i].focused) return true;
 			return focus_window_by_id_str(w.clients[i].id, 1.2);
 		}
 	}
 	for (size_t i = 0; i < w.client_count; i++) {
-		if (str_contains_ci(w.clients[i].wm_class, "firefox")) {
+		if (str_contains_ci(w.clients[i].wm_class, "firefox") ||
+		    str_contains_ci(w.clients[i].wm_class, "chromium") ||
+		    str_contains_ci(w.clients[i].wm_class, "brave")) {
 			return focus_window_by_id_str(w.clients[i].id, 1.2);
 		}
 	}
@@ -1696,9 +2375,21 @@ XY_IMPL(int, jarvis_xy_observe, jarvis_world_t *, w)
 	/* 4. Active tmux panes */
 	populate_tmux_panes(w, true, 20);
 
-	/* 5. Firefox open tabs (cached by recovery.jsonlz4 mtime) & live browser accessibility tree */
+	/* 5. Firefox open tabs (cached by recovery.jsonlz4 mtime) & live browser accessibility tree (if visible) */
 	populate_firefox_tabs(w);
-	inspect_browser_a11y(w, w->browser_page, sizeof(w->browser_page));
+	bool browser_visible = false;
+	for (size_t i = 0; i < w->client_count; i++) {
+		if (w->clients[i].visible &&
+		    (str_contains_ci(w->clients[i].wm_class, "firefox") ||
+		     str_contains_ci(w->clients[i].wm_class, "chromium") ||
+		     str_contains_ci(w->clients[i].wm_class, "brave"))) {
+			browser_visible = true;
+			break;
+		}
+	}
+	if (browser_visible) {
+		inspect_browser_a11y(w, w->browser_page, sizeof(w->browser_page));
+	}
 
 	/* 6. Discovered .desktop applications */
 	ensure_desktop_apps_loaded();
@@ -1932,7 +2623,31 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		return 0;
 	}
 
-	/* 5. open_url & search_web */
+	/* 5. open_url, focus_tab & search_web */
+	if (strcmp(op, "focus_tab") == 0) {
+		res->handled = true;
+		const char *q = dsl->target.query[0] ? dsl->target.query : dsl->target.identifier;
+		if (!q || !*q) {
+			res->success = false;
+			snprintf(res->error, sizeof(res->error), "focus_tab requires target.query");
+			return 0;
+		}
+		focus_firefox_window();
+		char tab_title[128] = {0};
+		if (atspi_switch_to_matching_tab_if_needed(q, tab_title, sizeof(tab_title))) {
+			jarvis_world_t w;
+			memset(&w, 0, sizeof(w));
+			inspect_browser_a11y_filtered(&w, NULL, w.browser_page, sizeof(w.browser_page));
+			snprintf(res->output, sizeof(res->output),
+			         "switched to tab '%s':\n%.1850s", tab_title, w.browser_page);
+			res->success = true;
+		} else {
+			res->success = false;
+			snprintf(res->error, sizeof(res->error), "No open browser tab matching: %.200s", q);
+		}
+		return 0;
+	}
+
 	if (strcmp(op, "open_url") == 0 || strcmp(op, "search_web") == 0) {
 		res->handled = true;
 		char url[768] = {0};
@@ -1956,6 +2671,30 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 				snprintf(url, sizeof(url), "%s", dsl->target.url);
 			} else {
 				snprintf(url, sizeof(url), "https://%s", dsl->target.url);
+			}
+			/* Check if an existing tab in Firefox already matches this site domain */
+			const char *host = strstr(url, "://");
+			host = host ? (host + 3) : url;
+			if ( strncasecmp(host, "www.", 4) == 0 ) host += 4;
+			if ( strncasecmp(host, "web.", 4) == 0 ) host += 4;
+			char domain_kw[64] = {0};
+			size_t dlen = 0;
+			while (host[dlen] && host[dlen] != '.' && host[dlen] != '/' && host[dlen] != ':' && dlen + 1 < sizeof(domain_kw)) {
+				domain_kw[dlen] = host[dlen];
+				dlen++;
+			}
+			domain_kw[dlen] = '\0';
+			if (dlen >= 3 && focus_firefox_window()) {
+				char tab_title[128] = {0};
+				if (atspi_switch_to_matching_tab_if_needed(domain_kw, tab_title, sizeof(tab_title))) {
+					jarvis_world_t w;
+					memset(&w, 0, sizeof(w));
+					inspect_browser_a11y_filtered(&w, NULL, w.browser_page, sizeof(w.browser_page));
+					snprintf(res->output, sizeof(res->output),
+					         "focused existing tab '%s':\n%.1850s", tab_title, w.browser_page);
+					res->success = true;
+					return 0;
+				}
 			}
 		}
 		char *const argv[] = { "firefox", "--new-tab", url, NULL };
@@ -2040,9 +2779,30 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			snprintf(res->output, sizeof(res->output), "key: %s", combo);
 		} else {
 			bool enter = (strcmp(op, "type_and_enter") == 0);
+			char click_msg[160] = {0};
+			char clicked_role[64] = {0};
+			if (dsl->target.query[0]) {
+				if (!atspi_click_or_focus_element_ex(dsl->target.query, 1,
+				                                     clicked_role, sizeof(clicked_role),
+				                                     click_msg, sizeof(click_msg))) {
+					res->success = false;
+					snprintf(res->error, sizeof(res->error),
+					         "UI element not found in accessibility tree: %.200s", dsl->target.query);
+					return 0;
+				}
+				if (strcmp(clicked_role, "entry") != 0 && strcmp(clicked_role, "combo box") != 0) {
+					usleep(160000);
+				}
+			}
+			atspi_ensure_browser_entry_focused();
 			x11_type_text(dsl->args.text, enter);
-			snprintf(res->output, sizeof(res->output), "%s: %.40s",
-			         enter ? "typed+enter" : "typed", dsl->args.text);
+			if (click_msg[0]) {
+				snprintf(res->output, sizeof(res->output), "%s -> %s: %.80s",
+				         click_msg, enter ? "typed+enter" : "typed", dsl->args.text);
+			} else {
+				snprintf(res->output, sizeof(res->output), "%s: %.80s",
+				         enter ? "typed+enter" : "typed", dsl->args.text);
+			}
 		}
 
 		if (to_other && w.focused.id[0]) {
@@ -2056,13 +2816,39 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 	if (strcmp(op, "click") == 0) {
 		res->handled = true;
 		int x = dsl->target.x, y = dsl->target.y;
+		int btn = dsl->args.button > 0 ? dsl->args.button : 1;
+		const char *q = dsl->target.query[0] ? dsl->target.query : dsl->target.identifier;
+		if (x == 0 && y == 0 && q && *q) {
+			char clicked_role[64] = {0};
+			if (atspi_click_or_focus_element_ex(q, btn, clicked_role, sizeof(clicked_role),
+			                                    res->output, sizeof(res->output))) {
+				if (strcmp(clicked_role, "table row") == 0 ||
+				    strcmp(clicked_role, "page tab") == 0 ||
+				    strcmp(clicked_role, "list item") == 0) {
+					usleep(120000);
+					jarvis_world_t w;
+					memset(&w, 0, sizeof(w));
+					inspect_browser_a11y_filtered(&w, "entry", w.browser_page, sizeof(w.browser_page));
+					size_t cur_len = strlen(res->output);
+					if (w.browser_page[0] && cur_len + 64 < sizeof(res->output)) {
+						int rem = (int)(sizeof(res->output) - cur_len - 3);
+						snprintf(res->output + cur_len, sizeof(res->output) - cur_len,
+						         "\n%.*s", rem > 0 ? rem : 0, w.browser_page);
+					}
+				}
+				res->success = true;
+				return 0;
+			}
+			res->success = false;
+			snprintf(res->error, sizeof(res->error), "UI element not found in accessibility tree: %.200s", q);
+			return 0;
+		}
 		if (x == 0 && y == 0) {
 			int wx, wy, ww, wh;
 			get_window_geometry(NULL, &wx, &wy, &ww, &wh);
 			x = wx + ww / 2;
 			y = wy + wh / 2;
 		}
-		int btn = dsl->args.button > 0 ? dsl->args.button : 1;
 		x11_mouse_click(x, y, btn);
 		res->success = true;
 		snprintf(res->output, sizeof(res->output), "click at (%d,%d) button %d", x, y, btn);
@@ -2284,7 +3070,7 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 		return 0;
 	}
 
-	/* 11. wait, wm_help, ask_agent, tts_interrupt, answer_question */
+	/* 11. wait, wm_help, tts_interrupt, answer_question */
 	if (strcmp(op, "wait") == 0) {
 		res->handled = true;
 		double sec = dsl->args.seconds > 0.0 ? dsl->args.seconds : 1.0;
@@ -2308,21 +3094,6 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 			run_cmd_capture(cmd, res->output, sizeof(res->output));
 		}
 		res->success = true;
-		return 0;
-	}
-
-	if (strcmp(op, "ask_agent") == 0) {
-		res->handled = true;
-		const char *q = dsl->target.query[0] ? dsl->target.query : dsl->args.text;
-		if (!q[0]) {
-			res->success = false;
-			snprintf(res->error, sizeof(res->error), "ask_agent requires target.query");
-			return 0;
-		}
-		char *const argv[] = { "dwm-jarvis-pi", "send", (char *)q, NULL };
-		spawn_detached_argv(argv);
-		res->success = true;
-		snprintf(res->output, sizeof(res->output), "sent to Pi agent: %s", q);
 		return 0;
 	}
 
@@ -2403,29 +3174,44 @@ XY_IMPL(int, jarvis_xy_execute, const jarvis_dsl_t *, dsl, jarvis_adapter_result
 
 	if (strcmp(op, "inspect_browser") == 0) {
 		res->handled = true;
+		focus_firefox_window();
+		const char *filter_q = dsl->target.query[0] ? dsl->target.query : NULL;
+		if (filter_q && *filter_q) {
+			atspi_switch_to_matching_tab_if_needed(filter_q, NULL, 0);
+		}
 		jarvis_world_t w;
 		memset(&w, 0, sizeof(w));
 		query_x11_windows(&w);
 		populate_firefox_tabs(&w);
-		inspect_browser_a11y(&w, w.browser_page, sizeof(w.browser_page));
+		inspect_browser_a11y_filtered(&w, filter_q, w.browser_page, sizeof(w.browser_page));
 
-		char esc_a11y[1400] = {0};
-		json_escape_into(w.browser_page, esc_a11y, sizeof(esc_a11y));
+		snprintf(res->output, sizeof(res->output), "%.2040s",
+		         w.browser_page[0] ? w.browser_page : "(no browser accessibility tree found)");
+		res->success = true;
+		return 0;
+	}
 
-		char tabs_buf[512] = {0};
-		size_t toff = 0;
-		for (size_t i = 0; i < w.tab_count && toff + 80 < sizeof(tabs_buf); i++) {
-			char et[96] = {0}, eu[160] = {0};
-			json_escape_into(w.tabs[i].title, et, sizeof(et));
-			json_escape_into(w.tabs[i].url, eu, sizeof(eu));
-			toff += (size_t)snprintf(tabs_buf + toff, sizeof(tabs_buf) - toff,
-			                         "%s{\"index\":%d,\"title\":\"%s\",\"url\":\"%s\"}",
-			                         i > 0 ? "," : "", w.tabs[i].index, et, eu);
+	if (strcmp(op, "inspect_windows") == 0) {
+		res->handled = true;
+		jarvis_world_t w;
+		memset(&w, 0, sizeof(w));
+		query_x11_windows(&w);
+		size_t off = 0;
+		off += (size_t)snprintf(res->output + off, sizeof(res->output) - off,
+		                        "{\"focused\":\"%s\",\"other\":\"%s\",\"windows\":[",
+		                        w.focused.id, w.other.id);
+		for (size_t i = 0; i < w.client_count && off + 160 < sizeof(res->output); i++) {
+			char ec[64] = {0}, et[128] = {0};
+			json_escape_into(w.clients[i].wm_class, ec, sizeof(ec));
+			json_escape_into(w.clients[i].title, et, sizeof(et));
+			off += (size_t)snprintf(res->output + off, sizeof(res->output) - off,
+			                        "%s{\"id\":\"%s\",\"class\":\"%s\",\"title\":\"%s\",\"tag\":%d,\"visible\":%s,\"focused\":%s}",
+			                        i > 0 ? "," : "",
+			                        w.clients[i].id, ec, et, w.clients[i].tag,
+			                        w.clients[i].visible ? "true" : "false",
+			                        w.clients[i].focused ? "true" : "false");
 		}
-
-		snprintf(res->output, sizeof(res->output),
-		         "{\"accessibility_tree\":\"%s\",\"open_tabs\":[%s]}",
-		         esc_a11y, tabs_buf);
+		snprintf(res->output + off, sizeof(res->output) - off, "]}");
 		res->success = true;
 		return 0;
 	}

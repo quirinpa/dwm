@@ -30,7 +30,7 @@ APP_ALIASES = {
     "dwm-voice": "Jarvis Voice Listener",
     "axil": "Axil / Auren Server",
     "cormd": "Corm Database Daemon",
-    "pi": "Pi Coding Agent",
+    "ren": "ren Coding Agent",
     "agy_acp_server.": "Antigravity ACP Server",
     "agy_acp_server.par": "Antigravity ACP Server",
     "localharness_ex": "Antigravity Local Harness",

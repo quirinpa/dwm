@@ -233,26 +233,25 @@ def answer_query(raw_query: str):
             "  Voice Undo:                “Jarvis, undo” (reverts action + evicts learned shortcut)",
         ),
         (
-            "Jarvis Context-Scoped & Self-Learning Shortcuts",
+            "Jarvis Context-Scoped Shortcuts & ren Brain",
             (
-                ["context", "scope", "scoped", "learned", "learning", "llm", "inference", "infer", "clear line", "delete word", "shortcut", "shortcuts"],
-                ["terminal", "browser", "llm", "learned", "jarvis", "inference", "mode", "line", "word", ""],
+                ["context", "scope", "scoped", "learned", "learning", "ren", "brain", "clear line", "delete word", "shortcut", "shortcuts"],
+                ["terminal", "browser", "ren", "learned", "jarvis", "line", "word", ""],
             ),
             "  Same phrase adapts to active window (@terminal vs @browser):\n"
             "   • “Jarvis, clear the line”       -> Ctrl+U (term) | Ctrl+A BackSpace (browser)\n"
             "   • “Jarvis, delete previous word” -> Ctrl+W (term) | Ctrl+BackSpace (browser)\n"
-            "🤖 Novel commands infer via LLM (Mod+Shift+v -> LLM Inference Mode) &\n"
-            "   auto-save to ~/.config/dwm/intents.learned.conf (“Jarvis, undo” evicts).",
+            "🤖 All commands run through the unified ren brain (Tier-0 reflex + Tier-1 tools).",
         ),
         (
-            "Jarvis Pi Coding Session (tmux)",
+            "Jarvis ren Brain Session (tmux)",
             (
-                ["pi", "tmux", "coding agent", "agent"],
+                ["ren", "tmux", "coding agent", "agent"],
                 [""],
             ),
-            "  Open Terminal:  “Jarvis, show pi”\n"
-            "  Abort Task:     “Jarvis, stop pi”\n"
-            "  Reset Session:  “Jarvis, reset pi”",
+            "  Open Terminal:  “Jarvis, show ren” (or Mod+Shift+v)\n"
+            "  Abort Task:     “Jarvis, stop ren”\n"
+            "  Reset Session:  “Jarvis, reset ren”",
         ),
         (
             "Restart or Quit dwm",
@@ -339,7 +338,7 @@ def run_gui():
             ("Mod + p",             "App Launcher (dmenu)"),
             ("Mod + a",             "Jarvis Semantic Command Bar"),
             ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Off (Silver)"),
-            ("Mod + Shift + v",     "Jarvis Menu (Pi, LLM Mode, Lang, Lockdown)"),
+            ("Mod + Shift + v",     "Jarvis Menu (ren Terminal, TTS, Lang, Lockdown)"),
             ("“Jarvis, <cmd>”",     "Context-Aware Voice (@terminal / @browser)"),
             ("“Jarvis, undo”",      "Revert Last Action & Evict Learned Rule"),
             ("“Jarvis, lockdown”",  "Turn Jarvis Off + Lock Screen (slock)"),

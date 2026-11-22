@@ -1,0 +1,154 @@
+#!/bin/sh
+# dwm-jarvis: Persistent tmux-backed ren session controller for Jarvis voice assistant
+# Runs ren silently in a detached tmux session ("jarvis") listening on /tmp/ren-jarvis-$USER.sock,
+# notifies via Dunst/dwm-bar, and allows attaching a real st terminal window at any time ("Jarvis, show ren").
+
+export PATH="$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+
+SESSION="jarvis"
+WORKDIR="${JARVIS_WORKDIR:-$HOME/site}"
+[ -d "$WORKDIR" ] || WORKDIR="$HOME"
+SOCK_PATH="/tmp/ren-jarvis-$USER.sock"
+STATE_FILE="/tmp/dwm-ren-$USER.state"
+
+refresh_bar() {
+    if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
+        kill -USR1 "$(cat "/tmp/dwm-bar-$USER.pid" 2>/dev/null)" 2>/dev/null || true
+    fi
+}
+
+notify_ren() {
+    timeout="${1:-4500}"
+    title="$2"
+    body="$3"
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -t "$timeout" -h "string:x-dunst-stack-tag:jarvis-ren" "$title" "$body" 2>/dev/null || true
+    fi
+}
+
+set_ren_state() {
+    st="$1"
+    if [ -n "$st" ]; then
+        printf '%s\n' "$st" > "$STATE_FILE.tmp" && mv -f "$STATE_FILE.tmp" "$STATE_FILE"
+    else
+        rm -f "$STATE_FILE"
+    fi
+    refresh_bar
+}
+
+has_jarvis_session() {
+    tmux has-session -t "$SESSION" 2>/dev/null
+}
+
+ensure_jarvis_session() {
+    if has_jarvis_session && [ -S "$SOCK_PATH" ]; then
+        return 0
+    fi
+    if ! has_jarvis_session; then
+        rm -f "$SOCK_PATH"
+        tmux new-session -d -s "$SESSION" -x 120 -y 36 -c "$WORKDIR" \
+            "export PATH='$PATH'; exec ren --session jarvis --listen \"$SOCK_PATH\" --max-turns 16 -m mod_jarvis:mod_mm"
+    fi
+    # Wait up to 1.5s for /tmp/ren-jarvis-$USER.sock to bind
+    i=0
+    while [ "$i" -lt 30 ]; do
+        [ -S "$SOCK_PATH" ] && return 0
+        sleep 0.05
+        i=$(( i + 1 ))
+    done
+    return 0
+}
+
+cmd_send() {
+    prompt="$*"
+    prompt=$(printf '%s\n' "$prompt" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    if [ -z "$prompt" ]; then
+        exit 0
+    fi
+
+    ensure_jarvis_session
+    if [ -S "$SOCK_PATH" ] && command -v nc >/dev/null 2>&1; then
+        set_ren_state "working"
+        printf '%s\n' "$prompt" | nc -U -q 0 "$SOCK_PATH"
+        set_ren_state ""
+    else
+        tmux send-keys -t "$SESSION" -l -- "$prompt" 2>/dev/null
+        tmux send-keys -t "$SESSION" Enter 2>/dev/null
+    fi
+}
+
+cmd_show() {
+    ensure_jarvis_session
+    if xdotool search --class "jarvis-ren" >/dev/null 2>&1; then
+        dwm-msg focus-class jarvis-ren >/dev/null 2>&1 || true
+    else
+        st -c jarvis-ren -n jarvis-ren -t "Jarvis (ren tmux session)" \
+            -e tmux attach-session -t "$SESSION" >/dev/null 2>&1 &
+    fi
+    notify_ren 2800 "  Jarvis Brain (ren)" "Attached to tmux session '${SESSION}'. Close window anytime to keep running in background."
+}
+
+cmd_stop() {
+    set_ren_state ""
+    if has_jarvis_session; then
+        tmux send-keys -t "$SESSION" C-c 2>/dev/null || true
+        notify_ren 3500 "⏹  Jarvis Stopped" "Sent interrupt to background ren session."
+    else
+        notify_ren 2500 "  Jarvis" "No active ren session running."
+    fi
+}
+
+cmd_reset() {
+    set_ren_state ""
+    if has_jarvis_session && [ -S "$SOCK_PATH" ] && command -v nc >/dev/null 2>&1; then
+        printf '/reset\n' | nc -U "$SOCK_PATH" >/dev/null 2>&1 || true
+        notify_ren 3500 "🔄  Jarvis Reset" "Cleared conversation history in tmux session '${SESSION}'."
+    else
+        tmux kill-session -t "$SESSION" 2>/dev/null || true
+        rm -f "$SOCK_PATH"
+        ensure_jarvis_session
+        notify_ren 3500 "🔄  Jarvis Ready" "Started fresh background ren tmux session '${SESSION}'."
+    fi
+}
+
+cmd_reload() {
+    set_ren_state ""
+    tmux kill-session -t "$SESSION" 2>/dev/null || true
+    rm -f "$SOCK_PATH" "$HOME/.ren/sessions/jarvis"
+    dwm-msg mod-reload "$HOME/.local/lib/mod_dwm.so" 2>/dev/null || true
+    ensure_jarvis_session
+    notify_ren 3500 "🔄  Jarvis Reloaded" "Reloaded mod_dwm.so and restarted background ren tmux session '${SESSION}'."
+}
+
+case "${1:-show}" in
+    send)
+        shift
+        cmd_send "$@"
+        ;;
+    ensure|start)
+        ensure_jarvis_session
+        ;;
+    reload|restart)
+        cmd_reload
+        ;;
+    show|open|attach)
+        cmd_show
+        ;;
+    stop|cancel|abort)
+        cmd_stop
+        ;;
+    reset|new)
+        cmd_reset
+        ;;
+    status)
+        if has_jarvis_session && [ -S "$SOCK_PATH" ]; then
+            echo "running"
+        else
+            echo "stopped"
+        fi
+        ;;
+    *)
+        echo "Usage: dwm-jarvis {send <prompt>|ensure|reload|show|stop|reset|status}" >&2
+        exit 1
+        ;;
+esac

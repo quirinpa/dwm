@@ -678,24 +678,6 @@
         "sobe a pagina"
       ],
       "light": []
-    },
-    "AGENT_ASK": {
-      "primary": [
-        "ask pi",
-        "tell pi",
-        "have pi",
-        "ask the agent",
-        "tell the agent",
-        "ask coding agent",
-        "pi agent",
-        "pede ao pi",
-        "diz ao pi",
-        "pergunta ao pi",
-        "pede ao agente",
-        "diz ao agente",
-        "pergunta ao agente"
-      ],
-      "light": []
     }
   },
   "entities": {
@@ -2917,16 +2899,6 @@
       "surface": "any"
     },
     {
-      "id": "agent.ask",
-      "verbs": [
-        "AGENT_ASK"
-      ],
-      "required_entities": [],
-      "forbid_entities": [],
-      "forbid_residual": false,
-      "surface": "any"
-    },
-    {
       "id": "app.launch",
       "verbs": [
         "OPEN_LAUNCH",
@@ -4536,7 +4508,6 @@
     "click": "Concluído.",
     "wait": "",
     "wm_help": "${output}",
-    "ask_agent": "Enviado para o agente.",
     "remember_fact": "Compreendido, vou memorizar isso.",
     "record_start": "Gravação iniciada.",
     "record_stop": "Gravação terminada.",

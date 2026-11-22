@@ -277,14 +277,14 @@ seg_voice(char *out, size_t len, const char *user)
 {
 	char path[256], buf[160], jpid_path[256], jpid_buf[32];
 	char apid_path[256], apid_buf[32];
-	char pi_path[256], pi_buf[64], rpid_path[256], rpid_buf[32], extra_tags[64];
-	int pi_working = 0, scr_rec = 0, acting = 0, jarvis_on = 0;
+	char ren_path[256], ren_buf[64], rpid_path[256], rpid_buf[32], extra_tags[64];
+	int ren_working = 0, scr_rec = 0, acting = 0, jarvis_on = 0;
 
 	out[0] = '\0';
-	snprintf(pi_path, sizeof(pi_path), "/tmp/dwm-pi-%s.state", user);
-	if (read_small_file(pi_path, pi_buf, sizeof(pi_buf)) > 0 &&
-	    !strncmp(pi_buf, "working", 7)) {
-		pi_working = 1;
+	snprintf(ren_path, sizeof(ren_path), "/tmp/dwm-ren-%s.state", user);
+	if (read_small_file(ren_path, ren_buf, sizeof(ren_buf)) > 0 &&
+	    !strncmp(ren_buf, "working", 7)) {
+		ren_working = 1;
 	}
 	snprintf(rpid_path, sizeof(rpid_path), "/tmp/dwm-rec-%s.pid", user);
 	if (read_small_file(rpid_path, rpid_buf, sizeof(rpid_buf)) > 0) {
@@ -294,7 +294,7 @@ seg_voice(char *out, size_t len, const char *user)
 	}
 	snprintf(extra_tags, sizeof(extra_tags), "%s%s",
 		scr_rec ? C_VOC "  REC" : "",
-		pi_working ? C_ICO "  Pi" : "");
+		ren_working ? C_ICO "  ren" : "");
 
 	snprintf(apid_path, sizeof(apid_path), "/tmp/jarvis-acting-%s.pid", user);
 	if (read_small_file(apid_path, apid_buf, sizeof(apid_buf)) <= 0)
