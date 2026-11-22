@@ -15,11 +15,16 @@ if [ -f "$HOME/.Xresources" ] && command -v xrdb >/dev/null 2>&1; then
     command -v dwm-msg >/dev/null 2>&1 && dwm-msg reload 2>/dev/null || true
 fi
 
-# 3. Import X11 environment into systemd/DBus, enable AT-SPI2 accessibility bus, and ensure portal is healthy in background
+# 3. Import X11 environment into systemd/DBus synchronously (and sync any live tmux server),
+# then enable AT-SPI2 accessibility bus and ensure portal is healthy in background
+if command -v dbus-update-activation-environment >/dev/null 2>&1; then
+    dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP GNOME_ACCESSIBILITY QT_ACCESSIBILITY
+fi
+if command -v tmux >/dev/null 2>&1 && tmux info >/dev/null 2>&1; then
+    [ -n "${DISPLAY:-}" ] && tmux set-environment -g DISPLAY "$DISPLAY" >/dev/null 2>&1 || true
+    [ -n "${XAUTHORITY:-}" ] && tmux set-environment -g XAUTHORITY "$XAUTHORITY" >/dev/null 2>&1 || true
+fi
 (
-    if command -v dbus-update-activation-environment >/dev/null 2>&1; then
-        dbus-update-activation-environment --systemd DISPLAY XAUTHORITY XDG_CURRENT_DESKTOP GNOME_ACCESSIBILITY QT_ACCESSIBILITY
-    fi
     if command -v gdbus >/dev/null 2>&1; then
         gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status IsEnabled "<true>" >/dev/null 2>&1 || true
         gdbus call --session --dest org.a11y.Bus --object-path /org/a11y/bus --method org.freedesktop.DBus.Properties.Set org.a11y.Status ScreenReaderEnabled "<true>" >/dev/null 2>&1 || true
@@ -70,12 +75,33 @@ fi
 pkill -x dwm-bar 2>/dev/null || true
 /home/quirinpa/.local/bin/dwm-bar &
 
-# 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise) & start single-process warm whisperd + Jarvis listener
+# 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise),
+# ensure systemd jarvisd has X11 DISPLAY/XAUTHORITY, and start/warm Jarvis listener
 (
     if command -v amixer >/dev/null 2>&1; then
         amixer -c 0 sset 'Internal Mic Boost' 0 >/dev/null 2>&1 || true
         amixer -c 0 sset 'Capture' 42 >/dev/null 2>&1 || true
     fi
-    /home/quirinpa/.local/bin/jarvis start >/dev/null 2>&1 &
-    /home/quirinpa/.local/bin/jarvis warmup >/dev/null 2>&1 &
+    if command -v systemctl >/dev/null 2>&1 && systemctl --user is-active --quiet jarvisd.service 2>/dev/null; then
+        jpid=$(systemctl --user show -p MainPID --value jarvisd.service 2>/dev/null || true)
+        need_restart=0
+        if [ -n "$jpid" ] && [ "$jpid" != "0" ] && [ -r "/proc/$jpid/environ" ]; then
+            if [ -n "${DISPLAY:-}" ] && ! tr '\0' '\n' < "/proc/$jpid/environ" 2>/dev/null | grep -qx "DISPLAY=$DISPLAY"; then
+                need_restart=1
+            elif [ -n "${XAUTHORITY:-}" ] && ! tr '\0' '\n' < "/proc/$jpid/environ" 2>/dev/null | grep -qx "XAUTHORITY=$XAUTHORITY"; then
+                need_restart=1
+            fi
+        fi
+        if [ "$need_restart" = "1" ]; then
+            systemctl --user restart jarvisd.service >/dev/null 2>&1 || true
+        fi
+        i=0
+        while [ "$i" -lt 40 ]; do
+            [ "$(/home/quirinpa/.local/bin/jarvis status 2>/dev/null)" = "on" ] && break
+            sleep 0.25
+            i=$(( i + 1 ))
+        done
+    fi
+    /home/quirinpa/.local/bin/jarvis start >/dev/null 2>&1
+    /home/quirinpa/.local/bin/jarvis warmup >/dev/null 2>&1
 ) &
