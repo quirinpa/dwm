@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -297,8 +298,6 @@ seg_voice(char *out, size_t len, const char *user)
 		ren_working ? C_ICO "  ren" : "");
 
 	snprintf(apid_path, sizeof(apid_path), "/tmp/jarvis-acting-%s.pid", user);
-	if (read_small_file(apid_path, apid_buf, sizeof(apid_buf)) <= 0)
-		snprintf(apid_path, sizeof(apid_path), "/tmp/dwm-acting-%s.pid", user);
 	if (read_small_file(apid_path, apid_buf, sizeof(apid_buf)) > 0) {
 		int apid = atoi(apid_buf);
 		if (apid > 1 && kill((pid_t)apid, 0) == 0)
@@ -306,8 +305,6 @@ seg_voice(char *out, size_t len, const char *user)
 	}
 
 	snprintf(path, sizeof(path), "/tmp/jarvis-voice-%s.state", user);
-	if (read_small_file(path, buf, sizeof(buf)) <= 0)
-		snprintf(path, sizeof(path), "/tmp/dwm-voice-%s.state", user);
 	int tts_speaking = 0, processing = 0;
 	if (read_small_file(path, buf, sizeof(buf)) > 0) {
 		if (!strncmp(buf, "tts-speaking", 12)) {
@@ -326,8 +323,6 @@ seg_voice(char *out, size_t len, const char *user)
 	}
 
 	snprintf(jpid_path, sizeof(jpid_path), "/tmp/jarvis-%s.pid", user);
-	if (read_small_file(jpid_path, jpid_buf, sizeof(jpid_buf)) <= 0)
-		snprintf(jpid_path, sizeof(jpid_path), "/tmp/dwm-jarvis-%s.pid", user);
 	if (read_small_file(jpid_path, jpid_buf, sizeof(jpid_buf)) > 0) {
 		int jpid = atoi(jpid_buf);
 		if (jpid > 1 && kill((pid_t)jpid, 0) == 0)
@@ -548,8 +543,25 @@ main(void)
 	time_t last_probe = 0, last_cal_check = 0, last_cal_sync = 0;
 	int cached_tty_up = 1;
 
-	if (!user || !*user)
-		user = "quirinpa";
+	if (!user || !*user) {
+		struct passwd *pw = getpwuid(getuid());
+		user = (pw && pw->pw_name && *pw->pw_name) ? pw->pw_name : "user";
+	}
+	{
+		const char *home = getenv("HOME");
+		const char *cur_path = getenv("PATH");
+		if (home && *home) {
+			char lbin[512];
+			snprintf(lbin, sizeof(lbin), "%s/.local/bin", home);
+			if (!cur_path || !*cur_path)
+				setenv("PATH", lbin, 1);
+			else if (!strstr(cur_path, lbin)) {
+				char npath[4096];
+				snprintf(npath, sizeof(npath), "%s:%s", lbin, cur_path);
+				setenv("PATH", npath, 1);
+			}
+		}
+	}
 
 	/* Write PID file so dwm-ctl / dwm-voice can send SIGUSR1 */
 	snprintf(pid_path, sizeof(pid_path), "/tmp/dwm-bar-%s.pid", user);
@@ -601,14 +613,14 @@ main(void)
 			last_cal_sync = now;
 			if (fork() == 0) {
 				close(ConnectionNumber(dpy));
-				execl("/home/quirinpa/.local/bin/dwm-cal", "dwm-cal", "sync", "--quiet", (char *)NULL);
+				execlp("dwm-cal", "dwm-cal", "sync", "--quiet", (char *)NULL);
 				_exit(0);
 			}
 		} else if (now - last_cal_check >= 60) {
 			last_cal_check = now;
 			if (fork() == 0) {
 				close(ConnectionNumber(dpy));
-				execl("/home/quirinpa/.local/bin/dwm-cal", "dwm-cal", "refresh-upcoming", (char *)NULL);
+				execlp("dwm-cal", "dwm-cal", "refresh-upcoming", (char *)NULL);
 				_exit(0);
 			}
 		}

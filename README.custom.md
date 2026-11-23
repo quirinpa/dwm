@@ -12,8 +12,8 @@ This guide documents your custom `dwm` build (`~/.local/src/dwm`), status bar (`
 | `Mod +Shift + Enter` | Open terminal (`st`) | `st` |
 | `Mod + p` | Application launcher (`dmenu`) | `dmenu_run` |
 | `Mod + Space` | **Toggle Keyboard Layout (`US` ⇄ `PT`)** | `dwm-ctl kbd-toggle` |
-| `Mod + v` | **Toggle Jarvis Listener On (`Yellow`) ⇄ Off (`Silver`)** (without locking screen) | `dwm-voice toggle` |
-| `Mod + Shift + v` | **Jarvis Settings & ren Menu** (`dmenu`) | `dwm-voice menu` |
+| `Mod + v` | **Toggle Jarvis Listener On (`Yellow`) ⇄ Off (`Silver`)** (without locking screen) | `jarvis toggle` |
+| `Mod + Shift + v` | **Jarvis Settings & ren Menu** (`dmenu`) | `jarvis menu` |
 | `Mod + n` | **Quick Wi-Fi Switcher** (`dmenu`) | `dwm-net wifi` |
 | `Mod + s` or `Mod + Shift + l` | **Lock screen immediately** | `slock` |
 | `Mod + Ctrl + s` | **System Settings Menu** (Wi-Fi, Audio, Bluetooth, VPN, GNOME Settings) | `dwm-net` |
@@ -96,43 +96,33 @@ All custom scripts are tracked inside `scripts/` in the `dwm` Git repository (`~
 | Source Path (`~/.local/src/dwm/`) | Installed Path | Purpose |
 |---|---|---|
 | `dwm.c`, `config.h` | `~/.local/bin/dwm` | Custom `dwm` window manager binary. Build & install everything with `make -C ~/.local/src/dwm install`, then press `Mod+Shift+r`. |
-| `scripts/autostart.sh` | `~/.dwm/autostart.sh` | Runs automatically when `dwm` starts. Configures `1600x900` resolution, loads `~/.Xresources`, imports DBus/systemd env, sets wallpaper, starts `picom` and `notification-daemon`, and runs the status bar loop. |
-| `scripts/dwm-ctl` | `~/.local/bin/dwm-ctl` | Handles `vol-up`, `vol-down`, `vol-mute`, `mic-mute`, `bri-up`, `bri-down`, `power-menu`, and `refresh` (sends `SIGUSR1` to `/tmp/dwm-bar-$USER.pid` for silent `<20ms` status bar updates). |
-| `scripts/dwm-net` | `~/.local/bin/dwm-net` | Vertical dropdown network & system settings menu (`Mod+n` for Wi-Fi, `Mod+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, GNOME Control Center, and Shortcuts Cheat Sheet). |
+| `scripts/autostart.sh` | `~/.dwm/autostart.sh` | Runs automatically when `dwm` starts. Applies guarded `xrandr` mode (`DWM_OUTPUT`/`DWM_MODE` or `dwm.output`/`dwm.mode` from Xresources, defaulting to `eDP-1` `1600x900` if connected), loads `~/.Xresources`, imports DBus/systemd env, sets wallpaper, starts `picom` and `dunst`, and runs `dwm-bar`. |
+| `scripts/dwm-ctl` | `~/.local/bin/dwm-ctl` | Handles `vol-up`, `vol-down`, `vol-mute`, `mic-mute`, `bri-up`, `bri-down`, `kbd-toggle`, `power-menu`, `status-click`, and `refresh` (sends `SIGUSR1` to `/tmp/dwm-bar-$USER.pid` for silent `<20ms` status bar updates). |
+| `scripts/dwm-net` | `~/.local/bin/dwm-net` | Vertical dropdown network & system settings menu (`Mod+n` for Wi-Fi, `Mod+Ctrl+s` for main settings menu: Wi-Fi, `nmtui`, PipeWire audio sink switcher, Bluetooth, `nm-connection-editor`, GNOME Control Center, and Shortcuts Cheat Sheet). |
 | `scripts/dwm-shot` | `~/.local/bin/dwm-shot` | Captures full-screen, rectangular selection, or active window to `~/Pictures/Screenshots/`, copies PNG data to the X11 clipboard via GTK3, and sends a desktop notification with thumbnail. |
-| `scripts/dwm-help` | `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard & voice shortcuts (`Mod+F1` or `Mod+/`), or answers `"Jarvis, how do I..."` queries. |
-| `scripts/dwm-voice` | `~/.local/bin/dwm-voice` | Manages the Jarvis voice pipeline (`jarvisd`) and opens the `Mod+Shift+v` Jarvis control menu (`ren` brain session, TTS voice, learned shortcuts, language, whisper model). |
-| `scripts/dwm-jarvis` | `~/.local/bin/dwm-jarvis` | Persistent `tmux`-backed `ren --jarvis` session controller (`/tmp/ren-jarvis-$USER.sock`), providing the single unified `ren` brain (Tier 0 reflex + Tier 1 ReAct tools) for Jarvis. |
+| `scripts/dwm-help` | `~/.local/bin/dwm-help` | Opens a centered, floating Catppuccin Mocha GTK cheat-sheet window showing all keyboard & voice shortcuts (`Mod+F1` or `Mod+/`). |
+| `scripts/dwm-voice` | `~/.local/bin/dwm-voice` | Compatibility wrapper delegating voice controls and menus to `jarvis` (`~/.local/bin/jarvis`). |
+| `scripts/dwm-jarvis` | `~/.local/bin/dwm-jarvis` | Persistent `tmux`-backed `ren --listen /tmp/ren-jarvis-$USER.sock` session launcher managed automatically by `jarvisd`. |
 | `scripts/dwm-auren` | `~/.local/bin/dwm-auren` | Compatibility CLI wrapper delegating to `jarvis` (`dmenu`, `query`, `clear-learned`, `edit-config`). |
-| `scripts/dwm-act` | `~/.local/bin/dwm-act` | Executes structured desktop actions, multi-chord X11 key sequences, app launches, media queries, and undo (`dwm-act undo`, which also evicts bad learned rules). |
+| `mods/dwm-ren/dwm-ren.c` | `~/.local/lib/dwm/dwm-ren.so` | `dwm` `libxylem` module syncing focused client / tag state to `/tmp/dwm-ren-state-$USER.txt` and forwarding `_DWM_CMD` opcode `100` to `ren`. |
+| `mods/ren-dwm/ren-dwm.c` | `~/.local/lib/ren/ren-dwm.so` | `ren` `libxylem` module exposing `dwm` workspace and window manipulation tools via `_DWM_CMD`. |
 | `scripts/dwm-session` | `~/.local/bin/dwm-session` | Session wrapper launched by the display manager (`dwm.desktop`). |
 | `scripts/gnome-control-center` | `~/.local/bin/gnome-control-center` | Wrapper that exports `XDG_CURRENT_DESKTOP=GNOME` before launching `/usr/bin/gnome-control-center` so GNOME Settings works inside `dwm`. |
 
 ---
 
-## 3. Jarvis Voice Assistant, Context Scopes & Self-Learning Guide
+## 3. Jarvis Voice Assistant & `ren` Integration
 
 ### Interactive Help & Menus
-- **Floating Cheat Sheet (`Mod + F1` or `Mod + /`)**: Toggles the graphical shortcuts & Jarvis reference panel (`dwm-help`). You can also say ***"Jarvis, show shortcuts"*** or ask ***"Jarvis, how do I move a window to workspace 3?"***.
+- **Floating Cheat Sheet (`Mod + F1` or `Mod + /`)**: Toggles the graphical shortcuts & Jarvis reference panel (`dwm-help`). You can also say ***"Jarvis, show shortcuts"***.
 - **Jarvis Control Menu (`Mod + Shift + v` or Right-Click `` in top bar)**:
-  - Toggle listener On (`Yellow`) ⇄ Off (`Silver`)
-  - Open/stop/reset the **Jarvis `ren` Brain Session (`tmux`)** (`dwm-jarvis`)
-  - **🧹 Clear Learned Voice Shortcuts & Caches**
-  - Switch recognition language (`Auto`, `English`, `Português`) or Whisper model (`small`, `base`, `tiny`)
-- **Semantic Text Bar (`Mod + a`)**: Type any natural-language Jarvis command instead of speaking it.
-
-### Context-Scoped Commands (`@terminal` vs. `@browser`)
-Rules in `~/.config/dwm/intents.conf` can carry an `@terminal` or `@browser` scope suffix so the same voice command performs the right shortcut for the focused window:
-- ***"Jarvis, clear the line"*** → `Ctrl+U` in a terminal (`st`, `ghostty`, `xterm`) | `Ctrl+A` then `BackSpace` in a browser (`firefox`, `chromium`)
-- ***"Jarvis, delete previous word"*** → `Ctrl+W` in a terminal | `Ctrl+BackSpace` in a browser
-- ***"Jarvis, beginning of line"*** / ***"end of line"*** → `Ctrl+A` / `Ctrl+E` in a terminal
-- ***"Jarvis, search command history"*** → `Ctrl+R` in a terminal
-- ***"Jarvis, reopen closed tab"*** / ***"developer tools"*** → `Ctrl+Shift+T` / `Ctrl+Shift+I` in a browser
+  - Toggle listener On (`Yellow`) ⇄ Off (`Silver`) via `jarvis toggle`
+  - Open/restart/doctor the **Jarvis Daemon (`jarvisd`) & `ren` Brain Session**
+  - Switch recognition language (`auto`, `pt-pt`, `en-gb`, `en-us`, etc. — single `lang = ...` line in `~/.jarvisrc`) or Whisper model
+- **Semantic Text Bar (`Mod + a`)**: Type any natural-language Jarvis command (`jarvis dmenu`) instead of speaking it.
 
 ### Unified `ren` Executive Brain
-All spoken or typed commands are routed directly to `ren --jarvis` running in a persistent `tmux` session (`dwm-jarvis` on `/tmp/ren-jarvis-$USER.sock`):
-1. **Tier 0 Reflex (`< 1 ms`)**: High-confidence deterministic desktop, media, window, and keyboard actions execute instantaneously via `mod_jarvis.so` + `mod_dwm.so`.
-2. **Tier 1 ReAct Agent (`ren`)**: Any open-ended, multi-step, GUI (`inspect` / `input`), or coding task is executed directly by `ren` with full conversation continuity and `libmm` episodic memory (`recall`, `record`).
-   - Supports multi-project code search (`recall [project:<name>] code:<query>`), AST symbol reads (`recall symbol:<name>`), call-graph tracing (`recall trace:<name>`), and git-diff blast radius analysis (`recall diff`).
-   - Automatically distills engineering findings and preferences in zero-JSON format directly into `libmm`.
-3. **Undo & Eviction**: Saying ***"Jarvis, undo"*** or ***"Jarvis, scratch that"*** reverses the last action.
+All spoken or typed commands are routed directly to `ren --listen /tmp/ren-jarvis-$USER.sock` running inside the `jarvis` `tmux` session:
+1. **Tier 0 Reflex (`< 1 ms`)**: High-confidence deterministic EN/PT desktop, media, window, browser tab, and workspace commands execute instantaneously via `ren-reflex.so` dispatching into `ren-dwm.so`, `ren-desktop.so`, `ren-firefox.so`, and `ren-jarvis.so`.
+2. **Tier 1 ReAct Agent (`ren`)**: Open-ended, multi-step, GUI, browser accessibility, or coding tasks execute via `ren` (`axil-auren`) with conversation continuity and `ren-mm.so` (`libmm`) episodic memory (`recall`, `record`).
+3. **Zero-Config Setup**: Run `jarvis doctor` to verify daemon health, PipeWire `jarvis_aec_source`, Whisper model, TTS backend, and loaded `ren-*.so` plugins.

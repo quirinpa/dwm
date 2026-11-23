@@ -6,7 +6,18 @@ export QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
 
 # 1. Set display resolution FIRST (before dwm or background tasks run)
 if command -v xrandr >/dev/null 2>&1; then
-    xrandr --output eDP-1 --mode 1600x900
+    out="${DWM_OUTPUT:-$(xrdb -query 2>/dev/null | sed -n 's/^dwm\.output:[[:space:]]*//p' | tail -n 1)}"
+    mode="${DWM_MODE:-$(xrdb -query 2>/dev/null | sed -n 's/^dwm\.mode:[[:space:]]*//p' | tail -n 1)}"
+    out="${out:-eDP-1}"
+    mode="${mode:-1600x900}"
+    if xrandr --query 2>/dev/null | awk -v o="$out" -v m="$mode" '
+        $1 == o && $2 == "connected" { in_out = 1; next }
+        /^[^[:space:]]/ { in_out = 0 }
+        in_out && $1 == m { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    '; then
+        xrandr --output "$out" --mode "$mode"
+    fi
 fi
 
 # 2. Load Xresources (xterm & dwm Catppuccin Mocha theme, fonts, padding, bar/auren prefs)
@@ -73,7 +84,7 @@ if [ -f "/tmp/dwm-bar-$USER.pid" ]; then
     fi
 fi
 pkill -x dwm-bar 2>/dev/null || true
-/home/quirinpa/.local/bin/dwm-bar &
+dwm-bar &
 
 # 7. Ensure clean microphone capture gain (avoid +12dB internal boost fan noise),
 # ensure systemd jarvisd has X11 DISPLAY/XAUTHORITY, and start/warm Jarvis listener
@@ -97,11 +108,11 @@ pkill -x dwm-bar 2>/dev/null || true
         fi
         i=0
         while [ "$i" -lt 40 ]; do
-            [ "$(/home/quirinpa/.local/bin/jarvis status 2>/dev/null)" = "on" ] && break
+            [ "$(jarvis status 2>/dev/null)" = "on" ] && break
             sleep 0.25
             i=$(( i + 1 ))
         done
     fi
-    /home/quirinpa/.local/bin/jarvis start >/dev/null 2>&1
-    /home/quirinpa/.local/bin/jarvis warmup >/dev/null 2>&1
+    jarvis start >/dev/null 2>&1
+    jarvis warmup >/dev/null 2>&1
 ) &

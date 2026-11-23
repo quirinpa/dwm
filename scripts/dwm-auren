@@ -9,26 +9,26 @@ fi
 
 case "${1:-dmenu}" in
     dmenu|omni)
-        exec /home/quirinpa/.local/bin/jarvis dmenu
+        exec jarvis dmenu
         ;;
     warmup)
-        exec /home/quirinpa/.local/bin/jarvis warmup
+        exec jarvis warmup
         ;;
     clear-learned)
-        exec /home/quirinpa/.local/bin/jarvis clear-learned
+        exec jarvis clear-learned
         ;;
     dry-run)
         shift
-        exec /home/quirinpa/.local/bin/jarvis --dry-run "$@"
+        exec jarvis --dry-run "$@"
         ;;
     query|exec)
         shift
-        exec /home/quirinpa/.local/bin/jarvis query "$@"
+        exec jarvis query "$@"
         ;;
     edit-config)
         exec st -c dwm-float -n dwm-float -t "Jarvis Ontology Config" -e "${EDITOR:-vi}" "$HOME/.config/jarvis/ontology.json"
         ;;
     *)
-        exec /home/quirinpa/.local/bin/jarvis query "$@"
+        exec jarvis query "$@"
         ;;
 esac

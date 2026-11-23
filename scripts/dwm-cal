@@ -151,8 +151,8 @@ case "${1:-open}" in
                 printf "\n\033[1;31m[ikhal exited with an error — press Enter to close]\033[0m "
                 read -r _
             fi
-            /home/quirinpa/.local/bin/dwm-cal refresh-upcoming
-            /home/quirinpa/.local/bin/dwm-cal sync --quiet >/dev/null 2>&1 &
+            dwm-cal refresh-upcoming
+            dwm-cal sync --quiet >/dev/null 2>&1 &
         '
         ;;
     popup)
@@ -188,7 +188,7 @@ case "${1:-open}" in
                 if [ -n "$url" ]; then
                     printf "%s\n" "$url" > "'"$ICS_URL_FILE"'"
                     printf "\nSyncing feed...\n"
-                    /home/quirinpa/.local/bin/dwm-cal sync
+                    dwm-cal sync
                     printf "\nDone! Press Enter to close."
                     read -r _
                 fi
@@ -203,7 +203,7 @@ case "${1:-open}" in
                     vdirsyncer discover google_calendar
                     vdirsyncer metasync
                     vdirsyncer sync
-                    /home/quirinpa/.local/bin/dwm-cal refresh-upcoming
+                    dwm-cal refresh-upcoming
                     printf "\nDone! Press Enter to close."
                     read -r _
                 fi

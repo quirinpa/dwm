@@ -2,7 +2,18 @@
 export PATH="$HOME/.local/bin:$PATH"
 # Ensure display resolution is set synchronously before dwm queries screen dimensions
 if command -v xrandr >/dev/null 2>&1; then
-    xrandr --output eDP-1 --mode 1600x900
+    out="${DWM_OUTPUT:-$(xrdb -query 2>/dev/null | sed -n 's/^dwm\.output:[[:space:]]*//p' | tail -n 1)}"
+    mode="${DWM_MODE:-$(xrdb -query 2>/dev/null | sed -n 's/^dwm\.mode:[[:space:]]*//p' | tail -n 1)}"
+    out="${out:-eDP-1}"
+    mode="${mode:-1600x900}"
+    if xrandr --query 2>/dev/null | awk -v o="$out" -v m="$mode" '
+        $1 == o && $2 == "connected" { in_out = 1; next }
+        /^[^[:space:]]/ { in_out = 0 }
+        in_out && $1 == m { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    '; then
+        xrandr --output "$out" --mode "$mode"
+    fi
 fi
 if [ -x "$HOME/.dwm/autostart.sh" ]; then
     "$HOME/.dwm/autostart.sh" &

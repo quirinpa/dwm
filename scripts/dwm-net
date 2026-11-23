@@ -107,7 +107,7 @@ audio_menu() {
     [ -z "$choice" ] && exit 0
     case "$choice" in
         *"Mute Audio"*|*"Unmute Audio"*)
-            exec /home/quirinpa/.local/bin/dwm-ctl vol-mute
+            exec dwm-ctl vol-mute
             ;;
         *"Volume +10%"*)
             wpctl set-mute @DEFAULT_AUDIO_SINK@ 0 2>/dev/null
@@ -172,13 +172,13 @@ case "$1" in
             *"Wi-Fi Networks"*)    wifi_menu no ;;
             *"Wi-Fi TUI"*)         exec st -c dwm-float -n dwm-float -t "nmtui" -e nmtui ;;
             *"Audio Output"*)      audio_menu ;;
-            *"Keyboard Layout"*)   exec /home/quirinpa/.local/bin/dwm-ctl kbd-menu ;;
-            *"Voice Dictation"*)   exec /home/quirinpa/.local/bin/dwm-voice menu ;;
-            *"Screenshots Menu"*)  exec /home/quirinpa/.local/bin/dwm-shot menu ;;
+            *"Keyboard Layout"*)   exec dwm-ctl kbd-menu ;;
+            *"Voice Dictation"*)   exec dwm-voice menu ;;
+            *"Screenshots Menu"*)  exec dwm-shot menu ;;
             *"Bluetooth"*)         bt_menu ;;
             *"Advanced Network"*)  exec nm-connection-editor ;;
-            *"GNOME Control"*)     exec /home/quirinpa/.local/bin/gnome-control-center ;;
-            *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
+            *"GNOME Control"*)     exec gnome-control-center ;;
+            *"Keyboard Shortcuts"*) exec dwm-help ;;
         esac
         ;;
 esac

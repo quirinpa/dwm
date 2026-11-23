@@ -132,13 +132,13 @@ case "$1" in
         choice=$(printf "  Auren Semantic Command Bar (Mod+a)\n  Calendar & Google Sync (ikhal)\n  Jarvis Voice Assistant (Mod+v / Mod+Shift+v)\n  Keyboard Layout (Mod+Space: US / PT)\n  Screenshots Menu (Full / Area / Window)\n  Keyboard Shortcuts Panel (Mod+F1)\n  System Settings (Wi-Fi / Audio / BT)\n🎨  Reload Xresources Theme (dwm-msg reload)\n  Lock (slock)\n  Hot-Restart dwm (Mod+Shift+r)\n  Logout dwm\n  Suspend\n  Reboot\n  Poweroff\n" | \
             dmenu_themed "System:" 14 "#7c6ff2" "#cdd6f4")
         case "$choice" in
-            *"Auren Semantic"*)     exec /home/quirinpa/.local/bin/jarvis dmenu ;;
-            *"Calendar"*)           exec /home/quirinpa/.local/bin/dwm-cal menu ;;
-            *"Jarvis Voice"*)       exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+            *"Auren Semantic"*)     exec jarvis dmenu ;;
+            *"Calendar"*)           exec dwm-cal menu ;;
+            *"Jarvis Voice"*)       exec dwm-voice menu ;;
             *"Keyboard Layout"*)    exec "$0" kbd-menu ;;
-            *"Screenshots Menu"*)   exec /home/quirinpa/.local/bin/dwm-shot menu ;;
-            *"Keyboard Shortcuts"*) exec /home/quirinpa/.local/bin/dwm-help ;;
-            *"System Settings"*)    exec /home/quirinpa/.local/bin/dwm-net ;;
+            *"Screenshots Menu"*)   exec dwm-shot menu ;;
+            *"Keyboard Shortcuts"*) exec dwm-help ;;
+            *"System Settings"*)    exec dwm-net ;;
             *"Reload Xresources"*)  exec "$0" reload-xrdb ;;
             *Lock*)                 exec slock ;;
             *Hot-Restart*)          kill -HUP "$(pgrep -x dwm | head -n 1)" ;;
@@ -150,7 +150,7 @@ case "$1" in
         ;;
     reload-xrdb)
         [ -f "$HOME/.Xresources" ] && xrdb -nocpp -merge "$HOME/.Xresources" 2>/dev/null
-        /home/quirinpa/.local/bin/dwm-msg reload 2>/dev/null || true
+        dwm-msg reload 2>/dev/null || true
         refresh_bar
         if command -v notify-send >/dev/null 2>&1; then
             notify-send -t 2000 -h string:x-dunst-stack-tag:xrdb "🎨  Xresources Reloaded" "Applied ~/.Xresources to dwm & status bar" 2>/dev/null || true
@@ -194,11 +194,11 @@ case "$1" in
             pkill -f '(st|ghostty).*System & Memory Monitor' 2>/dev/null || true
             exit 0
         fi
-        exec st -c dwm-float -n dwm-float -g 108x30 -t "System & Memory Monitor" -e /home/quirinpa/.local/bin/dwm-top "$sort_flag"
+        exec st -c dwm-float -n dwm-float -g 108x30 -t "System & Memory Monitor" -e dwm-top "$sort_flag"
         ;;
     sys-popup)
         if command -v notify-send >/dev/null 2>&1; then
-            body=$(/home/quirinpa/.local/bin/dwm-top --popup 2>/dev/null)
+            body=$(dwm-top --popup 2>/dev/null)
             [ -n "$body" ] && notify-send -t 6000 -h string:x-dunst-stack-tag:sysmon "  System & Memory Usage" "$body" 2>/dev/null || true
         fi
         ;;
@@ -215,7 +215,7 @@ case "$1" in
                 ;;
             5|6) # Volume segment (SchemeVol=5, SchemeVolMute=6)
                 case "$btn" in
-                    1)   exec /home/quirinpa/.local/bin/dwm-net audio ;;
+                    1)   exec dwm-net audio ;;
                     2|3) exec "$0" vol-mute ;;
                     4)   exec "$0" vol-up ;;
                     5)   exec "$0" vol-down ;;
@@ -223,8 +223,8 @@ case "$1" in
                 ;;
             7) # Network segment (SchemeNet=7)
                 case "$btn" in
-                    1) exec /home/quirinpa/.local/bin/dwm-net wifi ;;
-                    3) exec /home/quirinpa/.local/bin/dwm-net ;;
+                    1) exec dwm-net wifi ;;
+                    3) exec dwm-net ;;
                 esac
                 ;;
             8|9|10) # Battery segment (SchemeBatOk=8, SchemeBatWarn=9, SchemeBatCrit=10)
@@ -236,16 +236,16 @@ case "$1" in
                 ;;
             11) # Date / Time segment (SchemeDate=11)
                 case "$btn" in
-                    1) exec /home/quirinpa/.local/bin/dwm-cal open ;;
-                    2) exec /home/quirinpa/.local/bin/dwm-cal sync ;;
-                    3) exec /home/quirinpa/.local/bin/dwm-cal popup ;;
+                    1) exec dwm-cal open ;;
+                    2) exec dwm-cal sync ;;
+                    3) exec dwm-cal popup ;;
                 esac
                 ;;
             12) # Voice / Jarvis robot segment (SchemeVoice=12)
                 case "$btn" in
-                    1) exec /home/quirinpa/.local/bin/dwm-voice toggle ;;
-                    2) exec /home/quirinpa/.local/bin/jarvis dmenu ;;
-                    3) exec /home/quirinpa/.local/bin/dwm-voice menu ;;
+                    1) exec dwm-voice toggle ;;
+                    2) exec jarvis dmenu ;;
+                    3) exec dwm-voice menu ;;
                 esac
                 ;;
             13) # Gear segment (SchemeGear=13)

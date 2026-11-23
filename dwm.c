@@ -1977,7 +1977,24 @@ setup(void)
 	sigaction(SIGCHLD, &sa, NULL);
 
 	/* clean up any zombies (inherited from .xinitrc etc) immediately */
-	while (waitpid(-1, NULL, WNOHANG) > 0);
+	while (waitpid(-1, NULL, WNOHANG) > 0)
+		;
+
+	{
+		const char *home = getenv("HOME");
+		const char *cur_path = getenv("PATH");
+		if (home && *home) {
+			char lbin[512];
+			snprintf(lbin, sizeof(lbin), "%s/.local/bin", home);
+			if (!cur_path || !*cur_path) {
+				setenv("PATH", lbin, 1);
+			} else if (!strstr(cur_path, lbin)) {
+				char npath[4096];
+				snprintf(npath, sizeof(npath), "%s:%s", lbin, cur_path);
+				setenv("PATH", npath, 1);
+			}
+		}
+	}
 
 	signal(SIGHUP, sighup);
 
@@ -2228,7 +2245,7 @@ statusclick(const Arg *arg)
 	char segbuf[8], btnbuf[8];
 	snprintf(segbuf, sizeof(segbuf), "%d", statusseg);
 	snprintf(btnbuf, sizeof(btnbuf), "%d", arg->i);
-	const char *cmd[] = { "/home/quirinpa/.local/bin/dwm-ctl", "status-click", segbuf, btnbuf, NULL };
+	const char *cmd[] = { "dwm-ctl", "status-click", segbuf, btnbuf, NULL };
 	Arg a = { .v = cmd };
 	spawn(&a);
 }

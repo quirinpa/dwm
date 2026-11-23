@@ -12,6 +12,8 @@
 #include <ttypt/xy-mod.h>
 
 #include <fcntl.h>
+#include <pwd.h>
+#include <pwd.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +38,10 @@ static size_t          g_n_wins = 0;
 static void get_state_paths(char *out_path, size_t path_sz, char *out_tmp, size_t tmp_sz)
 {
 	const char *u = getenv("USER");
-	if (!u || !*u) u = "quirinpa";
+	if (!u || !*u) {
+		struct passwd *pw = getpwuid(getuid());
+		u = (pw && pw->pw_name && *pw->pw_name) ? pw->pw_name : "user";
+	}
 	snprintf(out_path, path_sz, "/tmp/dwm-ren-state-%s.txt", u);
 	snprintf(out_tmp, tmp_sz, "/tmp/dwm-ren-state-%s.tmp", u);
 }
@@ -81,7 +86,10 @@ static int send_ren_sock_msg(const char *msg)
 {
 	if (!msg || !*msg) return 0;
 	const char *u = getenv("USER");
-	if (!u || !*u) u = "quirinpa";
+	if (!u || !*u) {
+		struct passwd *pw = getpwuid(getuid());
+		u = (pw && pw->pw_name && *pw->pw_name) ? pw->pw_name : "user";
+	}
 	struct sockaddr_un addr;
 	memset(&addr, 0, sizeof(addr));
 	addr.sun_family = AF_UNIX;
