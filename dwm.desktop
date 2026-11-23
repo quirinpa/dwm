@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=dwm
 Comment=Dynamic window manager
-Exec=/home/quirinpa/.local/bin/dwm-session
+Exec=dwm-session
 Type=Application
 DesktopNames=dwm

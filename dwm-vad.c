@@ -4,6 +4,7 @@
  */
 #include <errno.h>
 #include <math.h>
+#include <pwd.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -65,13 +66,22 @@ write_state(const char *path, const char *val)
 static void
 notify_bar(void)
 {
+	char ubuf[64] = {0};
 	const char *user = getenv("USER");
 	char path[256];
 	FILE *fp;
 	int pid = 0;
 
-	if (!user || !*user)
-		user = "quirinpa";
+	if (!user || !*user) {
+		struct passwd pw, *res = NULL;
+		char pbuf[512];
+		if (getpwuid_r(getuid(), &pw, pbuf, sizeof(pbuf), &res) == 0 && res && res->pw_name && res->pw_name[0]) {
+			snprintf(ubuf, sizeof(ubuf), "%s", res->pw_name);
+			user = ubuf;
+		} else {
+			user = "user";
+		}
+	}
 	snprintf(path, sizeof(path), "/tmp/dwm-bar-%s.pid", user);
 	fp = fopen(path, "r");
 	if (!fp)

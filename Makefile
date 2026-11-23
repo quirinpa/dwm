@@ -20,10 +20,10 @@ dwm: ${OBJ}
 	${CC} -o $@ ${OBJ} ${LDFLAGS}
 
 mods/dwm-ren/dwm-ren.so: mods/dwm-ren/dwm-ren.c dwm-types.h
-	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm-ren/dwm-ren.c -L$(HOME)/.local/lib -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,$(HOME)/.local/lib
+	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/dwm-ren/dwm-ren.c -L${PREFIX}/lib -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,${PREFIX}/lib
 
 mods/ren-dwm/ren-dwm.so: mods/ren-dwm/ren-dwm.c mods/dwm_ctl.h dwm-types.h
-	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/ren-dwm/ren-dwm.c -L${X11LIB} -lX11 -L$(HOME)/.local/lib -lren -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,$(HOME)/.local/lib
+	${CC} ${CFLAGS} -fPIC -shared -o $@ mods/ren-dwm/ren-dwm.c -L${X11LIB} -lX11 -L${PREFIX}/lib -lren -lxylem -Wl,-rpath,'$$ORIGIN/..' -Wl,-rpath,${PREFIX}/lib
 
 dwm-msg: dwm-msg.c
 	${CC} ${CFLAGS} -o $@ dwm-msg.c -L${X11LIB} -lX11
@@ -48,35 +48,25 @@ install: all
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice ${DESTDIR}${PREFIX}/bin/dwm-vad ${DESTDIR}${PREFIX}/bin/dwm-jarvis-pi
 	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-rec scripts/dwm-jarvis scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-act ${DESTDIR}${PREFIX}/bin/dwm-tts ${DESTDIR}${PREFIX}/bin/jarvis_core.py
-	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvis ]; then \
-		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvis ${DESTDIR}${PREFIX}/bin/jarvis; \
+	mkdir -p ${DESTDIR}${PREFIX}/lib/dwm ${DESTDIR}${PREFIX}/lib/ren
+	@rm -f ${DESTDIR}${PREFIX}/lib/mod_dwm.so ${DESTDIR}${PREFIX}/lib/mod_tts.so ${DESTDIR}${PREFIX}/lib/dwm/dwm-jarvis.so
+	install -m 755 mods/dwm-ren/dwm-ren.so ${DESTDIR}${PREFIX}/lib/dwm/dwm-ren.so
+	install -m 755 mods/ren-dwm/ren-dwm.so ${DESTDIR}${PREFIX}/lib/ren/ren-dwm.so
+	@if [ -z "${DESTDIR}" ]; then \
+		mkdir -p $(HOME)/.dwm $(HOME)/.config/dunst; \
+		install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh; \
+		install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc; \
+		install -m 644 Xresources $(HOME)/.Xresources; \
 	fi
-	@if [ -f $(HOME)/site/external/libjarvis/bin/jarvisd ]; then \
-		install -m 755 $(HOME)/site/external/libjarvis/bin/jarvisd ${DESTDIR}${PREFIX}/bin/jarvisd; \
-		ln -sf jarvisd ${DESTDIR}${PREFIX}/bin/dwm-whisperd; \
-	fi
-	mkdir -p $(HOME)/.local/lib/dwm $(HOME)/.local/lib/ren $(HOME)/.config/jarvis
-	@rm -f $(HOME)/.local/lib/mod_dwm.so $(HOME)/.local/lib/mod_tts.so $(HOME)/.local/lib/dwm/dwm-jarvis.so
-	install -m 755 mods/dwm-ren/dwm-ren.so $(HOME)/.local/lib/dwm/dwm-ren.so
-	install -m 755 mods/ren-dwm/ren-dwm.so $(HOME)/.local/lib/ren/ren-dwm.so
-	@if [ -f $(HOME)/site/external/libjarvis/data/ontology.json ]; then \
-		install -m 644 $(HOME)/site/external/libjarvis/data/ontology.json $(HOME)/.config/jarvis/ontology.json; \
-	fi
-	mkdir -p $(HOME)/.dwm
-	install -m 755 scripts/autostart.sh $(HOME)/.dwm/autostart.sh
-	mkdir -p $(HOME)/.config/dunst
-	install -m 644 dunstrc $(HOME)/.config/dunst/dunstrc
-	install -m 644 Xresources $(HOME)/.Xresources
 	mkdir -p ${DESTDIR}${MANPREFIX}/man1
 	sed "s/VERSION/${VERSION}/g" < dwm.1 > ${DESTDIR}${MANPREFIX}/man1/dwm.1
 	chmod 644 ${DESTDIR}${MANPREFIX}/man1/dwm.1
-	@DISPLAY=$${DISPLAY:-:0} xrdb -nocpp -merge $(HOME)/.Xresources 2>/dev/null || true
-	@rm -f "/tmp/dwm-auren-xres-$$USER.env" "/tmp/dwm-voice-xres-$$USER.env" 2>/dev/null || true
-	@pkill -f "python3 - .*intents\.conf" 2>/dev/null || true
-	@rm -f "/tmp/dwm-auren-daemon-$$USER.pid" "/tmp/dwm-auren-$$USER.sock" 2>/dev/null || true
-	@if pgrep -x dwm >/dev/null 2>&1; then \
-		kill -HUP $$(pgrep -x dwm | head -n 1) 2>/dev/null || true; \
-		DISPLAY=$${DISPLAY:-:0} xprop -root -f _DWM_RELOAD 8s -set _DWM_RELOAD 1 2>/dev/null || true; \
+	@if [ -z "${DESTDIR}" ]; then \
+		DISPLAY=$${DISPLAY:-:0} xrdb -nocpp -merge $(HOME)/.Xresources 2>/dev/null || true; \
+		if pgrep -x dwm >/dev/null 2>&1; then \
+			kill -HUP $$(pgrep -x dwm | head -n 1) 2>/dev/null || true; \
+			DISPLAY=$${DISPLAY:-:0} xprop -root -f _DWM_RELOAD 8s -set _DWM_RELOAD 1 2>/dev/null || true; \
+		fi; \
 	fi
 
 uninstall:
