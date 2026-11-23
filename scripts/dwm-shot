@@ -33,20 +33,49 @@ case "$1" in
         ;;
 esac
 
-# Copy PNG to X11 clipboard via GTK3 (stays alive until clipboard ownership changes)
+# Copy PNG + file path to X11 CLIPBOARD (dual-target for pi Ctrl+V image & Ctrl+Shift+V text) and PRIMARY
 python3 - "$FILE" <<'PY' >/dev/null 2>&1 &
 import sys, gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
-gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Gtk, Gdk, GdkPixbuf, GLib
+from gi.repository import Gtk, Gdk, GLib
 
-pixbuf = GdkPixbuf.Pixbuf.new_from_file(sys.argv[1])
-clip = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
-clip.set_image(pixbuf)
-clip.store()
-clip.connect("owner-change", lambda *a: Gtk.main_quit())
-GLib.timeout_add_seconds(300, Gtk.main_quit)
+fpath = sys.argv[1]
+with open(fpath, "rb") as fp:
+    png_data = fp.read()
+
+w = Gtk.Invisible()
+w.realize()
+clipboard_atom = Gdk.SELECTION_CLIPBOARD
+
+for tgt, info in (
+    ("image/png", 0),
+    ("UTF8_STRING", 1),
+    ("STRING", 1),
+    ("TEXT", 1),
+    ("text/plain", 1),
+    ("text/plain;charset=utf-8", 1),
+    ("text/uri-list", 2),
+):
+    Gtk.selection_add_target(w, clipboard_atom, Gdk.Atom.intern(tgt, False), info)
+
+def on_get(widget, selection_data, info, time_):
+    if info == 0:
+        selection_data.set(Gdk.Atom.intern("image/png", False), 8, png_data)
+    elif info == 2:
+        selection_data.set_uris(["file://" + fpath])
+    elif info == 1:
+        selection_data.set_text(fpath, -1)
+
+def on_clear(widget, event):
+    Gtk.main_quit()
+    return True
+
+w.connect("selection-get", on_get)
+w.connect("selection-clear-event", on_clear)
+Gtk.selection_owner_set(w, clipboard_atom, Gdk.CURRENT_TIME)
+Gtk.Clipboard.get(Gdk.SELECTION_PRIMARY).set_text(fpath, -1)
+GLib.timeout_add_seconds(1800, Gtk.main_quit)
 Gtk.main()
 PY
 

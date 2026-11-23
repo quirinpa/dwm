@@ -87,7 +87,7 @@ cmd_send() {
 cmd_show() {
     ensure_jarvis_session
     if xdotool search --class "jarvis-ren" >/dev/null 2>&1; then
-        dwm-msg focus-class jarvis-ren >/dev/null 2>&1 || true
+        dwm-msg pull-class jarvis-ren >/dev/null 2>&1 || true
     else
         st -c jarvis-ren -n jarvis-ren -t "Jarvis (ren tmux session)" \
             -e tmux attach-session -t "$SESSION" >/dev/null 2>&1 &

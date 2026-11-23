@@ -158,6 +158,8 @@ static const char *shotwin[]   = { "dwm-shot", "window", NULL };
 static const char *helpcmd[]   = { "dwm-help", NULL };
 static const char *voicecmd[]  = { "jarvis", "toggle", NULL };
 static const char *voicemenu[] = { "jarvis", "menu", NULL };
+static const char *voicelistencmd[] = { "jarvis", "listen", NULL };
+static const char *voicerencmd[] = { "jarvis", "ren", NULL };
 static const char *aurencmd[]  = { "jarvis", "dmenu", NULL };
 static const char *kbdtoggle[] = { "dwm-ctl", "kbd-toggle", NULL };
 
@@ -169,6 +171,8 @@ static const Key keys[] = {
 	{ MODKEY,                       XK_slash,  spawn,          {.v = helpcmd } },
 	{ MODKEY,                       XK_v,      spawn,          {.v = voicecmd } },
 	{ MODKEY|ShiftMask,             XK_v,      spawn,          {.v = voicemenu } },
+	{ MODKEY,                       XK_c,      spawn,          {.v = voicelistencmd } },
+	{ MODKEY|ControlMask,           XK_v,      spawn,          {.v = voicerencmd } },
 	{ MODKEY,                       XK_a,      spawn,          {.v = aurencmd } },
 	{ MODKEY,                       XK_n,      spawn,          {.v = netcmd } },
 	{ MODKEY,                       XK_s,      spawn,          {.v = lockcmd } },

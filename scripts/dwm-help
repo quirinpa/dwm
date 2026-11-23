@@ -339,6 +339,8 @@ def run_gui():
             ("Mod + a",             "Jarvis Semantic Command Bar"),
             ("Mod + v",             "Toggle Jarvis On (Yellow) ⇄ Off (Silver)"),
             ("Mod + Shift + v",     "Jarvis Menu (ren Terminal, TTS, Lang, Lockdown)"),
+            ("Mod + c",             "Jarvis Listen Now (Direct Voice Command)"),
+            ("Ctrl + Mod + v",      "Open Jarvis ren tmux Session"),
             ("“Jarvis, <cmd>”",     "Context-Aware Voice (@terminal / @browser)"),
             ("“Jarvis, undo”",      "Revert Last Action & Evict Learned Rule"),
             ("“Jarvis, lockdown”",  "Turn Jarvis Off + Lock Screen (slock)"),

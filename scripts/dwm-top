@@ -26,6 +26,8 @@ APP_ALIASES = {
     "st": "st Terminal",
     "dwm": "dwm Window Manager",
     "dwm-bar": "dwm Status Bar",
+    "jarvisd": "Jarvis Whisper Daemon",
+    "jarvis": "Jarvis Voice CLI",
     "dwm-whisperd": "Jarvis Whisper Daemon",
     "dwm-voice": "Jarvis Voice Listener",
     "axil": "Axil / Auren Server",
