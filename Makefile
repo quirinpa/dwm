@@ -32,7 +32,7 @@ dwm-bar: dwm-bar.c
 	${CC} ${CFLAGS} -o $@ dwm-bar.c -L${X11LIB} -lX11 -lasound
 
 clean:
-	rm -f dwm dwm-msg dwm-bar dwm-vad dwm-whisperd mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so ${OBJ} dwm-${VERSION}.tar.gz
+	rm -f dwm dwm-msg dwm-bar dwm-whisperd mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so ${OBJ} dwm-${VERSION}.tar.gz
 
 dist: clean
 	mkdir -p dwm-${VERSION}
@@ -45,7 +45,7 @@ dist: clean
 install: all
 	mkdir -p ${DESTDIR}${PREFIX}/bin
 	install -m 755 dwm dwm-msg dwm-bar ${DESTDIR}${PREFIX}/bin/
-	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice ${DESTDIR}${PREFIX}/bin/dwm-vad ${DESTDIR}${PREFIX}/bin/dwm-jarvis-pi
+	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-voice ${DESTDIR}${PREFIX}/bin/dwm-jarvis-pi
 	install -m 755 scripts/dwm-ctl scripts/dwm-top scripts/dwm-net scripts/dwm-shot scripts/dwm-help scripts/dwm-voice scripts/dwm-cal scripts/dwm-auren scripts/dwm-rec scripts/dwm-jarvis scripts/dwm-session scripts/gnome-control-center ${DESTDIR}${PREFIX}/bin/
 	@rm -f ${DESTDIR}${PREFIX}/bin/dwm-act ${DESTDIR}${PREFIX}/bin/dwm-tts ${DESTDIR}${PREFIX}/bin/jarvis_core.py
 	mkdir -p ${DESTDIR}${PREFIX}/lib/dwm ${DESTDIR}${PREFIX}/lib/ren
