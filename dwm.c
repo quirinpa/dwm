@@ -45,6 +45,7 @@
 
 #include "drw.h"
 #include "util.h"
+#include "dwm-cmd.h"
 #include "dwm.h"
 
 XY_LISTENER_TAG(int, dwm_xy_on_startup, dwm_host, int, screen_num)
@@ -631,117 +632,126 @@ cleanupmon(Monitor *mon)
 	free(mon);
 }
 
+int
+dwm_dispatch_cmd_opcode(long cmd, long arg1, long arg2)
+{
+	Arg a = {0};
+	Client *c;
+
+	switch (cmd) {
+	case 1: /* reload xrdb */
+		reloadxrdb(NULL);
+		break;
+	case 2: /* view tag bitmask */
+		a.ui = (unsigned int)arg1;
+		view(&a);
+		break;
+	case 3: /* tag focused client */
+		a.ui = (unsigned int)arg1;
+		tag(&a);
+		break;
+	case 4: /* togglefloating */
+		togglefloating(NULL);
+		break;
+	case 5: /* togglefullscreen */
+		togglefullscreen(NULL);
+		break;
+	case 6: /* zoom */
+		zoom(NULL);
+		break;
+	case 7: /* focusstack (+1 / -1) */
+		a.i = (int)arg1;
+		focusstack(&a);
+		break;
+	case 8: /* killclient */
+		killclient(NULL);
+		break;
+	case 9: /* setlayout index (0=tile, 1=float, 2=monocle) */
+		if (arg1 >= 0 && (size_t)arg1 < LENGTH(layouts)) {
+			a.v = &layouts[arg1];
+			setlayout(&a);
+		} else {
+			setlayout(NULL);
+		}
+		break;
+	case 10: /* setgaps delta */
+		a.i = (int)arg1;
+		setgaps(&a);
+		break;
+	case 11: /* togglebar */
+		togglebar(NULL);
+		break;
+	case 12: /* focus client by window id */
+		if ((c = wintoclient((Window)arg1))) {
+			if (c->mon != selmon) {
+				unfocus(selmon->sel, 1);
+				selmon = c->mon;
+			}
+			if (!ISVISIBLE(c)) {
+				a.ui = c->tags;
+				view(&a);
+			}
+			focus(c);
+			restack(selmon);
+		}
+		break;
+	case 13: /* tag specific client by window id without switching workspace */
+		if ((c = wintoclient((Window)arg1)) && (arg2 & TAGMASK)) {
+			c->tags = (unsigned int)arg2 & TAGMASK;
+			focus(NULL);
+			arrange(c->mon);
+		}
+		break;
+	case 14: /* pull specific client into current tagset and focus it */
+		if ((c = wintoclient((Window)arg1))) {
+			if (c->mon != selmon)
+				sendmon(c, selmon);
+			c->tags = selmon->tagset[selmon->seltags];
+			focus(c);
+			arrange(selmon);
+		}
+		break;
+	case 15: /* close specific client by window id */
+		if ((c = wintoclient((Window)arg1))) {
+			if (!sendevent(c, wmatom[WMDelete])) {
+				XGrabServer(dpy);
+				XSetErrorHandler(xerrordummy);
+				XSetCloseDownMode(dpy, DestroyAll);
+				XKillClient(dpy, c->win);
+				XSync(dpy, False);
+				XSetErrorHandler(xerror);
+				XUngrabServer(dpy);
+			}
+		}
+		break;
+	case 16: /* libxylem dynamic module load/unload/reload via _DWM_MOD_CMD root property */
+		{
+			char mod_name[512];
+			if (dwmmodcmdatom && gettextprop(root, dwmmodcmdatom, mod_name, sizeof(mod_name)) && mod_name[0]) {
+				if (arg1 == DWM_XY_MOD_LOAD)
+					xy_load(mod_name);
+				else if (arg1 == DWM_XY_MOD_UNLOAD)
+					xy_unload(mod_name);
+				else if (arg1 == DWM_XY_MOD_RELOAD)
+					xy_reload(mod_name);
+			}
+		}
+		break;
+	default:
+		dwm_xy_on_cmd(cmd, arg1, arg2);
+		break;
+	}
+	return 1;
+}
+
 void
 clientmessage(XEvent *e)
 {
 	XClientMessageEvent *cme = &e->xclient;
 	Client *c = wintoclient(cme->window);
-	Arg a = {0};
 
 	if (cme->window == root && cme->message_type == dwmcmdatom) {
-		switch (cme->data.l[0]) {
-		case 1: /* reload xrdb */
-			reloadxrdb(NULL);
-			break;
-		case 2: /* view tag bitmask */
-			a.ui = (unsigned int)cme->data.l[1];
-			view(&a);
-			break;
-		case 3: /* tag focused client */
-			a.ui = (unsigned int)cme->data.l[1];
-			tag(&a);
-			break;
-		case 4: /* togglefloating */
-			togglefloating(NULL);
-			break;
-		case 5: /* togglefullscreen */
-			togglefullscreen(NULL);
-			break;
-		case 6: /* zoom */
-			zoom(NULL);
-			break;
-		case 7: /* focusstack (+1 / -1) */
-			a.i = (int)cme->data.l[1];
-			focusstack(&a);
-			break;
-		case 8: /* killclient */
-			killclient(NULL);
-			break;
-		case 9: /* setlayout index (0=tile, 1=float, 2=monocle) */
-			if (cme->data.l[1] >= 0 && (size_t)cme->data.l[1] < LENGTH(layouts)) {
-				a.v = &layouts[cme->data.l[1]];
-				setlayout(&a);
-			} else {
-				setlayout(NULL);
-			}
-			break;
-		case 10: /* setgaps delta */
-			a.i = (int)cme->data.l[1];
-			setgaps(&a);
-			break;
-		case 11: /* togglebar */
-			togglebar(NULL);
-			break;
-		case 12: /* focus client by window id */
-			if ((c = wintoclient((Window)cme->data.l[1]))) {
-				if (c->mon != selmon) {
-					unfocus(selmon->sel, 1);
-					selmon = c->mon;
-				}
-				if (!ISVISIBLE(c)) {
-					a.ui = c->tags;
-					view(&a);
-				}
-				focus(c);
-				restack(selmon);
-			}
-			break;
-		case 13: /* tag specific client by window id without switching workspace */
-			if ((c = wintoclient((Window)cme->data.l[1])) && (cme->data.l[2] & TAGMASK)) {
-				c->tags = (unsigned int)cme->data.l[2] & TAGMASK;
-				focus(NULL);
-				arrange(c->mon);
-			}
-			break;
-		case 14: /* pull specific client into current tagset and focus it */
-			if ((c = wintoclient((Window)cme->data.l[1]))) {
-				if (c->mon != selmon)
-					sendmon(c, selmon);
-				c->tags = selmon->tagset[selmon->seltags];
-				focus(c);
-				arrange(selmon);
-			}
-			break;
-		case 15: /* close specific client by window id */
-			if ((c = wintoclient((Window)cme->data.l[1]))) {
-				if (!sendevent(c, wmatom[WMDelete])) {
-					XGrabServer(dpy);
-					XSetErrorHandler(xerrordummy);
-					XSetCloseDownMode(dpy, DestroyAll);
-					XKillClient(dpy, c->win);
-					XSync(dpy, False);
-					XSetErrorHandler(xerror);
-					XUngrabServer(dpy);
-				}
-			}
-			break;
-		case 16: /* libxylem dynamic module load/unload/reload via _DWM_MOD_CMD root property */
-			{
-				char mod_name[512];
-				if (dwmmodcmdatom && gettextprop(root, dwmmodcmdatom, mod_name, sizeof(mod_name)) && mod_name[0]) {
-					if (cme->data.l[1] == DWM_XY_MOD_LOAD)
-						xy_load(mod_name);
-					else if (cme->data.l[1] == DWM_XY_MOD_UNLOAD)
-						xy_unload(mod_name);
-					else if (cme->data.l[1] == DWM_XY_MOD_RELOAD)
-						xy_reload(mod_name);
-				}
-			}
-			break;
-		default:
-			dwm_xy_on_cmd(cme->data.l[0], cme->data.l[1], cme->data.l[2]);
-			break;
-		}
+		dwm_handle_cmd_message(cme);
 		return;
 	}
 

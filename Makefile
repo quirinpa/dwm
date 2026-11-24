@@ -3,7 +3,7 @@
 
 include config.mk
 
-SRC = drw.c dwm.c util.c
+SRC = drw.c dwm.c dwm-cmd.c util.c
 OBJ = ${SRC:.c=.o}
 
 all: dwm dwm-msg dwm-bar mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so
@@ -11,7 +11,7 @@ all: dwm dwm-msg dwm-bar mods/dwm-ren/dwm-ren.so mods/ren-dwm/ren-dwm.so
 .c.o:
 	${CC} -c ${CFLAGS} $<
 
-${OBJ}: config.h config.mk dwm.h dwm-types.h
+${OBJ}: config.h config.mk dwm.h dwm-types.h dwm-cmd.h
 
 config.h:
 	cp config.def.h $@
