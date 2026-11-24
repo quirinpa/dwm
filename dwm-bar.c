@@ -17,7 +17,9 @@
 #include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <linux/wireless.h>
 #include <alsa/asoundlib.h>
 #include <X11/Xatom.h>
@@ -273,19 +275,168 @@ seg_cpu(char *out, size_t len)
 		snprintf(out, len, "%s%s   %s %.16s", C_SYS_OK, C_ICO, C_VAL, buf);
 }
 
+typedef struct {
+	int online;
+	int busy;
+	char model[32];
+	unsigned long tokens;
+	unsigned long max_tokens;
+} RenStatus;
+
+static int
+has_bar_module(const char *modules, const char *name)
+{
+	char copy[256];
+	char *saveptr = NULL;
+
+	snprintf(copy, sizeof(copy), "%s", modules);
+	for (char *tok = strtok_r(copy, " \t,", &saveptr); tok; tok = strtok_r(NULL, " \t,", &saveptr)) {
+		if (!strcmp(tok, name))
+			return 1;
+	}
+	return 0;
+}
+
+static void
+format_ren_tokens(unsigned long tokens, char *out, size_t len)
+{
+	if (tokens >= 1000000UL)
+		snprintf(out, len, "%.1fM", (double)tokens / 1000000.0);
+	else if (tokens >= 1000UL)
+		snprintf(out, len, "%.1fk", (double)tokens / 1000.0);
+	else if (tokens > 0)
+		snprintf(out, len, "%lu", tokens);
+	else
+		out[0] = '\0';
+}
+
+static int
+query_ren_status(const char *user, RenStatus *out)
+{
+	static ino_t unsupported_ino = 0;
+	struct sockaddr_un addr;
+	struct stat st;
+	char buf[256];
+	int fd;
+
+	memset(out, 0, sizeof(*out));
+	memset(&addr, 0, sizeof(addr));
+	addr.sun_family = AF_UNIX;
+	snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/ren-jarvis-%s.sock", user);
+
+	if (stat(addr.sun_path, &st) < 0 || !S_ISSOCK(st.st_mode))
+		return 0;
+	if (unsupported_ino != 0 && st.st_ino == unsupported_ino)
+		return 0;
+
+	fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+	if (fd < 0)
+		return 0;
+
+	if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		if (errno != EINPROGRESS) {
+			close(fd);
+			return 0;
+		}
+		struct pollfd pfd = { .fd = fd, .events = POLLOUT };
+		int err = 0;
+		socklen_t elen = sizeof(err);
+		if (poll(&pfd, 1, 80) <= 0 || !(pfd.revents & POLLOUT) ||
+		    getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &elen) < 0 || err != 0) {
+			close(fd);
+			return 0;
+		}
+	}
+
+	if (send(fd, "STATUS\n", 7, MSG_NOSIGNAL) != 7) {
+		close(fd);
+		return 0;
+	}
+
+	struct pollfd rfd = { .fd = fd, .events = POLLIN };
+	if (poll(&rfd, 1, 100) <= 0 || !(rfd.revents & POLLIN)) {
+		close(fd);
+		unsupported_ino = st.st_ino;
+		return 0;
+	}
+
+	ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+	close(fd);
+	if (n <= 0)
+		return 0;
+	buf[n] = '\0';
+	if (strncmp(buf, "STATUS\t", 7) != 0) {
+		unsupported_ino = st.st_ino;
+		return 0;
+	}
+
+	char state[16] = {0}, model[32] = {0};
+	unsigned long tok = 0, max_tok = 0, bytes = 0;
+	if (sscanf(buf + 7, "%15[^\t]\t%31[^\t]\t%lu\t%lu\t%lu",
+	           state, model, &tok, &max_tok, &bytes) < 3)
+		return 0;
+
+	unsupported_ino = 0;
+	out->online = 1;
+	out->busy = (strcmp(state, "busy") == 0);
+	snprintf(out->model, sizeof(out->model), "%s", model);
+	out->tokens = tok;
+	out->max_tokens = max_tok;
+	return 1;
+}
+
+static void
+seg_ren(char *out, size_t len, const char *user)
+{
+	RenStatus rs;
+	char tok_s[24];
+
+	out[0] = '\0';
+	if (!query_ren_status(user, &rs))
+		return;
+
+	format_ren_tokens(rs.tokens, tok_s, sizeof(tok_s));
+	if (rs.busy) {
+		snprintf(out, len, "%s%s    ren%s %.16s%s%s",
+			C_VOC, C_WRN, C_VAL, rs.model, tok_s[0] ? " " : "", tok_s);
+	} else {
+		snprintf(out, len, "%s%s   %s %.16s%s%s",
+			C_VOC, C_ICO, C_VAL, rs.model, tok_s[0] ? " " : "", tok_s);
+	}
+}
+
 static void
 seg_voice(char *out, size_t len, const char *user)
 {
 	char path[256], buf[160], jpid_path[256], jpid_buf[32];
 	char apid_path[256], apid_buf[32];
-	char ren_path[256], ren_buf[64], rpid_path[256], rpid_buf[32], extra_tags[64];
+	char ren_path[256], ren_buf[64], rpid_path[256], rpid_buf[32];
+	char ren_tag[48] = "", extra_tags[96];
 	int ren_working = 0, scr_rec = 0, acting = 0, jarvis_on = 0;
 
 	out[0] = '\0';
-	snprintf(ren_path, sizeof(ren_path), "/tmp/dwm-ren-%s.state", user);
-	if (read_small_file(ren_path, ren_buf, sizeof(ren_buf)) > 0 &&
-	    !strncmp(ren_buf, "working", 7)) {
-		ren_working = 1;
+	if (!has_bar_module(cfg.modules, "ren")) {
+		RenStatus rs;
+		if (query_ren_status(user, &rs)) {
+			char tok_s[24];
+			format_ren_tokens(rs.tokens, tok_s, sizeof(tok_s));
+			if (rs.busy) {
+				if (tok_s[0])
+					snprintf(ren_tag, sizeof(ren_tag), "%s  ren %s%s", C_WRN, C_VAL, tok_s);
+				else
+					snprintf(ren_tag, sizeof(ren_tag), "%s  ren", C_WRN);
+			} else if (tok_s[0]) {
+				snprintf(ren_tag, sizeof(ren_tag), "%s %s %s", C_ICO, C_VAL, tok_s);
+			}
+		} else {
+			snprintf(ren_path, sizeof(ren_path), "/tmp/dwm-ren-%s.state", user);
+			if (read_small_file(ren_path, ren_buf, sizeof(ren_buf)) > 0 &&
+			    !strncmp(ren_buf, "working", 7)) {
+				ren_working = 1;
+			}
+			if (ren_working)
+				snprintf(ren_tag, sizeof(ren_tag), "%s  ren", C_ICO);
+		}
 	}
 	snprintf(rpid_path, sizeof(rpid_path), "/tmp/dwm-rec-%s.pid", user);
 	if (read_small_file(rpid_path, rpid_buf, sizeof(rpid_buf)) > 0) {
@@ -295,7 +446,7 @@ seg_voice(char *out, size_t len, const char *user)
 	}
 	snprintf(extra_tags, sizeof(extra_tags), "%s%s",
 		scr_rec ? C_VOC "  REC" : "",
-		ren_working ? C_ICO "  ren" : "");
+		ren_tag);
 
 	snprintf(apid_path, sizeof(apid_path), "/tmp/jarvis-acting-%s.pid", user);
 	if (read_small_file(apid_path, apid_buf, sizeof(apid_buf)) > 0) {
@@ -584,6 +735,7 @@ main(void)
 	signal(SIGTERM, on_sigterm);
 	signal(SIGINT, on_sigterm);
 	signal(SIGCHLD, SIG_IGN);
+	signal(SIGPIPE, SIG_IGN);
 
 	if (!(dpy = XOpenDisplay(NULL))) {
 		fprintf(stderr, "dwm-bar: cannot open display\n");
@@ -642,6 +794,8 @@ main(void)
 				seg_cpu(seg, sizeof(seg));
 			else if (!strcmp(tok, "voice"))
 				seg_voice(seg, sizeof(seg), user);
+			else if (!strcmp(tok, "ren"))
+				seg_ren(seg, sizeof(seg), user);
 			else if (!strcmp(tok, "vol"))
 				seg_vol(seg, sizeof(seg));
 			else if (!strcmp(tok, "net"))
