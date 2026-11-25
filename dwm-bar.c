@@ -77,20 +77,43 @@ static BarConfig cfg = {
 };
 
 static volatile sig_atomic_t running = 1;
-static volatile sig_atomic_t force_refresh = 0;
+static int sig_pipe[2] = { -1, -1 };
 
 static void
 on_sigusr1(int sig)
 {
+	int saved_errno = errno;
 	(void)sig;
-	force_refresh = 1;
+	if (sig_pipe[1] >= 0) {
+		char b = 1;
+		ssize_t wr = write(sig_pipe[1], &b, 1);
+		(void)wr;
+	}
+	errno = saved_errno;
 }
 
 static void
 on_sigterm(int sig)
 {
+	int saved_errno = errno;
 	(void)sig;
 	running = 0;
+	if (sig_pipe[1] >= 0) {
+		char b = 0;
+		ssize_t wr = write(sig_pipe[1], &b, 1);
+		(void)wr;
+	}
+	errno = saved_errno;
+}
+
+static void
+drain_sig_pipe(void)
+{
+	char buf[64];
+	if (sig_pipe[0] < 0)
+		return;
+	while (read(sig_pipe[0], buf, sizeof(buf)) > 0)
+		;
 }
 
 static int
@@ -201,23 +224,40 @@ probe_host_tcp(const char *host, int port, int timeout_ms)
 }
 
 static void
-seg_host(char *out, size_t len, const char *user, time_t now, time_t *last_probe, int *cached_up)
+seg_host(char *out, size_t len, const char *user, time_t now, time_t *last_probe, int *cached_up, int dpy_fd)
 {
 	char state_path[256], buf[32];
 
 	snprintf(state_path, sizeof(state_path), "/tmp/dwm-tty-%s.state", user);
-	if (now - *last_probe >= 15 || *last_probe == 0) {
-		*last_probe = now;
-		*cached_up = probe_host_tcp(cfg.ping_host, cfg.ping_port, 800);
-		int fd = open(state_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-		if (fd >= 0) {
-			const char *s = *cached_up ? "up\n" : "down\n";
-			ssize_t wr = write(fd, s, strlen(s));
-			(void)wr;
-			close(fd);
-		}
-	} else if (read_small_file(state_path, buf, sizeof(buf)) > 0) {
+	if (read_small_file(state_path, buf, sizeof(buf)) > 0)
 		*cached_up = (strcmp(buf, "up") == 0);
+
+	if (now - *last_probe >= 15 || *last_probe == 0) {
+		int prev_up = *cached_up;
+		*last_probe = now;
+		pid_t pid = fork();
+		if (pid == 0) {
+			if (dpy_fd >= 0)
+				close(dpy_fd);
+			if (sig_pipe[0] >= 0)
+				close(sig_pipe[0]);
+			if (sig_pipe[1] >= 0)
+				close(sig_pipe[1]);
+			int up = probe_host_tcp(cfg.ping_host, cfg.ping_port, 800);
+			char tmp_path[280];
+			snprintf(tmp_path, sizeof(tmp_path), "%s.tmp.%d", state_path, (int)getpid());
+			int fd = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+			if (fd >= 0) {
+				const char *s = up ? "up\n" : "down\n";
+				ssize_t wr = write(fd, s, strlen(s));
+				(void)wr;
+				close(fd);
+				rename(tmp_path, state_path);
+			}
+			if (up != prev_up)
+				kill(getppid(), SIGUSR1);
+			_exit(0);
+		}
 	}
 	snprintf(out, len, "%s  ", *cached_up ? C_TUP : C_TDN);
 }
@@ -498,32 +538,64 @@ seg_voice(char *out, size_t len, const char *user)
 	}
 }
 
+static snd_mixer_t *g_vol_mixer = NULL;
+static snd_mixer_elem_t *g_vol_elem = NULL;
+
+static void
+vol_mixer_close(void)
+{
+	if (g_vol_mixer) {
+		snd_mixer_close(g_vol_mixer);
+		g_vol_mixer = NULL;
+	}
+	g_vol_elem = NULL;
+}
+
+static int
+vol_mixer_ensure(void)
+{
+	if (g_vol_mixer && g_vol_elem)
+		return 1;
+	vol_mixer_close();
+	if (snd_mixer_open(&g_vol_mixer, 0) < 0) {
+		g_vol_mixer = NULL;
+		return 0;
+	}
+	if (snd_mixer_attach(g_vol_mixer, "default") < 0 ||
+	    snd_mixer_selem_register(g_vol_mixer, NULL, NULL) < 0 ||
+	    snd_mixer_load(g_vol_mixer) < 0) {
+		vol_mixer_close();
+		return 0;
+	}
+	snd_mixer_selem_id_t *sid = NULL;
+	snd_mixer_selem_id_alloca(&sid);
+	snd_mixer_selem_id_set_index(sid, 0);
+	snd_mixer_selem_id_set_name(sid, "Master");
+	g_vol_elem = snd_mixer_find_selem(g_vol_mixer, sid);
+	if (!g_vol_elem) {
+		vol_mixer_close();
+		return 0;
+	}
+	return 1;
+}
+
 static void
 seg_vol(char *out, size_t len)
 {
-	snd_mixer_t *handle = NULL;
-	snd_mixer_selem_id_t *sid = NULL;
-	snd_mixer_elem_t *elem = NULL;
 	long min = 0, max = 0, val = 0;
 	int sw = 1;
 
 	out[0] = '\0';
-	if (snd_mixer_open(&handle, 0) < 0)
-		return;
-	if (snd_mixer_attach(handle, "default") < 0 ||
-	    snd_mixer_selem_register(handle, NULL, NULL) < 0 ||
-	    snd_mixer_load(handle) < 0) {
-		snd_mixer_close(handle);
-		return;
-	}
-	snd_mixer_selem_id_alloca(&sid);
-	snd_mixer_selem_id_set_index(sid, 0);
-	snd_mixer_selem_id_set_name(sid, "Master");
-	elem = snd_mixer_find_selem(handle, sid);
-	if (elem) {
-		snd_mixer_selem_get_playback_volume_range(elem, &min, &max);
-		snd_mixer_selem_get_playback_volume(elem, SND_MIXER_SCHN_FRONT_LEFT, &val);
-		snd_mixer_selem_get_playback_switch(elem, SND_MIXER_SCHN_FRONT_LEFT, &sw);
+	for (int attempt = 0; attempt < 2; attempt++) {
+		if (!vol_mixer_ensure())
+			return;
+		if (snd_mixer_handle_events(g_vol_mixer) < 0 ||
+		    snd_mixer_selem_get_playback_volume_range(g_vol_elem, &min, &max) < 0 ||
+		    snd_mixer_selem_get_playback_volume(g_vol_elem, SND_MIXER_SCHN_FRONT_LEFT, &val) < 0 ||
+		    snd_mixer_selem_get_playback_switch(g_vol_elem, SND_MIXER_SCHN_FRONT_LEFT, &sw) < 0) {
+			vol_mixer_close();
+			continue;
+		}
 		int pct = (max > min) ? (int)(((val - min) * 100 + (max - min) / 2) / (max - min)) : 0;
 		if (!sw) {
 			snprintf(out, len, "%s    ×", C_VMU);
@@ -531,8 +603,8 @@ seg_vol(char *out, size_t len)
 			const char *glyph = (pct == 0) ? "" : (pct < 40 ? "" : "");
 			snprintf(out, len, "%s   %s%s %d%%", C_VOL, glyph, C_VAL, pct);
 		}
+		return;
 	}
-	snd_mixer_close(handle);
 }
 
 static void
@@ -724,12 +796,19 @@ main(void)
 		}
 	}
 
+	if (pipe(sig_pipe) == 0) {
+		for (int i = 0; i < 2; i++) {
+			fcntl(sig_pipe[i], F_SETFL, O_NONBLOCK);
+			fcntl(sig_pipe[i], F_SETFD, FD_CLOEXEC);
+		}
+	}
+
 	{
 		struct sigaction sa;
 		memset(&sa, 0, sizeof(sa));
 		sa.sa_handler = on_sigusr1;
 		sigemptyset(&sa.sa_mask);
-		sa.sa_flags = 0; /* interrupt poll() immediately on SIGUSR1 */
+		sa.sa_flags = SA_RESTART;
 		sigaction(SIGUSR1, &sa, NULL);
 	}
 	signal(SIGTERM, on_sigterm);
@@ -756,6 +835,7 @@ main(void)
 	ioctl_sock = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
 
 	while (running) {
+		drain_sig_pipe();
 		time_t now = time(NULL);
 		struct tm tm_now;
 		localtime_r(&now, &tm_now);
@@ -787,7 +867,7 @@ main(void)
 		for (char *tok = strtok_r(mods_copy, " \t,", &saveptr); tok; tok = strtok_r(NULL, " \t,", &saveptr)) {
 			char seg[128] = {0};
 			if (!strcmp(tok, "host"))
-				seg_host(seg, sizeof(seg), user, now, &last_probe, &cached_tty_up);
+				seg_host(seg, sizeof(seg), user, now, &last_probe, &cached_tty_up, ConnectionNumber(dpy));
 			else if (!strcmp(tok, "mem"))
 				seg_mem(seg, sizeof(seg));
 			else if (!strcmp(tok, "cpu"))
@@ -822,27 +902,71 @@ main(void)
 			XStoreName(dpy, root, status);
 			XFlush(dpy);
 		}
-		force_refresh = 0;
 
-		/* Wait until next interval OR immediate XKB / SIGUSR1 wakeup */
-		struct pollfd pfd;
-		pfd.fd = ConnectionNumber(dpy);
-		pfd.events = POLLIN;
-		pfd.revents = 0;
+		/* Wait until next interval OR immediate XKB / XRDB / SIGUSR1 wakeup.
+		 * Self-pipe guarantees zero lost signals even if SIGUSR1 arrives mid-render.
+		 * Self-generated WM_NAME PropertyNotify events are drained without re-rendering.
+		 */
+		struct timespec deadline_ts;
+		clock_gettime(CLOCK_MONOTONIC, &deadline_ts);
+		deadline_ts.tv_sec += cfg.interval_sec;
 
-		int ret = poll(&pfd, 1, cfg.interval_sec * 1000);
-		if (ret > 0 && (pfd.revents & POLLIN)) {
-			while (XPending(dpy)) {
-				XEvent ev;
-				XNextEvent(dpy, &ev);
-				if (ev.type == PropertyNotify && ev.xproperty.window == root &&
-				    ev.xproperty.atom == XA_RESOURCE_MANAGER) {
-					load_bar_xrdb(dpy);
+		while (running) {
+			struct timespec cur_ts;
+			clock_gettime(CLOCK_MONOTONIC, &cur_ts);
+			long rem_ms = (deadline_ts.tv_sec - cur_ts.tv_sec) * 1000L
+			            + (deadline_ts.tv_nsec - cur_ts.tv_nsec) / 1000000L;
+			if (rem_ms <= 0)
+				break;
+
+			struct pollfd pfds[2];
+			pfds[0].fd = ConnectionNumber(dpy);
+			pfds[0].events = POLLIN;
+			pfds[0].revents = 0;
+			pfds[1].fd = sig_pipe[0];
+			pfds[1].events = POLLIN;
+			pfds[1].revents = 0;
+
+			int nfds = (sig_pipe[0] >= 0) ? 2 : 1;
+			int ret = poll(pfds, (nfds_t)nfds, (int)rem_ms);
+			if (ret == 0)
+				break;
+			if (ret < 0) {
+				if (errno == EINTR)
+					continue;
+				break;
+			}
+
+			int need_redraw = 0;
+			if (nfds == 2 && (pfds[1].revents & POLLIN))
+				need_redraw = 1;
+
+			if (pfds[0].revents & POLLIN) {
+				while (XPending(dpy)) {
+					XEvent ev;
+					XNextEvent(dpy, &ev);
+					if (ev.type == PropertyNotify && ev.xproperty.window == root) {
+						if (ev.xproperty.atom == XA_RESOURCE_MANAGER) {
+							load_bar_xrdb(dpy);
+							need_redraw = 1;
+						} else if (ev.xproperty.atom == xkb_rules_atom) {
+							need_redraw = 1;
+						}
+					} else if (ev.type == xkb_ev_base) {
+						need_redraw = 1;
+					}
 				}
 			}
+			if (need_redraw)
+				break;
 		}
 	}
 
+	vol_mixer_close();
+	if (sig_pipe[0] >= 0)
+		close(sig_pipe[0]);
+	if (sig_pipe[1] >= 0)
+		close(sig_pipe[1]);
 	if (ioctl_sock >= 0)
 		close(ioctl_sock);
 	XCloseDisplay(dpy);
